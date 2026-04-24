@@ -95,4 +95,4 @@ def _build_taste_vector(client, user_id: str) -> list[float]:
     """
     from app.services.ranking import build_taste_vector
 
-    return build_taste_vector(user_id)
+    return build_taste_vector(client, user_id)
