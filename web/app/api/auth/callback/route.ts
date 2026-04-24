@@ -67,6 +67,8 @@ export async function GET(req: NextRequest) {
       maxAge: 60 * 60 * 24 * 30,
       path: "/",
     });
+  } else {
+    res.cookies.delete("sp_refresh");
   }
 
   return res;

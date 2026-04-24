@@ -9,11 +9,13 @@ Three signals:
 Final score = w1*affinity + w2*context + w3*editorial
 Weights come from the request so the UI sliders drive them directly.
 """
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, field_validator
 
-from app.deps.auth import bearer_scheme, require_bearer_token
+from app.deps.auth import bearer_scheme, ensure_valid_bearer_token, require_bearer_token
 from app.services.embedding import embedder
+from app.services.supabase_client import get_user_scoped_supabase
 
 router = APIRouter()
 
@@ -56,6 +58,7 @@ def recommend(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ):
     token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
     user_client = get_user_scoped_supabase(token)
 
     # 1. Build the user's taste vector: weighted centroid of artist embeddings
