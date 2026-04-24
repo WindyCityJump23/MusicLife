@@ -19,8 +19,8 @@ export default function Dashboard() {
 
         <section className="border rounded-lg p-6">
           <p className="text-sm text-neutral-500">
-            Placeholder. Wire to the API's /ingest/spotify-library endpoint,
-            then render the user's top artists as a sanity check.
+            Placeholder. Wire to the API&apos;s /ingest/spotify-library endpoint,
+            then render the user&apos;s top artists as a sanity check.
           </p>
         </section>
       </div>
