@@ -134,6 +134,7 @@ def build_taste_vector(user_id: str) -> list[float]:
 
 
 def rank_candidates(
+    client: Client,
     user_id: str,
     taste_vector: list[float],
     prompt_vector: list[float] | None,

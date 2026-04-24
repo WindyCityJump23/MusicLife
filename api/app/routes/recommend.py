@@ -12,6 +12,7 @@ Weights come from the request so the UI sliders drive them directly.
 from fastapi import APIRouter
 from pydantic import BaseModel, Field, field_validator
 
+from app.deps.auth import bearer_scheme, require_bearer_token
 from app.services.embedding import embedder
 
 router = APIRouter()
@@ -50,10 +51,16 @@ class RecommendResponse(BaseModel):
 
 
 @router.post("", response_model=RecommendResponse)
-def recommend(req: RecommendRequest):
+def recommend(
+    req: RecommendRequest,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    token = require_bearer_token(credentials)
+    user_client = get_user_scoped_supabase(token)
+
     # 1. Build the user's taste vector: weighted centroid of artist embeddings
     #    from their listening history.
-    taste_vector = _build_taste_vector(req.user_id)
+    taste_vector = _build_taste_vector(user_client, req.user_id)
 
     # 2. Embed the prompt if provided.
     prompt_vec = None
@@ -64,12 +71,10 @@ def recommend(req: RecommendRequest):
     # 3. Candidate pool: all artists with embeddings, optionally excluding
     #    artists already in the user's library.
     # 4. Score each candidate with the three signals, combine, rank, return.
-    #
-    # Actual SQL lives in app/services/ranking.py — stub for now so the
-    # endpoint shape is nailed down before implementation.
     from app.services.ranking import rank_candidates
 
     results = rank_candidates(
+        client=user_client,
         user_id=req.user_id,
         taste_vector=taste_vector,
         prompt_vector=prompt_vec,
@@ -80,12 +85,11 @@ def recommend(req: RecommendRequest):
     return RecommendResponse(results=results)
 
 
-def _build_taste_vector(user_id: str) -> list[float]:
+def _build_taste_vector(client, user_id: str) -> list[float]:
     """
     Weighted centroid: sum(play_count * artist_embedding) / sum(play_count),
     computed via SQL for speed. Returned as a plain list for downstream use.
     """
-    # Implemented in ranking.py to keep SQL in one place.
     from app.services.ranking import build_taste_vector
 
     return build_taste_vector(user_id)
