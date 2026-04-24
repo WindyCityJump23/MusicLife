@@ -27,8 +27,9 @@ def ingest_spotify_library(req: SpotifyLibraryRequest, bg: BackgroundTasks):
 
 
 def _run_spotify_ingest(user_id: str, token: str):
-    # TODO: implement in services/spotify_ingest.py
-    pass
+    from app.services.spotify_ingest import run_spotify_library_ingest
+
+    run_spotify_library_ingest(user_id, token)
 
 
 @router.post("/enrich-artists")
