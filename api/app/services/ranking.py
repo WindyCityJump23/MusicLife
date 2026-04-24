@@ -10,7 +10,7 @@ import math
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from app.services.supabase_client import supabase
+from supabase import Client
 
 
 def _parse_vector(value: object) -> list[float]:
@@ -48,9 +48,9 @@ def _normalize_01(value: float) -> float:
     return max(0.0, min(1.0, (value + 1.0) / 2.0))
 
 
-def _get_user_artist_weights(user_id: str) -> dict[int, float]:
+def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
     tracks_resp = (
-        supabase.table("user_tracks")
+        client.table("user_tracks")
         .select("track_id,play_count")
         .eq("user_id", user_id)
         .execute()
@@ -64,7 +64,7 @@ def _get_user_artist_weights(user_id: str) -> dict[int, float]:
         return {}
 
     tracks_map_resp = (
-        supabase.table("tracks")
+        client.table("tracks")
         .select("id,artist_id")
         .in_("id", track_ids)
         .execute()
@@ -86,14 +86,14 @@ def _get_user_artist_weights(user_id: str) -> dict[int, float]:
     return dict(artist_weights)
 
 
-def build_taste_vector(user_id: str) -> list[float]:
-    artist_weights = _get_user_artist_weights(user_id)
+def build_taste_vector(client: Client, user_id: str) -> list[float]:
+    artist_weights = _get_user_artist_weights(client, user_id)
     if not artist_weights:
         return []
 
     artist_ids = list(artist_weights.keys())
     artists_resp = (
-        supabase.table("artists")
+        client.table("artists")
         .select("id,embedding")
         .in_("id", artist_ids)
         .execute()
@@ -142,17 +142,17 @@ def rank_candidates(
     exclude_library: bool,
     limit: int,
 ) -> list[dict]:
-    artist_weights = _get_user_artist_weights(user_id)
+    artist_weights = _get_user_artist_weights(client, user_id)
     library_artist_ids = set(artist_weights.keys())
 
     artists_resp = (
-        supabase.table("artists")
+        client.table("artists")
         .select("id,name,embedding,popularity")
         .execute()
     )
     candidates = artists_resp.data or []
 
-    source_resp = supabase.table("sources").select("id,trust_weight").execute()
+    source_resp = client.table("sources").select("id,trust_weight").execute()
     source_weights = {
         int(row["id"]): float(row.get("trust_weight") or 0.7)
         for row in (source_resp.data or [])
@@ -160,7 +160,7 @@ def rank_candidates(
     }
 
     mention_resp = (
-        supabase.table("mentions")
+        client.table("mentions")
         .select("artist_id,source_id,embedding,published_at,sentiment")
         .execute()
     )
