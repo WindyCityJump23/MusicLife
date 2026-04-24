@@ -10,10 +10,9 @@ Final score = w1*affinity + w2*context + w3*editorial
 Weights come from the request so the UI sliders drive them directly.
 """
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.services.embedding import embedder
-from app.services.supabase_client import supabase
 
 router = APIRouter()
 
@@ -21,9 +20,29 @@ router = APIRouter()
 class RecommendRequest(BaseModel):
     user_id: str
     prompt: str | None = None
-    weights: dict[str, float] = {"affinity": 0.4, "context": 0.4, "editorial": 0.2}
+    weights: dict[str, float] = Field(
+        default_factory=lambda: {"affinity": 0.4, "context": 0.4, "editorial": 0.2}
+    )
     exclude_library: bool = True
-    limit: int = 20
+    limit: int = Field(default=20, ge=1, le=100)
+
+    @field_validator("weights")
+    @classmethod
+    def validate_weights(cls, weights: dict[str, float]) -> dict[str, float]:
+        required = {"affinity", "context", "editorial"}
+        if set(weights) != required:
+            missing = required - set(weights)
+            extra = set(weights) - required
+            raise ValueError(f"weights must contain exactly {required}; missing={missing}, extra={extra}")
+
+        total = sum(weights.values())
+        if total <= 0:
+            raise ValueError("weights must sum to a positive number")
+
+        if any(value < 0 for value in weights.values()):
+            raise ValueError("weights cannot be negative")
+
+        return {k: v / total for k, v in weights.items()}
 
 
 class RecommendResponse(BaseModel):
@@ -39,7 +58,8 @@ def recommend(req: RecommendRequest):
     # 2. Embed the prompt if provided.
     prompt_vec = None
     if req.prompt:
-        prompt_vec = embedder.embed([req.prompt], input_type="query")[0]
+        embedded = embedder.embed([req.prompt], input_type="query")
+        prompt_vec = embedded[0] if embedded else None
 
     # 3. Candidate pool: all artists with embeddings, optionally excluding
     #    artists already in the user's library.
@@ -67,4 +87,5 @@ def _build_taste_vector(user_id: str) -> list[float]:
     """
     # Implemented in ranking.py to keep SQL in one place.
     from app.services.ranking import build_taste_vector
+
     return build_taste_vector(user_id)
