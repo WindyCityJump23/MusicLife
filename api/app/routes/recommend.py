@@ -9,13 +9,11 @@ Three signals:
 Final score = w1*affinity + w2*context + w3*editorial
 Weights come from the request so the UI sliders drive them directly.
 """
-from fastapi import APIRouter, Depends
-from fastapi.security import HTTPAuthorizationCredentials
+from fastapi import APIRouter
 from pydantic import BaseModel, Field, field_validator
 
 from app.deps.auth import bearer_scheme, require_bearer_token
 from app.services.embedding import embedder
-from app.services.supabase_client import get_user_scoped_supabase
 
 router = APIRouter()
 
@@ -94,4 +92,4 @@ def _build_taste_vector(client, user_id: str) -> list[float]:
     """
     from app.services.ranking import build_taste_vector
 
-    return build_taste_vector(client, user_id)
+    return build_taste_vector(user_id)
