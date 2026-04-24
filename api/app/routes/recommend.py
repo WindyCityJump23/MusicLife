@@ -9,11 +9,13 @@ Three signals:
 Final score = w1*affinity + w2*context + w3*editorial
 Weights come from the request so the UI sliders drive them directly.
 """
-from fastapi import APIRouter
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends
+from fastapi.security import HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field, field_validator
 
+from app.deps.auth import bearer_scheme, require_bearer_token
 from app.services.embedding import embedder
-from app.services.supabase_client import supabase
+from app.services.supabase_client import get_validated_user_scoped_supabase
 
 router = APIRouter()
 
@@ -21,9 +23,29 @@ router = APIRouter()
 class RecommendRequest(BaseModel):
     user_id: str
     prompt: str | None = None
-    weights: dict[str, float] = {"affinity": 0.4, "context": 0.4, "editorial": 0.2}
+    weights: dict[str, float] = Field(
+        default_factory=lambda: {"affinity": 0.4, "context": 0.4, "editorial": 0.2}
+    )
     exclude_library: bool = True
-    limit: int = 20
+    limit: int = Field(default=20, ge=1, le=100)
+
+    @field_validator("weights")
+    @classmethod
+    def validate_weights(cls, weights: dict[str, float]) -> dict[str, float]:
+        required = {"affinity", "context", "editorial"}
+        if set(weights) != required:
+            missing = required - set(weights)
+            extra = set(weights) - required
+            raise ValueError(f"weights must contain exactly {required}; missing={missing}, extra={extra}")
+
+        total = sum(weights.values())
+        if total <= 0:
+            raise ValueError("weights must sum to a positive number")
+
+        if any(value < 0 for value in weights.values()):
+            raise ValueError("weights cannot be negative")
+
+        return {k: v / total for k, v in weights.items()}
 
 
 class RecommendResponse(BaseModel):
@@ -31,25 +53,30 @@ class RecommendResponse(BaseModel):
 
 
 @router.post("", response_model=RecommendResponse)
-def recommend(req: RecommendRequest):
+def recommend(
+    req: RecommendRequest,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    token = require_bearer_token(credentials)
+    user_client = get_validated_user_scoped_supabase(token)
+
     # 1. Build the user's taste vector: weighted centroid of artist embeddings
     #    from their listening history.
-    taste_vector = _build_taste_vector(req.user_id)
+    taste_vector = _build_taste_vector(user_client, req.user_id)
 
     # 2. Embed the prompt if provided.
     prompt_vec = None
     if req.prompt:
-        prompt_vec = embedder.embed([req.prompt], input_type="query")[0]
+        embedded = embedder.embed([req.prompt], input_type="query")
+        prompt_vec = embedded[0] if embedded else None
 
     # 3. Candidate pool: all artists with embeddings, optionally excluding
     #    artists already in the user's library.
     # 4. Score each candidate with the three signals, combine, rank, return.
-    #
-    # Actual SQL lives in app/services/ranking.py — stub for now so the
-    # endpoint shape is nailed down before implementation.
     from app.services.ranking import rank_candidates
 
     results = rank_candidates(
+        client=user_client,
         user_id=req.user_id,
         taste_vector=taste_vector,
         prompt_vector=prompt_vec,
@@ -60,11 +87,11 @@ def recommend(req: RecommendRequest):
     return RecommendResponse(results=results)
 
 
-def _build_taste_vector(user_id: str) -> list[float]:
+def _build_taste_vector(client, user_id: str) -> list[float]:
     """
     Weighted centroid: sum(play_count * artist_embedding) / sum(play_count),
     computed via SQL for speed. Returned as a plain list for downstream use.
     """
-    # Implemented in ranking.py to keep SQL in one place.
     from app.services.ranking import build_taste_vector
-    return build_taste_vector(user_id)
+
+    return build_taste_vector(client, user_id)
