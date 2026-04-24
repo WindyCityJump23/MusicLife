@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+supabase
+anthropic
+voyageai
+httpx
+python-dotenv
