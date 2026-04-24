@@ -6,6 +6,7 @@ class Settings(BaseSettings):
 
     supabase_url: str
     supabase_service_role_key: str
+    supabase_anon_key: str
 
     anthropic_api_key: str
 
@@ -17,6 +18,12 @@ class Settings(BaseSettings):
 
     lastfm_api_key: str
     musicbrainz_user_agent: str
+
+    cors_origins: str = "http://localhost:3000"
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
 
 settings = Settings()
