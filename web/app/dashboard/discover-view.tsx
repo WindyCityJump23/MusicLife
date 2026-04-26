@@ -40,7 +40,7 @@ export default function DiscoverView() {
         return;
       }
       const data = await res.json();
-      setResults(data.recommendations ?? []);
+      setResults(data.results ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
       setResults([]);
