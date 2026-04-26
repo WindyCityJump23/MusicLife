@@ -22,9 +22,7 @@ export default function DiscoverView() {
     setLoading(true);
     setError(null);
     try {
-      // TODO: Attach Supabase JWT once auth is wired. The /recommend endpoint
-      // requires a bearer token. For now this will 401 until that lands.
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/recommend`, {
+      const res = await fetch(`/api/recommend`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
