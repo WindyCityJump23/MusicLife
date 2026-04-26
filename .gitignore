@@ -13,6 +13,7 @@ __pycache__/
 .next/
 dist/
 build/
+*.tsbuildinfo
 
 # misc
 .DS_Store
