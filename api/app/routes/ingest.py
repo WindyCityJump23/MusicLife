@@ -58,6 +58,13 @@ def _run_embed_artists():
 
 @router.post("/sources")
 def ingest_sources(bg: BackgroundTasks):
-    # For each active source: fetch feed, parse posts, LLM-extract artists,
-    # canonicalize, embed excerpts, insert mentions.
+    # For each active source: fetch feed, parse posts, match artists,
+    # embed excerpts, insert mentions. Implementation: app/services/source_ingest.py
+    bg.add_task(_run_source_ingest)
     return {"status": "queued"}
+
+
+def _run_source_ingest():
+    from app.services.source_ingest import run_source_ingest
+
+    run_source_ingest()

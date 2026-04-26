@@ -33,8 +33,15 @@ This audit tracks what has been fixed and what remains.
    - Users will hit 401s from Spotify after the initial session without re-authenticating.
 
 7. **Add ingestion idempotency + dedupe keys**
-   - `mentions` needs a uniqueness key such as `(source_id, url, artist_id, published_at)` or a content hash.
-   - `listen_events` needs unique source event IDs or a hash to avoid duplicates on re-ingest.
+   - `mentions` now has `UNIQUE (source_id, url, artist_id)` (migration 005) and `source_ingest.py` uses it for ON CONFLICT DO NOTHING. ✅
+   - `listen_events` already has `UNIQUE (user_id, track_id, listened_at)` (migration 004). ✅
+
+8. **Editorial source ingestion — implemented** ✅
+   - `app/services/source_ingest.py` fetches RSS + Reddit feeds, extracts artist mentions
+     against the existing artist catalog, embeds excerpts, and upserts into `mentions`.
+   - `/ingest/sources` is wired to the background runner; the dashboard exposes a "Fetch
+     sources" button.
+   - The ranking system (`ranking.py`) was already consuming mentions; this closes the loop.
 
 ### Data model
 
