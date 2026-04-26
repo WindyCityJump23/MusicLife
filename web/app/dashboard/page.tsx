@@ -6,6 +6,7 @@ import LibraryView from "./library-view";
 import DiscoverView from "./discover-view";
 import ActivityView from "./activity-view";
 import SavedView from "./saved-view";
+import Player from "./Player";
 
 const TITLES: Record<View, string> = {
   library: "Library",
@@ -36,12 +37,10 @@ export default function Dashboard() {
       <aside className="border-l border-neutral-200 bg-neutral-50/40 overflow-y-auto">
         <div className="px-5 py-5 border-b border-neutral-200">
           <h3 className="text-sm font-semibold tracking-tight">Now playing</h3>
-          <p className="text-xs text-neutral-500 mt-0.5">Why this surfaced</p>
+          <p className="text-xs text-neutral-500 mt-0.5">Spotify Web Playback</p>
         </div>
         <div className="p-5">
-          <div className="border border-dashed border-neutral-300 rounded-md p-6 text-center text-xs text-neutral-500">
-            Select a track to see why it surfaced.
-          </div>
+          <Player />
         </div>
       </aside>
     </div>
