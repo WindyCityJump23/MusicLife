@@ -1,10 +1,4 @@
-// The dashboard. Three zones:
-//   Left rail:  saved curated views, source filter
-//   Center:     prompt box + ranked recommendation cards
-//   Right rail: playback + "now playing" + why-this synthesis
-//
-// Week 1 goal: render anything real here once OAuth succeeds.
-// Week 4 goal: full layout wired to /recommend and /synthesize.
+import SyncButton from "./SyncButton";
 
 export default function Dashboard() {
   return (
@@ -18,10 +12,7 @@ export default function Dashboard() {
         </header>
 
         <section className="border rounded-lg p-6">
-          <p className="text-sm text-neutral-500">
-            Placeholder. Wire to the API&apos;s /ingest/spotify-library endpoint,
-            then render the user&apos;s top artists as a sanity check.
-          </p>
+          <SyncButton />
         </section>
       </div>
     </main>

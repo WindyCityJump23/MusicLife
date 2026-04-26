@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
+function baseUrl(req: NextRequest): string {
+  const proto = req.headers.get("x-forwarded-proto") ?? new URL(req.url).protocol.replace(":", "");
+  const host = req.headers.get("x-forwarded-host") ?? new URL(req.url).host;
+  return `${proto}://${host}`;
+}
+
 // Exchange the authorization code for access + refresh tokens.
 // Stash tokens in HTTP-only cookies for now — a proper build would
 // store the refresh token in Supabase keyed to the user row.
@@ -9,11 +15,11 @@ export async function GET(req: NextRequest) {
   const storedState = req.cookies.get("sp_oauth_state")?.value;
 
   if (!code) {
-    return NextResponse.redirect(new URL("/?error=no_code", req.url));
+    return NextResponse.redirect(new URL("/?error=no_code", baseUrl(req)));
   }
 
   if (!returnedState || !storedState || returnedState !== storedState) {
-    return NextResponse.redirect(new URL("/?error=state_mismatch", req.url));
+    return NextResponse.redirect(new URL("/?error=state_mismatch", baseUrl(req)));
   }
 
   const body = new URLSearchParams({
@@ -36,13 +42,13 @@ export async function GET(req: NextRequest) {
   });
 
   if (!tokenRes.ok) {
-    return NextResponse.redirect(new URL("/?error=token_exchange", req.url));
+    return NextResponse.redirect(new URL("/?error=token_exchange", baseUrl(req)));
   }
 
   const tokens = await tokenRes.json();
   // tokens: { access_token, token_type, expires_in, refresh_token, scope }
 
-  const res = NextResponse.redirect(new URL("/dashboard", req.url));
+  const res = NextResponse.redirect(new URL("/dashboard", baseUrl(req)));
   res.cookies.set("sp_oauth_state", "", {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
