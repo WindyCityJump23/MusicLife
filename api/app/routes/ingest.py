@@ -34,8 +34,14 @@ def _run_spotify_ingest(user_id: str, token: str):
 
 @router.post("/enrich-artists")
 def enrich_artists(bg: BackgroundTasks):
-    # Walk artists with null musicbrainz_id, hit MusicBrainz + Last.fm, update.
+    bg.add_task(_run_enrich_artists)
     return {"status": "queued"}
+
+
+def _run_enrich_artists():
+    from app.services.artist_enrichment import run_artist_enrichment
+
+    run_artist_enrichment()
 
 
 @router.post("/embed-artists")
