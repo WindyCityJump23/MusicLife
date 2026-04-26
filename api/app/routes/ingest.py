@@ -46,8 +46,14 @@ def _run_enrich_artists():
 
 @router.post("/embed-artists")
 def embed_artists(bg: BackgroundTasks):
-    # Walk artists with null embedding, build embedding_source text, embed, update.
+    bg.add_task(_run_embed_artists)
     return {"status": "queued"}
+
+
+def _run_embed_artists():
+    from app.services.artist_embeddings import run_artist_embeddings
+
+    run_artist_embeddings()
 
 
 @router.post("/sources")

@@ -2,6 +2,7 @@
 
 import SyncButton from "./SyncButton";
 import EnrichButton from "./EnrichButton";
+import EmbedButton from "./EmbedButton";
 
 export type View = "library" | "discover" | "activity";
 
@@ -50,6 +51,7 @@ export default function Sidebar({
         </p>
         <SyncButton />
         <EnrichButton />
+        <EmbedButton />
       </div>
     </aside>
   );
