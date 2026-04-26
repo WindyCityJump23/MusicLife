@@ -15,7 +15,7 @@ from app.services.embedding import embedder
 from app.services.supabase_client import admin_supabase
 
 
-def run_artist_embeddings(batch_size: int = 128) -> None:
+def run_artist_embeddings(batch_size: int = 18) -> None:
     result = (
         admin_supabase.table("artists")
         .select("id, name, embedding_source")
@@ -42,9 +42,8 @@ def run_artist_embeddings(batch_size: int = 128) -> None:
         )
         return
 
-    rows = [
-        {"id": candidates[i]["id"], "embedding": vectors[i]}
-        for i in range(len(candidates))
-    ]
-    admin_supabase.table("artists").upsert(rows, on_conflict="id").execute()
-    print(f"artist_embeddings: wrote {len(rows)} embeddings")
+    for i, artist in enumerate(candidates):
+        admin_supabase.table("artists").update(
+            {"embedding": vectors[i]}
+        ).eq("id", artist["id"]).execute()
+    print(f"artist_embeddings: wrote {len(candidates)} embeddings")
