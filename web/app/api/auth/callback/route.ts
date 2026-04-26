@@ -57,11 +57,22 @@ export async function GET(req: NextRequest) {
     path: "/",
   });
 
+  const expiresIn = Number(tokens.expires_in) || 3600;
+  const cookieAge = Math.max(expiresIn - 60, 60);
+
   res.cookies.set("sp_access", tokens.access_token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-    maxAge: Math.max((tokens.expires_in ?? 3600) - 60, 60),
+    maxAge: cookieAge,
+    path: "/",
+  });
+
+  res.cookies.set("sp_access_expires_at", String(Date.now() + expiresIn * 1000), {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: cookieAge,
     path: "/",
   });
 
