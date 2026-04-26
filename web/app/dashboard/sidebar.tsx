@@ -5,12 +5,13 @@ import EnrichButton from "./EnrichButton";
 import EmbedButton from "./EmbedButton";
 import SourcesButton from "./SourcesButton";
 
-export type View = "library" | "discover" | "activity";
+export type View = "library" | "discover" | "activity" | "saved";
 
 const NAV: { id: View; label: string }[] = [
   { id: "library", label: "Library" },
   { id: "discover", label: "Discover" },
   { id: "activity", label: "Activity" },
+  { id: "saved", label: "Saved" },
 ];
 
 export default function Sidebar({

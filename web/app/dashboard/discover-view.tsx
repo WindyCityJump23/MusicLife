@@ -4,7 +4,7 @@ import { useState } from "react";
 
 type SignalBreakdown = { affinity: number; context: number; editorial: number };
 type Recommendation = {
-  artist_id: number;
+  artist_id: string;
   artist_name: string;
   score: number;
   signals: SignalBreakdown;
@@ -17,22 +17,25 @@ export default function DiscoverView() {
   const [results, setResults] = useState<Recommendation[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastQuery, setLastQuery] = useState<{
+    prompt: string;
+    weights: { affinity: number; context: number; editorial: number };
+  } | null>(null);
+  const [savedToast, setSavedToast] = useState<string | null>(null);
 
   async function handleSubmit() {
     setLoading(true);
     setError(null);
     try {
+      const normalized = {
+        affinity: weights.affinity / 100,
+        context: weights.context / 100,
+        editorial: weights.editorial / 100,
+      };
       const res = await fetch(`/api/recommend`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt,
-          weights: {
-            affinity: weights.affinity / 100,
-            context: weights.context / 100,
-            editorial: weights.editorial / 100,
-          },
-        }),
+        body: JSON.stringify({ prompt, weights: normalized }),
       });
       if (!res.ok) {
         setResults([]);
@@ -41,11 +44,48 @@ export default function DiscoverView() {
       }
       const data = await res.json();
       setResults(data.results ?? []);
+      setLastQuery({ prompt, weights: normalized });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
       setResults([]);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleSaveView() {
+    if (!results || results.length === 0 || !lastQuery) return;
+
+    const defaultName = lastQuery.prompt.trim() || "Untitled view";
+    const name = window.prompt("Name this view", defaultName.slice(0, 60));
+    if (!name) return;
+
+    try {
+      const res = await fetch("/api/views", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          prompt: lastQuery.prompt,
+          weights: lastQuery.weights,
+          items: results.map((r, i) => ({
+            artist_id: Number(r.artist_id),
+            rank: i + 1,
+            reason: r.reasons[0] ?? null,
+          })),
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setSavedToast(`Save failed: ${body.error ?? body.detail ?? res.status}`);
+      } else {
+        setSavedToast("Saved");
+        window.dispatchEvent(new CustomEvent("views:changed"));
+      }
+    } catch (err) {
+      setSavedToast(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setTimeout(() => setSavedToast(null), 2500);
     }
   }
 
@@ -78,7 +118,15 @@ export default function DiscoverView() {
           />
         </div>
 
-        <div className="flex justify-end">
+        <div className="flex justify-end items-center gap-2">
+          {results && results.length > 0 && lastQuery && (
+            <button
+              onClick={handleSaveView}
+              className="px-3 py-1.5 rounded-md border border-neutral-200 bg-white text-xs text-neutral-700 hover:bg-neutral-50 hover:border-neutral-300"
+            >
+              Save view
+            </button>
+          )}
           <button
             onClick={handleSubmit}
             disabled={loading}
@@ -87,6 +135,9 @@ export default function DiscoverView() {
             {loading ? "Thinking…" : "Get recommendations"}
           </button>
         </div>
+        {savedToast && (
+          <div className="text-right text-[11px] text-emerald-600">{savedToast}</div>
+        )}
       </div>
 
       <div>
@@ -109,7 +160,11 @@ export default function DiscoverView() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {results.map((r) => (
-              <RecommendationCard key={r.artist_id} rec={r} />
+              <RecommendationCard
+                key={r.artist_id}
+                rec={r}
+                prompt={lastQuery?.prompt ?? ""}
+              />
             ))}
           </div>
         )}
@@ -154,7 +209,48 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   );
 }
 
-function RecommendationCard({ rec }: { rec: Recommendation }) {
+function RecommendationCard({
+  rec,
+  prompt,
+}: {
+  rec: Recommendation;
+  prompt: string;
+}) {
+  const [synthState, setSynthState] = useState<
+    | { status: "idle" }
+    | { status: "loading" }
+    | { status: "ready"; paragraph: string }
+    | { status: "error"; message: string }
+  >({ status: "idle" });
+
+  async function loadSynthesis() {
+    setSynthState({ status: "loading" });
+    try {
+      const res = await fetch("/api/synthesize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          artist_id: Number(rec.artist_id),
+          prompt: prompt || null,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setSynthState({
+          status: "error",
+          message: data.error ?? data.detail ?? `HTTP ${res.status}`,
+        });
+        return;
+      }
+      setSynthState({ status: "ready", paragraph: data.paragraph ?? "" });
+    } catch (err) {
+      setSynthState({
+        status: "error",
+        message: err instanceof Error ? err.message : "Network error",
+      });
+    }
+  }
+
   return (
     <div className="border border-neutral-200 rounded-md p-4 space-y-3">
       <div className="flex items-baseline justify-between gap-2">
@@ -173,6 +269,25 @@ function RecommendationCard({ rec }: { rec: Recommendation }) {
           ))}
         </ul>
       )}
+      <div className="pt-1 border-t border-neutral-100">
+        {synthState.status === "idle" && (
+          <button
+            onClick={loadSynthesis}
+            className="text-xs text-emerald-700 hover:text-emerald-800"
+          >
+            Why this?
+          </button>
+        )}
+        {synthState.status === "loading" && (
+          <div className="text-xs text-neutral-400">Synthesizing…</div>
+        )}
+        {synthState.status === "ready" && (
+          <p className="text-xs text-neutral-700 leading-relaxed">{synthState.paragraph}</p>
+        )}
+        {synthState.status === "error" && (
+          <div className="text-xs text-red-500">{synthState.message}</div>
+        )}
+      </div>
     </div>
   );
 }

@@ -5,11 +5,13 @@ import Sidebar, { type View } from "./sidebar";
 import LibraryView from "./library-view";
 import DiscoverView from "./discover-view";
 import ActivityView from "./activity-view";
+import SavedView from "./saved-view";
 
 const TITLES: Record<View, string> = {
   library: "Library",
   discover: "Discover",
   activity: "Activity",
+  saved: "Saved views",
 };
 
 export default function Dashboard() {
@@ -27,6 +29,7 @@ export default function Dashboard() {
           {view === "library" && <LibraryView />}
           {view === "discover" && <DiscoverView />}
           {view === "activity" && <ActivityView />}
+          {view === "saved" && <SavedView />}
         </div>
       </main>
 
