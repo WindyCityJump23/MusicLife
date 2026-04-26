@@ -66,24 +66,29 @@ def _enrich_one(client: httpx.Client, artist: dict) -> None:
     name = artist["name"]
     artist_id = artist["id"]
 
-    mbid = _fetch_musicbrainz(client, name)
-    lastfm = _fetch_lastfm(client, name)
-
     update: dict = {}
 
-    if mbid:
-        update["musicbrainz_id"] = mbid
+    try:
+        mbid = _fetch_musicbrainz(client, name)
+        if mbid:
+            update["musicbrainz_id"] = mbid
+    except Exception as exc:
+        print(f"artist_enrichment: MusicBrainz failed for {name!r}: {exc}")
 
-    if lastfm:
-        if lastfm.get("url"):
-            update["lastfm_url"] = lastfm["url"]
-        embedding_source = _build_embedding_source(
-            bio=lastfm.get("bio", ""),
-            tags=lastfm.get("tags", []),
-            similar=lastfm.get("similar", []),
-        )
-        if embedding_source:
-            update["embedding_source"] = embedding_source
+    try:
+        lastfm = _fetch_lastfm(client, name)
+        if lastfm:
+            if lastfm.get("url"):
+                update["lastfm_url"] = lastfm["url"]
+            embedding_source = _build_embedding_source(
+                bio=lastfm.get("bio", ""),
+                tags=lastfm.get("tags", []),
+                similar=lastfm.get("similar", []),
+            )
+            if embedding_source:
+                update["embedding_source"] = embedding_source
+    except Exception as exc:
+        print(f"artist_enrichment: Last.fm failed for {name!r}: {exc}")
 
     if update:
         admin_supabase.table("artists").update(update).eq("id", artist_id).execute()
