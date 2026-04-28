@@ -17,30 +17,26 @@ type Recommendation = {
 };
 
 export default function DiscoverView() {
-  const [prompt,   setPrompt]   = useState("");
-  const [weights,  setWeights]  = useState({ affinity: 40, context: 40, editorial: 20 });
-  const [results,  setResults]  = useState<Recommendation[] | null>(null);
-  const [loading,  setLoading]  = useState(false);
-  const [error,    setError]    = useState<string | null>(null);
-  const [lastQuery,setLastQuery]= useState<{
-    prompt: string;
-    weights: { affinity: number; context: number; editorial: number };
-  } | null>(null);
-  const [savedToast, setSavedToast] = useState<string | null>(null);
+  const [prompt, setPrompt] = useState("");
+  const [weights, setWeights] = useState({ affinity: 40, context: 40, editorial: 20 });
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [results, setResults] = useState<Recommendation[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit() {
     setLoading(true);
     setError(null);
     try {
       const normalized = {
-        affinity:  weights.affinity / 100,
-        context:   weights.context / 100,
+        affinity: weights.affinity / 100,
+        context: weights.context / 100,
         editorial: weights.editorial / 100,
       };
       const res = await fetch(`/api/recommend`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, weights: normalized }),
+        body: JSON.stringify({ prompt: prompt || null, weights: normalized }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -49,7 +45,6 @@ export default function DiscoverView() {
         return;
       }
       setResults(data.results ?? []);
-      setLastQuery({ prompt, weights: normalized });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
       setResults([]);
@@ -58,391 +53,269 @@ export default function DiscoverView() {
     }
   }
 
-  async function handleSaveView() {
-    if (!results || results.length === 0 || !lastQuery) return;
-    const defaultName = lastQuery.prompt.trim() || "Untitled view";
-    const name = window.prompt("Name this view", defaultName.slice(0, 60));
-    if (!name) return;
-
-    try {
-      const res = await fetch("/api/views", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          prompt:  lastQuery.prompt,
-          weights: lastQuery.weights,
-          items: results.map((r, i) => ({
-            artist_id: Number(r.artist_id),
-            rank:      i + 1,
-            reason:    r.reasons[0] ?? null,
-          })),
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setSavedToast(`Save failed: ${body.error ?? body.detail ?? res.status}`);
-      } else {
-        setSavedToast("Saved");
-        window.dispatchEvent(new CustomEvent("views:changed"));
-      }
-    } catch (err) {
-      setSavedToast(err instanceof Error ? err.message : "Network error");
-    } finally {
-      setTimeout(() => setSavedToast(null), 2500);
-    }
-  }
-
   return (
-    <div className="space-y-6 max-w-3xl">
-      <div className="space-y-3">
-        <input
-          type="text"
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-          placeholder="Find me something like…"
-          className="w-full px-3 py-2 border border-neutral-200 rounded-md text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-        />
-
-        <div className="grid grid-cols-3 gap-4 pt-1">
-          <Slider label="Taste"  hint="Weight toward your personal listening history" value={weights.affinity}  onChange={(v) => setWeights({ ...weights, affinity: v })} />
-          <Slider label="Mood"   hint="Weight toward matching your search prompt"     value={weights.context}   onChange={(v) => setWeights({ ...weights, context: v })} />
-          <Slider label="Buzz"   hint="Weight toward recent editorial coverage"       value={weights.editorial} onChange={(v) => setWeights({ ...weights, editorial: v })} />
-        </div>
-
-        <div className="flex justify-end items-center gap-2">
-          {results && results.length > 0 && lastQuery && (
-            <button
-              onClick={handleSaveView}
-              className="px-3 py-1.5 rounded-md border border-neutral-200 bg-white text-xs text-neutral-700 hover:bg-neutral-50 hover:border-neutral-300"
-            >
-              Save view
-            </button>
-          )}
+    <div className="max-w-2xl space-y-5">
+      {/* Search */}
+      <div className="space-y-2">
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+            placeholder="What are you in the mood for? (e.g. chill lo-fi, energetic hip-hop, 90s rock…)"
+            className="flex-1 px-4 py-2.5 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 placeholder:text-neutral-400"
+          />
           <button
             onClick={handleSubmit}
             disabled={loading}
-            className="px-4 py-1.5 rounded-md bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-5 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
           >
-            {loading ? "Thinking…" : "Get recommendations"}
+            {loading ? "Finding…" : "Discover"}
           </button>
         </div>
-        {savedToast && (
-          <div className="text-right text-[11px] text-emerald-600">{savedToast}</div>
+
+        {/* Advanced toggle */}
+        <button
+          onClick={() => setShowAdvanced(!showAdvanced)}
+          className="text-[11px] text-neutral-400 hover:text-neutral-600"
+        >
+          {showAdvanced ? "▾ Hide tuning" : "▸ Tune weights"}
+        </button>
+        {showAdvanced && (
+          <div className="grid grid-cols-3 gap-4 pt-1 pb-2">
+            <WeightSlider label="Taste" value={weights.affinity} onChange={(v) => setWeights({ ...weights, affinity: v })} />
+            <WeightSlider label="Mood" value={weights.context} onChange={(v) => setWeights({ ...weights, context: v })} />
+            <WeightSlider label="Buzz" value={weights.editorial} onChange={(v) => setWeights({ ...weights, editorial: v })} />
+          </div>
         )}
       </div>
 
-      <div>
-        {error && (
-          <div className="border border-red-200 bg-red-50 text-red-700 rounded-md p-3 text-sm mb-3">
-            {error}
-          </div>
-        )}
+      {/* Error */}
+      {error && (
+        <div className="border border-red-200 bg-red-50 text-red-700 rounded-lg p-3 text-sm">
+          {error}
+        </div>
+      )}
 
-        {results === null ? (
-          <DiscoverEmptyInitial />
-        ) : results.length === 0 ? (
-          <DiscoverEmptyNoResults />
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {results.map((r) => (
-              <RecommendationCard
-                key={r.artist_id}
-                rec={r}
-                prompt={lastQuery?.prompt ?? ""}
-              />
+      {/* Results */}
+      {results === null ? (
+        <EmptyInitial />
+      ) : results.length === 0 && !error ? (
+        <EmptyNoResults />
+      ) : results.length > 0 ? (
+        <div className="space-y-1">
+          <p className="text-xs text-neutral-400 pb-1">
+            {results.length} artist{results.length !== 1 ? "s" : ""} found
+          </p>
+          <div className="border border-neutral-200 rounded-lg overflow-hidden divide-y divide-neutral-100">
+            {results.map((r, i) => (
+              <ArtistRow key={r.artist_id} rec={r} rank={i + 1} />
             ))}
           </div>
-        )}
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-// ── Empty states ─────────────────────────────────────────────────
+/* ═══════════════════════════════════════════════════════════════ */
+/*  Artist Row                                                    */
+/* ═══════════════════════════════════════════════════════════════ */
 
-function DiscoverEmptyInitial() {
-  return (
-    <div className="border border-dashed border-neutral-300 rounded-xl p-10 text-center space-y-2">
-      <div className="text-4xl">🔍</div>
-      <div className="text-sm font-medium text-neutral-700">Discover new music</div>
-      <div className="text-xs text-neutral-500 max-w-xs mx-auto leading-relaxed">
-        Type what you&apos;re in the mood for and hit{" "}
-        <span className="font-medium text-emerald-700">Get recommendations</span>.
-        <br />
-        <span className="text-neutral-400">
-          (Make sure you&apos;ve run all 4 setup steps in the sidebar first.)
-        </span>
-      </div>
-    </div>
-  );
-}
+function ArtistRow({ rec, rank }: { rec: Recommendation; rank: number }) {
+  const { playArtist } = usePlayer();
+  const [playState, setPlayState] = useState<"idle" | "loading">("idle");
+  const [expanded, setExpanded] = useState(false);
 
-function DiscoverEmptyNoResults() {
-  return (
-    <div className="border border-dashed border-neutral-300 rounded-xl p-10 text-center space-y-2">
-      <div className="text-4xl">🎻</div>
-      <div className="text-sm font-medium text-neutral-700">No results yet</div>
-      <div className="text-xs text-neutral-500 max-w-xs mx-auto leading-relaxed">
-        Run all 4 setup steps first, then come back here.
-        <br />
-        <span className="text-neutral-400">
-          Your library needs to be synced, enriched, and embedded before Discover can work.
-        </span>
-      </div>
-    </div>
-  );
-}
-
-// ── Slider ────────────────────────────────────────────────────────
-
-function Slider({
-  label,
-  hint,
-  value,
-  onChange,
-}: {
-  label: string;
-  hint?: string;
-  value: number;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <label className="block" title={hint}>
-      <div className="flex items-center justify-between text-xs text-neutral-600 mb-1">
-        <span className="font-medium">{label}</span>
-        <span className="tabular-nums text-neutral-400">{value}%</span>
-      </div>
-      <input
-        type="range"
-        min={0}
-        max={100}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full accent-emerald-600"
-      />
-    </label>
-  );
-}
-
-// ── Helpers ───────────────────────────────────────────────────────
-
-function formatMentionDate(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
-  } catch {
-    return "";
-  }
-}
-
-// ── Recommendation card ───────────────────────────────────────────
-
-type PlayState = "idle" | "loading" | "error";
-
-function RecommendationCard({
-  rec,
-  prompt,
-}: {
-  rec: Recommendation;
-  prompt: string;
-}) {
-  const [synthState, setSynthState] = useState<
-    | { status: "idle" }
-    | { status: "loading" }
-    | { status: "ready"; paragraph: string }
-    | { status: "error"; message: string }
-  >({ status: "idle" });
-
-  const [playState, setPlayState] = useState<PlayState>("idle");
-  const [playError, setPlayError] = useState<string | null>(null);
-  const { playArtist, isReady: playerReady } = usePlayer();
-
-  const hasPrompt = prompt.trim() !== "";
-
-  async function loadSynthesis() {
-    setSynthState({ status: "loading" });
-    try {
-      const res = await fetch("/api/synthesize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          artist_id: Number(rec.artist_id),
-          prompt: prompt || null,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setSynthState({
-          status: "error",
-          message: data.error ?? data.detail ?? `HTTP ${res.status}`,
-        });
-        return;
-      }
-      setSynthState({ status: "ready", paragraph: data.paragraph ?? "" });
-    } catch (err) {
-      setSynthState({
-        status: "error",
-        message: err instanceof Error ? err.message : "Network error",
-      });
-    }
-  }
+  const matchPct = Math.round(rec.score * 100);
+  const spotifyUrl = `https://open.spotify.com/search/${encodeURIComponent(rec.artist_name)}`;
 
   async function handlePlay() {
     setPlayState("loading");
-    setPlayError(null);
     const result = await playArtist(rec.artist_name);
+    setPlayState("idle");
     if (!result.ok) {
-      setPlayError(result.error ?? "Playback failed");
-      setPlayState("error");
-      setTimeout(() => { setPlayState("idle"); setPlayError(null); }, 5000);
-    } else {
-      setPlayState("idle");
+      // Fallback: open Spotify search in new tab
+      window.open(spotifyUrl, "_blank", "noopener");
     }
   }
 
   return (
-    <div className="border border-neutral-200 rounded-lg p-4 space-y-3 hover:border-neutral-300 hover:shadow-sm transition-all">
-      {/* Header row: name + play button */}
-      <div className="flex items-start gap-2">
+    <div className="group">
+      <div className="flex items-center gap-3 px-3 py-2.5 hover:bg-neutral-50 transition-colors">
+        {/* Rank */}
+        <span className="w-6 text-right text-xs tabular-nums text-neutral-300 font-medium shrink-0">
+          {rank}
+        </span>
+
+        {/* Artist info */}
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold text-neutral-900 truncate">
-            {rec.artist_name}
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-neutral-900 truncate">
+              {rec.artist_name}
+            </span>
+            {rec.genres && rec.genres.length > 0 && (
+              <span className="hidden sm:inline text-[10px] text-neutral-400 truncate">
+                {rec.genres.slice(0, 2).join(" · ")}
+              </span>
+            )}
           </div>
-          {/* Genre pills */}
-          {rec.genres && rec.genres.length > 0 && (
-            <div className="flex flex-wrap gap-1 mt-1">
-              {rec.genres.slice(0, 3).map((g) => (
-                <span
-                  key={g}
-                  className="text-[10px] text-neutral-500 bg-neutral-100 rounded-full px-2 py-0.5 capitalize"
-                >
-                  {g}
-                </span>
-              ))}
-            </div>
+          {/* Reason line */}
+          {rec.reasons.length > 0 && (
+            <p className="text-[11px] text-neutral-400 truncate mt-0.5">
+              {rec.reasons[0]}
+            </p>
           )}
+        </div>
+
+        {/* Match score badge */}
+        <div
+          className="shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-xs font-bold"
+          style={{
+            background: matchPct > 70
+              ? "linear-gradient(135deg, #059669, #10b981)"
+              : matchPct > 40
+              ? "linear-gradient(135deg, #d97706, #f59e0b)"
+              : "linear-gradient(135deg, #9ca3af, #d1d5db)",
+            color: matchPct > 40 ? "white" : "#374151",
+          }}
+          title={`Match score: ${matchPct}%`}
+        >
+          {matchPct}
         </div>
 
         {/* Play button */}
         <button
           onClick={handlePlay}
           disabled={playState === "loading"}
-          title={
-            playState === "error"
-              ? (playError ?? "Playback failed")
-              : !playerReady
-              ? "Player not connected — click \"Transfer to this tab\" in the player panel"
-              : `Play ${rec.artist_name} on Spotify`
-          }
-          className={[
-            "flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center mt-0.5",
-            "transition-all active:scale-95 disabled:cursor-not-allowed",
-            playState === "error"
-              ? "bg-red-100 text-red-600 border border-red-200"
-              : playState === "loading"
-              ? "bg-neutral-100 text-neutral-400 border border-neutral-200"
-              : "bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm hover:shadow-emerald-200 hover:shadow-md",
-          ].join(" ")}
+          title={`Play ${rec.artist_name}`}
+          className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-neutral-900 text-white hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-40"
         >
           {playState === "loading" ? (
-            <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
               <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
               <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
             </svg>
-          ) : playState === "error" ? (
-            <span className="text-xs font-bold">✕</span>
           ) : (
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
               <path d="M8 5v14l11-7z" />
             </svg>
           )}
         </button>
+
+        {/* Spotify link */}
+        <a
+          href={spotifyUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Open in Spotify"
+          className="shrink-0 text-neutral-300 hover:text-[#1DB954] transition-colors"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z" />
+          </svg>
+        </a>
+
+        {/* Expand toggle */}
+        {(rec.top_mention || rec.reasons.length > 1) && (
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="shrink-0 text-neutral-300 hover:text-neutral-500 transition-colors text-xs"
+            title="More info"
+          >
+            {expanded ? "▾" : "▸"}
+          </button>
+        )}
       </div>
 
-      {/* Play error message */}
-      {playState === "error" && playError && (
-        <div className="text-[10px] text-red-500 bg-red-50 rounded px-2 py-1">
-          {playError}
-        </div>
-      )}
-
-      {/* Signal bars with descriptive labels */}
-      <div className="space-y-1.5">
-        <SignalBar label="Taste match" value={rec.signals.affinity} />
-        {hasPrompt && <SignalBar label="Mood fit" value={rec.signals.context} />}
-        <SignalBar label="Buzz" value={rec.signals.editorial} />
-      </div>
-
-      {/* Reason chips + mention count */}
-      {(rec.reasons.length > 0 || rec.mention_count > 0) && (
-        <div className="flex flex-wrap gap-1.5">
-          {rec.reasons.map((r, i) => (
-            <span
-              key={i}
-              className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-full px-2 py-0.5"
-            >
-              {r}
-            </span>
-          ))}
-          {rec.mention_count > 0 && (
-            <span className="text-[10px] text-neutral-500 bg-neutral-50 border border-neutral-100 rounded-full px-2 py-0.5">
-              {rec.mention_count} press mention{rec.mention_count !== 1 ? "s" : ""}
-            </span>
+      {/* Expanded details */}
+      {expanded && (
+        <div className="px-3 pb-3 pl-12 space-y-2">
+          {/* All reasons */}
+          {rec.reasons.length > 1 && (
+            <div className="flex flex-wrap gap-1.5">
+              {rec.reasons.map((r, i) => (
+                <span key={i} className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-full px-2 py-0.5">
+                  {r}
+                </span>
+              ))}
+              {rec.mention_count > 0 && (
+                <span className="text-[10px] text-neutral-500 bg-neutral-50 border border-neutral-100 rounded-full px-2 py-0.5">
+                  {rec.mention_count} mention{rec.mention_count !== 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+          )}
+          {/* Editorial excerpt */}
+          {rec.top_mention?.excerpt && (
+            <div className="bg-neutral-50 border border-neutral-100 rounded-md px-3 py-2">
+              <p className="text-[11px] text-neutral-600 leading-relaxed line-clamp-2 italic">
+                &ldquo;{rec.top_mention.excerpt}&rdquo;
+              </p>
+              {rec.top_mention.source && (
+                <p className="text-[10px] text-neutral-400 mt-1">
+                  — {rec.top_mention.source}
+                </p>
+              )}
+            </div>
+          )}
+          {/* Genre pills */}
+          {rec.genres && rec.genres.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {rec.genres.slice(0, 5).map((g) => (
+                <span key={g} className="text-[10px] text-neutral-500 bg-neutral-100 rounded-full px-2 py-0.5 capitalize">
+                  {g}
+                </span>
+              ))}
+            </div>
           )}
         </div>
       )}
+    </div>
+  );
+}
 
-      {/* Inline editorial excerpt */}
-      {rec.top_mention && rec.top_mention.excerpt && (
-        <div className="bg-neutral-50 border border-neutral-100 rounded-md px-3 py-2 space-y-1">
-          <p className="text-[11px] text-neutral-600 leading-relaxed line-clamp-2 italic">
-            &ldquo;{rec.top_mention.excerpt}&rdquo;
-          </p>
-          <div className="text-[10px] text-neutral-400">
-            {rec.top_mention.source && (
-              <span className="font-medium text-neutral-500">{rec.top_mention.source}</span>
-            )}
-            {rec.top_mention.source && rec.top_mention.published_at && " · "}
-            {rec.top_mention.published_at && formatMentionDate(rec.top_mention.published_at)}
-          </div>
-        </div>
-      )}
+/* ═══════════════════════════════════════════════════════════════ */
+/*  Small components                                              */
+/* ═══════════════════════════════════════════════════════════════ */
 
-      {/* Deep-dive synthesis */}
-      <div className="pt-1 border-t border-neutral-100">
-        {synthState.status === "idle" && (
-          <button
-            onClick={loadSynthesis}
-            className="text-xs text-emerald-700 hover:text-emerald-800 font-medium"
-          >
-            Full explanation →
-          </button>
-        )}
-        {synthState.status === "loading" && (
-          <div className="text-xs text-neutral-400">Generating explanation…</div>
-        )}
-        {synthState.status === "ready" && (
-          <p className="text-xs text-neutral-700 leading-relaxed">{synthState.paragraph}</p>
-        )}
-        {synthState.status === "error" && (
-          <div className="text-xs text-red-500">{synthState.message}</div>
-        )}
+function WeightSlider({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+  return (
+    <label className="block">
+      <div className="flex items-center justify-between text-xs text-neutral-600 mb-1">
+        <span className="font-medium">{label}</span>
+        <span className="tabular-nums text-neutral-400">{value}%</span>
+      </div>
+      <input type="range" min={0} max={100} value={value} onChange={(e) => onChange(Number(e.target.value))} className="w-full accent-emerald-600" />
+    </label>
+  );
+}
+
+function EmptyInitial() {
+  return (
+    <div className="border border-dashed border-neutral-200 rounded-xl p-12 text-center space-y-3">
+      <div className="text-4xl">🎧</div>
+      <div>
+        <p className="text-sm font-medium text-neutral-700">Discover new music</p>
+        <p className="text-xs text-neutral-400 mt-1 max-w-xs mx-auto leading-relaxed">
+          Describe what you&apos;re in the mood for, or just hit <strong>Discover</strong> to see what matches your taste.
+        </p>
       </div>
     </div>
   );
 }
 
-function SignalBar({ label, value }: { label: string; value: number }) {
-  const pct = Math.max(0, Math.min(1, value)) * 100;
+function EmptyNoResults() {
   return (
-    <div className="flex items-center gap-2 text-[10px] text-neutral-500">
-      <span className="w-20 shrink-0">{label}</span>
-      <div className="flex-1 h-1.5 bg-neutral-100 rounded-full">
-        <div className="h-1.5 bg-emerald-500 rounded-full transition-all" style={{ width: `${pct}%` }} />
+    <div className="border border-dashed border-neutral-200 rounded-xl p-12 text-center space-y-3">
+      <div className="text-4xl">🎻</div>
+      <div>
+        <p className="text-sm font-medium text-neutral-700">No results</p>
+        <p className="text-xs text-neutral-400 mt-1 max-w-xs mx-auto">
+          Make sure you&apos;ve synced, enriched, and embedded your library first.
+        </p>
       </div>
-      <span className="w-7 text-right tabular-nums text-neutral-400">{Math.round(pct)}%</span>
     </div>
   );
 }

@@ -48,6 +48,25 @@ def _normalize_01(value: float) -> float:
     return max(0.0, min(1.0, (value + 1.0) / 2.0))
 
 
+def _percentile_rank(values: list[float]) -> list[float]:
+    """Return percentile ranks (0.0–1.0) for a list of raw scores.
+
+    This spreads clustered scores across the full range so the UI
+    shows meaningful differences even when raw cosine similarities
+    are all bunched around 0.85.
+    """
+    if not values:
+        return []
+    n = len(values)
+    if n == 1:
+        return [1.0]
+    indexed = sorted(enumerate(values), key=lambda t: t[1])
+    ranks = [0.0] * n
+    for rank_pos, (orig_idx, _) in enumerate(indexed):
+        ranks[orig_idx] = rank_pos / (n - 1)
+    return ranks
+
+
 def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
     tracks_resp = (
         client.table("user_tracks")
@@ -190,25 +209,37 @@ def rank_candidates(
     now = datetime.now(timezone.utc)
     recent_window_days = 45
 
-    scored: list[dict] = []
-
+    # ── Phase 1: compute raw affinity for all candidates ─────────
+    raw_affinities: list[tuple[dict, float]] = []
     for artist in candidates:
         artist_id = artist.get("id")
         if artist_id is None:
             continue
-
         artist_id = int(artist_id)
-
         if exclude_library and artist_id in library_artist_ids:
             continue
-
         candidate_vec = _parse_vector(artist.get("embedding"))
         if not candidate_vec:
             continue
+        raw = _cosine_similarity(taste_vector, candidate_vec)
+        raw_affinities.append((artist, raw))
 
-        affinity_raw = _cosine_similarity(taste_vector, candidate_vec)
-        affinity = _normalize_01(affinity_raw)
+    # Percentile-rank the affinity scores so they spread 0–100% instead
+    # of clustering around 86%.
+    raw_vals = [r for _, r in raw_affinities]
+    pct_ranks = _percentile_rank(raw_vals)
 
+    scored: list[dict] = []
+    seen_names: set[str] = set()  # deduplicate by lowercase artist name
+
+    for idx, (artist, affinity_raw) in enumerate(raw_affinities):
+        artist_id = int(artist["id"])
+        name_lower = (artist.get("name") or "").strip().lower()
+        if name_lower in seen_names:
+            continue
+        seen_names.add(name_lower)
+
+        affinity = pct_ranks[idx] if pct_ranks else _normalize_01(affinity_raw)
         artist_mentions = mentions_by_artist.get(artist_id, [])
         context_scores: list[float] = []
         editorial_components: list[float] = []
@@ -249,10 +280,16 @@ def rank_candidates(
         context = max(context_scores) if context_scores else 0.0
         editorial = min(1.0, sum(editorial_components) / max(len(editorial_components), 1))
 
+        # Tiny popularity tiebreaker (0–0.02) to differentiate artists
+        # that would otherwise have identical scores.
+        pop = float(artist.get("popularity") or 0) / 100.0
+        tiebreaker = pop * 0.02
+
         final_score = (
             weights["affinity"] * affinity
             + weights["context"] * context
             + weights["editorial"] * editorial
+            + tiebreaker
         )
 
         reasons = []
