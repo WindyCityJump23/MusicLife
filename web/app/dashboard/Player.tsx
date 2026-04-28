@@ -101,9 +101,12 @@ export default function Player() {
 
       player.addListener("ready", ({ device_id }) => {
         setDeviceId(device_id);
+        localStorage.setItem("sp_device_id", device_id);
         setStatus({ kind: "ready" });
       });
-      player.addListener("not_ready", () => {});
+      player.addListener("not_ready", () => {
+        localStorage.removeItem("sp_device_id");
+      });
       player.addListener("player_state_changed", (s: SpotifyState | null) => {
         if (!s) return;
         const t = s.track_window.current_track;

@@ -272,10 +272,14 @@ function RecommendationCard({
     setPlayState("loading");
     setPlayError(null);
     try {
+      const deviceId = localStorage.getItem("sp_device_id");
       const res = await fetch("/api/play-artist", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ artist_name: rec.artist_name }),
+        body: JSON.stringify({
+          artist_name: rec.artist_name,
+          ...(deviceId ? { device_id: deviceId } : {}),
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {

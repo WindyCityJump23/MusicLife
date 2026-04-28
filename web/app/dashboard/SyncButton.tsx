@@ -99,6 +99,7 @@ export default function SyncButton({ onComplete }: { onComplete?: () => void }) 
             setState("success");
             setMessage(`Synced! ${data.stats.trackCount} tracks, ${data.stats.artistCount} artists`);
             setStageLabel("Complete!");
+            window.dispatchEvent(new CustomEvent("library:updated"));
             onComplete?.();
             return;
           }

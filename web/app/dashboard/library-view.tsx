@@ -19,9 +19,18 @@ export default function LibraryView() {
   const [data, setData] = useState<LibraryData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  // Re-fetch whenever a sync completes (SyncButton dispatches this event).
+  useEffect(() => {
+    const handler = () => setRefreshKey((k) => k + 1);
+    window.addEventListener("library:updated", handler);
+    return () => window.removeEventListener("library:updated", handler);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
     fetch("/api/library")
       .then(async (res) => {
         const body = await res.json();
@@ -41,7 +50,7 @@ export default function LibraryView() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshKey]);
 
   if (loading) {
     return (

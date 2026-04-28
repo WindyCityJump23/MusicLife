@@ -4,9 +4,11 @@ import { cookies } from "next/headers";
 export async function POST(request: NextRequest) {
   // Parse request body
   let artist_name: string | undefined;
+  let device_id: string | undefined;
   try {
     const body = await request.json();
     artist_name = body.artist_name;
+    device_id = typeof body.device_id === "string" ? body.device_id : undefined;
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
@@ -94,7 +96,13 @@ export async function POST(request: NextRequest) {
   }
 
   // ── Start playback ────────────────────────────────────────────
-  const playRes = await fetch("https://api.spotify.com/v1/me/player/play", {
+  // device_id targets the in-page Web Playback SDK player; omitting it lets
+  // Spotify pick the last active device, which may fail with 403/404.
+  const playUrl = device_id
+    ? `https://api.spotify.com/v1/me/player/play?device_id=${encodeURIComponent(device_id)}`
+    : "https://api.spotify.com/v1/me/player/play";
+
+  const playRes = await fetch(playUrl, {
     method: "PUT",
     headers: {
       Authorization: `Bearer ${access_token}`,
@@ -106,8 +114,13 @@ export async function POST(request: NextRequest) {
   // 204 = success with no content; 202 = accepted
   if (!playRes.ok && playRes.status !== 204 && playRes.status !== 202) {
     const errBody = await playRes.json().catch(() => ({}));
+    const spotifyMsg: string = errBody?.error?.message ?? "";
+    // Surface a helpful hint when Spotify rejects the request without a device.
+    const friendlyMsg = !device_id
+      ? "No active Spotify player — open the player panel and click \"Transfer to this tab\" first"
+      : spotifyMsg || "Failed to start playback";
     return NextResponse.json(
-      { error: errBody?.error?.message ?? "Failed to start playback" },
+      { error: friendlyMsg },
       { status: playRes.status }
     );
   }
