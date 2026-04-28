@@ -9,5 +9,7 @@ export async function POST() {
   res.cookies.set("sp_oauth_state", "", clear);
   res.cookies.set("app_user_id", "", clear);
   res.cookies.set("app_display_name", "", clear);
+  res.cookies.set("sp_profile_cache", "", clear);
+  res.cookies.set("sp_profile_token_hash", "", clear);
   return res;
 }
