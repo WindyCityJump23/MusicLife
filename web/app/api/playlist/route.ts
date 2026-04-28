@@ -6,14 +6,18 @@ export const dynamic = "force-dynamic";
 /**
  * POST /api/playlist
  *
- * Creates a Spotify playlist from an array of artist names.
- * For each artist, fetches their top track on Spotify and adds it to the playlist.
+ * Creates a Spotify playlist from either:
+ *   - track_uris: pre-resolved Spotify track URIs (preferred — used by the
+ *     song-level Discover flow)
+ *   - artists: artist names, in which case we resolve each to its top track
+ *     (legacy fallback)
  *
  * Body: {
- *   name?: string          — playlist name (default: "MusicLife Discover")
- *   description?: string   — playlist description
- *   artists: string[]      — list of artist names from recommendations
- *   isPublic?: boolean     — whether the playlist is public (default: false)
+ *   name?: string
+ *   description?: string
+ *   track_uris?: string[]   — Spotify track URIs (e.g. "spotify:track:...")
+ *   artists?: string[]      — artist names (fallback)
+ *   isPublic?: boolean
  * }
  *
  * Returns: { ok: true, playlist_url, playlist_id, tracks_added, tracks_failed }
@@ -24,13 +28,15 @@ export async function POST(request: NextRequest) {
 
   // ── Parse body ─────────────────────────────────────────────
   let artists: string[] = [];
+  let providedTrackUris: string[] = [];
   let playlistName = "MusicLife Discover";
   let description = "Created by MusicLife — personalized music discovery";
   let isPublic = false;
 
   try {
     const body = await request.json();
-    artists = body.artists;
+    if (Array.isArray(body.track_uris)) providedTrackUris = body.track_uris;
+    if (Array.isArray(body.artists)) artists = body.artists;
     if (body.name) playlistName = body.name;
     if (body.description) description = body.description;
     if (typeof body.isPublic === "boolean") isPublic = body.isPublic;
@@ -38,9 +44,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  if (!Array.isArray(artists) || artists.length === 0) {
+  if (providedTrackUris.length === 0 && artists.length === 0) {
     return NextResponse.json(
-      { error: "artists array is required and must not be empty" },
+      { error: "Provide track_uris or artists" },
       { status: 400 }
     );
   }
@@ -122,6 +128,38 @@ export async function POST(request: NextRequest) {
   };
   const tracks: TrackInfo[] = [];
   const failed: string[] = [];
+
+  // Fast path: caller already supplied resolved track URIs (the song-level
+  // Discover flow). Hydrate metadata in one batched call instead of doing
+  // a search + top-tracks roundtrip per artist.
+  if (providedTrackUris.length > 0) {
+    const trackIds = providedTrackUris
+      .map((uri) => (uri.startsWith("spotify:track:") ? uri.slice("spotify:track:".length) : null))
+      .filter((id): id is string => Boolean(id));
+
+    for (let i = 0; i < trackIds.length; i += 50) {
+      const batch = trackIds.slice(i, i + 50);
+      const detailsRes = await fetch(
+        `https://api.spotify.com/v1/tracks?ids=${batch.join(",")}`,
+        { headers }
+      );
+      if (!detailsRes.ok) continue;
+      const detailsData = await detailsRes.json();
+      const fetched = (detailsData.tracks ?? []).filter(Boolean);
+      for (const t of fetched) {
+        if (!t?.uri) continue;
+        tracks.push({
+          uri: t.uri,
+          name: t.name,
+          artist: t.artists?.map((a: { name: string }) => a.name).join(", ") ?? "",
+          album: t.album?.name ?? "",
+          album_art: t.album?.images?.[0]?.url ?? null,
+          duration_ms: t.duration_ms ?? 0,
+          spotify_url: t.external_urls?.spotify ?? "",
+        });
+      }
+    }
+  }
 
   // Process in batches of 5 to avoid rate limits
   for (let i = 0; i < artists.length; i += 5) {

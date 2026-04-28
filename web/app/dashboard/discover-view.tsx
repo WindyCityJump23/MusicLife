@@ -6,8 +6,15 @@ import { usePlayer } from "./player-context";
 type SignalBreakdown = { affinity: number; context: number; editorial: number };
 type TopMention = { source: string; excerpt: string; published_at: string };
 type Recommendation = {
+  track_id: string;
+  track_uri: string;
+  track_name: string;
   artist_id: string;
   artist_name: string;
+  album: string;
+  album_art: string | null;
+  duration_ms: number;
+  spotify_url: string;
   score: number;
   signals: SignalBreakdown;
   reasons: string[];
@@ -100,7 +107,7 @@ export default function DiscoverView({ onNavigate }: { onNavigate?: (view: strin
               <WeightSlider label="Buzz" hint="Currently talked about in press" value={weights.editorial} onChange={(v) => setWeights({ ...weights, editorial: v })} />
             </div>
             <p className="text-[10px] text-neutral-400 leading-relaxed">
-              🎲 Results shuffle each time you hit Discover. Artists you&apos;ve already saved to playlists are ranked lower.
+              🎲 Songs shuffle each time you hit Discover. Artists you&apos;ve already saved to playlists are ranked lower.
             </p>
           </div>
         )}
@@ -122,11 +129,10 @@ export default function DiscoverView({ onNavigate }: { onNavigate?: (view: strin
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <p className="text-xs text-neutral-400">
-              {results.length} artist{results.length !== 1 ? "s" : ""} found
+              {results.length} song{results.length !== 1 ? "s" : ""} found
             </p>
             <SavePlaylistButton
-              artists={results.map((r) => r.artist_name)}
-              prompt={prompt}
+              count={results.length}
               state={playlistState}
               onSave={async () => {
                 setPlaylistState("saving");
@@ -151,7 +157,7 @@ export default function DiscoverView({ onNavigate }: { onNavigate?: (view: strin
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
-                      artists: results.map((r) => r.artist_name),
+                      track_uris: results.map((r) => r.track_uri),
                       name,
                       description,
                     }),
@@ -235,7 +241,7 @@ export default function DiscoverView({ onNavigate }: { onNavigate?: (view: strin
 
           <div className="border border-neutral-200 rounded-lg overflow-hidden divide-y divide-neutral-100">
             {results.map((r, i) => (
-              <ArtistRow key={r.artist_id} rec={r} rank={i + 1} />
+              <SongRow key={`${r.artist_id}-${r.track_id}`} rec={r} rank={i + 1} />
             ))}
           </div>
         </div>
@@ -245,23 +251,27 @@ export default function DiscoverView({ onNavigate }: { onNavigate?: (view: strin
 }
 
 /* ═══════════════════════════════════════════════════════════════ */
-/*  Artist Row                                                    */
+/*  Song Row                                                      */
 /* ═══════════════════════════════════════════════════════════════ */
 
-function ArtistRow({ rec, rank }: { rec: Recommendation; rank: number }) {
+function SongRow({ rec, rank }: { rec: Recommendation; rank: number }) {
   const { playArtist } = usePlayer();
   const [playState, setPlayState] = useState<"idle" | "loading">("idle");
   const [expanded, setExpanded] = useState(false);
 
   const matchPct = Math.round(rec.score * 100);
-  const spotifyUrl = `https://open.spotify.com/search/${encodeURIComponent(rec.artist_name)}`;
+  const spotifyUrl =
+    rec.spotify_url ||
+    `https://open.spotify.com/search/${encodeURIComponent(`${rec.artist_name} ${rec.track_name}`)}`;
 
   async function handlePlay() {
     setPlayState("loading");
+    // The recommended song IS the artist's top track on Spotify, so
+    // playArtist() — which queues that artist's top tracks — starts
+    // playback on this exact song.
     const result = await playArtist(rec.artist_name);
     setPlayState("idle");
     if (!result.ok) {
-      // Fallback: open Spotify search in new tab
       window.open(spotifyUrl, "_blank", "noopener");
     }
   }
@@ -274,27 +284,34 @@ function ArtistRow({ rec, rank }: { rec: Recommendation; rank: number }) {
           {rank}
         </span>
 
-        {/* Artist info */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-neutral-900 truncate">
-              {rec.artist_name}
-            </span>
-            {rec.genres && rec.genres.length > 0 && (
-              <span className="hidden sm:inline text-[10px] text-neutral-400 truncate">
-                {rec.genres.slice(0, 2).join(" · ")}
-              </span>
-            )}
+        {/* Album art */}
+        {rec.album_art ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={rec.album_art}
+            alt=""
+            className="w-10 h-10 rounded object-cover shrink-0 bg-neutral-100"
+          />
+        ) : (
+          <div className="w-10 h-10 rounded bg-neutral-100 shrink-0 flex items-center justify-center text-neutral-300 text-sm">
+            ♪
           </div>
-          {/* Genres on mobile (since they're hidden in the title row) */}
-          {rec.genres && rec.genres.length > 0 && (
-            <p className="sm:hidden text-[10px] text-neutral-400 truncate mt-0.5">
-              {rec.genres.slice(0, 2).join(" · ")}
-            </p>
-          )}
+        )}
+
+        {/* Song info */}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium text-neutral-900 truncate">
+            {rec.track_name}
+          </p>
+          <p className="text-[11px] text-neutral-500 truncate">
+            {rec.artist_name}
+            {rec.album && (
+              <span className="text-neutral-400"> · {rec.album}</span>
+            )}
+          </p>
           {/* Reason line */}
           {rec.reasons.length > 0 && (
-            <p className="text-[11px] text-neutral-400 truncate mt-0.5">
+            <p className="text-[10px] text-neutral-400 truncate mt-0.5">
               {rec.reasons[0]}
             </p>
           )}
@@ -320,8 +337,8 @@ function ArtistRow({ rec, rank }: { rec: Recommendation; rank: number }) {
         <button
           onClick={handlePlay}
           disabled={playState === "loading"}
-          aria-label={`Play ${rec.artist_name}`}
-          title={`Play ${rec.artist_name}`}
+          aria-label={`Play ${rec.track_name}`}
+          title={`Play ${rec.track_name}`}
           className="shrink-0 w-9 h-9 sm:w-8 sm:h-8 rounded-full flex items-center justify-center bg-neutral-900 text-white hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-40"
         >
           {playState === "loading" ? (
@@ -432,9 +449,9 @@ function EmptyInitial() {
     <div className="border border-dashed border-neutral-200 rounded-xl p-12 text-center space-y-3">
       <div className="text-4xl">🎧</div>
       <div>
-        <p className="text-sm font-medium text-neutral-700">Discover new music</p>
+        <p className="text-sm font-medium text-neutral-700">Discover new songs</p>
         <p className="text-xs text-neutral-400 mt-1 max-w-xs mx-auto leading-relaxed">
-          Describe what you&apos;re in the mood for, or just hit <strong>Discover</strong> to see what matches your taste.
+          Describe what you&apos;re in the mood for, or just hit <strong>Discover</strong> to get songs picked for your taste.
         </p>
       </div>
     </div>
@@ -460,13 +477,11 @@ function EmptyNoResults() {
 /* ═══════════════════════════════════════════════════════════════ */
 
 function SavePlaylistButton({
-  artists,
-  prompt,
+  count,
   state,
   onSave,
 }: {
-  artists: string[];
-  prompt: string;
+  count: number;
   state: "idle" | "saving" | "done" | "error";
   onSave: () => void;
 }) {
@@ -488,9 +503,9 @@ function SavePlaylistButton({
   return (
     <button
       onClick={onSave}
-      disabled={state === "saving" || artists.length === 0}
+      disabled={state === "saving" || count === 0}
       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1DB954] text-white text-xs font-medium hover:bg-[#1aa34a] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-      title={`Save ${artists.length} artists as a Spotify playlist`}
+      title={`Save ${count} song${count !== 1 ? "s" : ""} as a Spotify playlist`}
     >
       {state === "saving" ? (
         <>
