@@ -51,23 +51,55 @@ def run_artist_embeddings(batch_size: int = BATCH_SIZE) -> dict:
 
         print(f"artist_embeddings: batch {batch_num} — embedding {len(candidates)} artists")
 
-        texts = [a["embedding_source"] for a in candidates]
+        # Keep candidate/text alignment stable and skip blank sources so one
+        # malformed row does not poison the entire batch.
+        valid_candidates: list[dict] = []
+        invalid_count = 0
+        for artist in candidates:
+            raw = artist.get("embedding_source")
+            text = raw.strip() if isinstance(raw, str) else ""
+            if not text:
+                invalid_count += 1
+                continue
+            valid_candidates.append({**artist, "embedding_source": text})
+
+        if invalid_count:
+            total_skipped += invalid_count
+            print(
+                f"artist_embeddings: batch {batch_num} skipped {invalid_count} "
+                "artists with blank embedding_source"
+            )
+            # Prevent repeatedly selecting the same invalid rows forever.
+            invalid_rows = [{"id": artist["id"], "embedding_source": None} for artist in candidates if not isinstance(artist.get("embedding_source"), str) or not artist.get("embedding_source", "").strip()]
+            if invalid_rows:
+                try:
+                    admin_supabase.table("artists").upsert(invalid_rows, on_conflict="id").execute()
+                except Exception as exc:
+                    print(
+                        "artist_embeddings: failed to null invalid embedding_source rows "
+                        f"on batch {batch_num}: {exc}"
+                    )
+
+        if not valid_candidates:
+            continue
+
+        texts = [a["embedding_source"] for a in valid_candidates]
 
         try:
             vectors = embedder.embed(texts, input_type="document")
         except Exception as exc:
             print(f"artist_embeddings: embed API error on batch {batch_num}: {exc}")
-            total_skipped += len(candidates)
+            total_skipped += len(valid_candidates)
             # Wait a bit before retrying (might be rate limit)
             time.sleep(2)
             continue
 
-        if len(vectors) != len(candidates):
+        if len(vectors) != len(valid_candidates):
             print(
                 f"artist_embeddings: vector count mismatch on batch {batch_num} "
-                f"(got {len(vectors)}, expected {len(candidates)}) — skipping batch"
+                f"(got {len(vectors)}, expected {len(valid_candidates)}) — skipping batch"
             )
-            total_skipped += len(candidates)
+            total_skipped += len(valid_candidates)
             continue
 
         rows = [
@@ -78,16 +110,16 @@ def run_artist_embeddings(batch_size: int = BATCH_SIZE) -> dict:
                 "embedding_source": artist["embedding_source"],
                 "embedding": vectors[i],
             }
-            for i, artist in enumerate(candidates)
+            for i, artist in enumerate(valid_candidates)
         ]
 
         try:
             admin_supabase.table("artists").upsert(rows, on_conflict="id").execute()
-            total_embedded += len(candidates)
+            total_embedded += len(valid_candidates)
             print(f"artist_embeddings: batch {batch_num} done — {total_embedded} total so far")
         except Exception as exc:
             print(f"artist_embeddings: DB write error on batch {batch_num}: {exc}")
-            total_skipped += len(candidates)
+            total_skipped += len(valid_candidates)
 
         # Small delay between batches to be respectful of API rate limits
         if len(candidates) == batch_size:

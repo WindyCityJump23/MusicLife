@@ -12,27 +12,6 @@ type SignalBreakdown = {
 };
 type TopMention = { source: string; excerpt: string; published_at: string };
 
-type ArtistRec = {
-  artist_id: string;
-  artist_name: string;
-  score: number;
-  signals: { affinity: number; context: number; editorial: number };
-  reasons: string[];
-  genres: string[];
-  mention_count: number;
-  top_mention: TopMention | null;
-};
-
-type SpotifyTrackResult = {
-  id: string;
-  name: string;
-  popularity: number;
-  duration_ms: number;
-  explicit: boolean;
-  album?: { name: string };
-  artists?: Array<{ name: string }>;
-};
-
 type SongRecommendation = {
   track_id: string | null;
   track_name: string;
@@ -89,94 +68,32 @@ export default function DiscoverView({
         editorial: weights.editorial / 100,
       };
 
-      // Step 1: Get artist-level recommendations from our backend
-      const artistRes = await fetch(`/api/recommend`, {
+      // Get song-level recommendations from backend (it handles artist scoring
+      // + Spotify lookup/fallback server-side).
+      const songsRes = await fetch(`/api/recommend-songs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: prompt || null,
           weights: normalized,
+          limit: 30,
         }),
       });
-      const artistData = await artistRes.json().catch(() => ({}));
-      if (!artistRes.ok) {
-        setError(artistData.error ?? artistData.detail ?? "Failed to get recommendations");
+      const songsData = await songsRes.json().catch(() => ({}));
+      if (!songsRes.ok) {
+        setError(songsData.error ?? songsData.detail ?? "Failed to get recommendations");
         setResults([]);
         return;
       }
 
-      const artists = artistData.results ?? [];
-      if (artists.length === 0) {
+      const songs = songsData.results ?? [];
+      if (songs.length === 0) {
         setResults([]);
         return;
       }
 
-      // Step 2: Get Spotify token for client-side track fetching
-      const tokenRes = await fetch("/api/auth/token");
-      const tokenData = await tokenRes.json().catch(() => ({}));
-      const accessToken = tokenData.access_token;
-
-      if (!accessToken) {
-        setError("Spotify session expired — please sign out and back in");
-        setResults([]);
-        return;
-      }
-
-      // Step 3: Fetch top tracks for each artist from Spotify (client-side, no timeout)
-      const spotifyHeaders = { Authorization: `Bearer ${accessToken}` };
-      const songArrays = await Promise.all(
-        artists.slice(0, 15).map(async (artist: ArtistRec) => {
-          try {
-            const searchRes = await fetch(
-              `https://api.spotify.com/v1/search?q=${encodeURIComponent(artist.artist_name)}&type=artist&limit=1`,
-              { headers: spotifyHeaders }
-            );
-            if (!searchRes.ok) return [];
-            const searchData = await searchRes.json();
-            const spotifyArtist = searchData.artists?.items?.[0];
-            if (!spotifyArtist) return [];
-
-            const tracksRes = await fetch(
-              `https://api.spotify.com/v1/artists/${spotifyArtist.id}/top-tracks?market=US`,
-              { headers: spotifyHeaders }
-            );
-            if (!tracksRes.ok) return [];
-            const tracksData = await tracksRes.json();
-            const tracks = (tracksData.tracks ?? []).slice(0, 3);
-
-            return tracks.map((track: SpotifyTrackResult): SongRecommendation => {
-              const trackPop = (track.popularity ?? 50) / 100;
-              const songScore = artist.score * (0.7 + 0.3 * trackPop);
-              return {
-                track_id: null,
-                track_name: track.name,
-                artist_id: artist.artist_id,
-                artist_name: track.artists?.[0]?.name ?? artist.artist_name,
-                album_name: track.album?.name ?? "",
-                duration_ms: track.duration_ms ?? 0,
-                explicit: track.explicit ?? false,
-                spotify_track_id: track.id,
-                score: songScore,
-                signals: {
-                  affinity: artist.signals.affinity,
-                  context: artist.signals.context,
-                  editorial: artist.signals.editorial,
-                  track_popularity: trackPop,
-                },
-                genres: artist.genres ?? [],
-                reasons: [...artist.reasons],
-                mention_count: artist.mention_count ?? 0,
-                top_mention: artist.top_mention ?? null,
-              };
-            });
-          } catch {
-            return [];
-          }
-        })
-      );
-
-      // Step 4: Sort, dedupe, cap per artist
-      const allSongs = songArrays.flat();
+      // Sort, dedupe, cap per artist for stable UI behavior.
+      const allSongs = [...songs] as SongRecommendation[];
       allSongs.sort((a, b) => b.score - a.score);
 
       const seen = new Set<string>();
