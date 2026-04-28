@@ -78,10 +78,13 @@ export async function GET(req: NextRequest) {
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
   const sb = createClient(sbUrl, sbKey, { auth: { persistSession: false } });
 
+  // Note: display_name is stored in a cookie only — not in the DB row.
+  // Run db/migrations/007_users_display_name.sql to add the column if you
+  // want to persist it server-side. The app works fine without it.
   const { data: userData, error: upsertErr } = await sb
     .from("users")
     .upsert(
-      { spotify_user_id: spotifyId, display_name: displayName },
+      { spotify_user_id: spotifyId },
       { onConflict: "spotify_user_id" }
     )
     .select("id")
