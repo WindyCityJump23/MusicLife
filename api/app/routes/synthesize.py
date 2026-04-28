@@ -17,10 +17,12 @@ from __future__ import annotations
 import math
 
 from anthropic import Anthropic
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 from app.config import settings
+from app.deps.auth import bearer_scheme, ensure_valid_bearer_token, require_bearer_token
 from app.services.supabase_client import admin_supabase
 
 router = APIRouter()
@@ -60,12 +62,22 @@ No hype language. No 'fans of X will love Y'. Calm, specific, trustworthy."""
 
 
 @router.post("", response_model=SynthResponse)
-def synthesize(req: SynthRequest):
+def synthesize(
+    req: SynthRequest,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
     return SynthResponse(paragraph=_call_claude(req))
 
 
 @router.post("/for-artist", response_model=SynthResponse)
-def synthesize_for_artist(req: SynthForArtistRequest):
+def synthesize_for_artist(
+    req: SynthForArtistRequest,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
     context = _build_context(req.user_id, req.artist_id, req.prompt)
     if context is None:
         raise HTTPException(status_code=404, detail="artist not found or has no embedding")

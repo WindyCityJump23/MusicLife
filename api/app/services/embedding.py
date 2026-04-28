@@ -17,6 +17,7 @@ class _Embedder:
     def __init__(self) -> None:
         self.provider = settings.embedding_provider.lower().strip()
         self.model = settings.embedding_model
+        self.dims = settings.embedding_dims
         self._voyage: VoyageClient | None = None
         self._openai: OpenAI | None = None
         self._initialised = False
@@ -50,7 +51,14 @@ class _Embedder:
 
         assert self._openai is not None
         # OpenAI API does not support voyage-style input_type.
-        resp = self._openai.embeddings.create(model=self.model, input=clean_texts)
+        # Pass dimensions to constrain output to match DB schema (vector(1024)).
+        # Without this, text-embedding-3-large returns 3072-d vectors that
+        # silently fail or error on insert.
+        resp = self._openai.embeddings.create(
+            model=self.model,
+            input=clean_texts,
+            dimensions=self.dims,
+        )
         return [list(item.embedding) for item in resp.data]
 
 

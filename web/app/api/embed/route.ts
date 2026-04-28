@@ -11,7 +11,14 @@ export async function POST(req: NextRequest) {
   if (!apiUrl) {
     return NextResponse.json({ error: "NEXT_PUBLIC_API_URL not configured" }, { status: 500 });
   }
-  const upstream = await fetch(`${apiUrl}/ingest/embed-artists`, { method: "POST" });
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!serviceRoleKey) {
+    return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY not configured" }, { status: 500 });
+  }
+  const upstream = await fetch(`${apiUrl}/ingest/embed-artists`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${serviceRoleKey}` },
+  });
   const data = await upstream.json().catch(() => ({}));
   return NextResponse.json(data, { status: upstream.status });
 }

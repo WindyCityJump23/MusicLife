@@ -46,6 +46,32 @@ def run_checks() -> None:
             f"EMBEDDING_PROVIDER={provider!r} is not supported (use 'voyage' or 'openai')"
         )
 
+    # ── Embedding dimension / schema consistency ────────────────────────────
+    # The DB schema uses vector(1024). OpenAI text-embedding-3-large returns
+    # 3072 dims by default, which silently fails on insert unless the caller
+    # passes dimensions=1024. Catch the mismatch at boot rather than at
+    # runtime when an embedding job mysteriously produces zero rows.
+    if provider == "openai" and settings.embedding_dims != 1024:
+        print(
+            f"[startup] WARNING: EMBEDDING_DIMS={settings.embedding_dims} but "
+            f"DB schema is vector(1024). Set EMBEDDING_DIMS=1024 to match."
+        )
+    KNOWN_NATIVE_DIMS = {
+        "text-embedding-3-large": 3072,
+        "text-embedding-3-small": 1536,
+    }
+    native = KNOWN_NATIVE_DIMS.get(settings.embedding_model)
+    if (
+        provider == "openai"
+        and native is not None
+        and native != settings.embedding_dims
+    ):
+        print(
+            f"[startup] INFO: {settings.embedding_model} natively returns "
+            f"{native}-d vectors; the embedder will request dimensions="
+            f"{settings.embedding_dims} to match the DB schema."
+        )
+
     # ── Required for artist enrichment ──────────────────────────────────────
     if not settings.lastfm_api_key:
         errors.append("LASTFM_API_KEY is not set (needed for /ingest/enrich-artists)")

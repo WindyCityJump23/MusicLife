@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { requireUser, isErrorResponse } from "@/lib/session";
 
 export async function POST(request: NextRequest) {
+  const user = requireUser(request);
+  if (isErrorResponse(user)) return user;
+
   // Parse request body
   let artist_name: string | undefined;
   try {
@@ -15,12 +18,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "artist_name is required" }, { status: 400 });
   }
 
-  // ── Get Spotify access token (forward session cookies) ─────────
-  const cookieStore = await cookies();
-  const cookieHeader = cookieStore
-    .getAll()
-    .map((c) => `${c.name}=${c.value}`)
-    .join("; ");
+  // Get Spotify access token (forward session cookies via request headers)
+  const cookieHeader = request.headers.get("cookie") ?? "";
 
   const tokenRes = await fetch(
     `${request.nextUrl.origin}/api/auth/token`,
@@ -40,7 +39,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "No access token" }, { status: 401 });
   }
 
-  // ── Search Spotify for the artist ─────────────────────────────
+  // Search Spotify for the artist
   const searchRes = await fetch(
     `https://api.spotify.com/v1/search?q=${encodeURIComponent(artist_name)}&type=artist&limit=1`,
     { headers: { Authorization: `Bearer ${access_token}` } }
@@ -67,7 +66,7 @@ export async function POST(request: NextRequest) {
 
   const spotifyArtist = artists[0];
 
-  // ── Get top tracks ────────────────────────────────────────────
+  // Get top tracks
   const tracksRes = await fetch(
     `https://api.spotify.com/v1/artists/${spotifyArtist.id}/top-tracks?market=US`,
     { headers: { Authorization: `Bearer ${access_token}` } }
@@ -93,7 +92,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // ── Start playback ────────────────────────────────────────────
+  // Start playback
   const playRes = await fetch("https://api.spotify.com/v1/me/player/play", {
     method: "PUT",
     headers: {

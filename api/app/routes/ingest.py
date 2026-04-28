@@ -7,8 +7,11 @@ TODO order (matches the week-by-week build plan):
   Week 2:  POST /ingest/enrich-artists, POST /ingest/embed-artists
   Week 3:  POST /ingest/sources
 """
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
+
+from app.deps.auth import bearer_scheme, ensure_valid_bearer_token, require_bearer_token
 
 router = APIRouter()
 
@@ -19,7 +22,13 @@ class SpotifyLibraryRequest(BaseModel):
 
 
 @router.post("/spotify-library")
-def ingest_spotify_library(req: SpotifyLibraryRequest, bg: BackgroundTasks):
+def ingest_spotify_library(
+    req: SpotifyLibraryRequest,
+    bg: BackgroundTasks,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
     # Pull saved tracks, top artists, recent plays. Upsert artists and tracks,
     # insert listens. Implementation: app/services/spotify_ingest.py
     bg.add_task(_run_spotify_ingest, req.user_id, req.spotify_access_token)
@@ -37,7 +46,12 @@ def _run_spotify_ingest(user_id: str, token: str):
 
 
 @router.post("/enrich-artists")
-def enrich_artists(bg: BackgroundTasks):
+def enrich_artists(
+    bg: BackgroundTasks,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
     bg.add_task(_run_enrich_artists)
     return {"status": "queued"}
 
@@ -52,7 +66,12 @@ def _run_enrich_artists():
 
 
 @router.post("/embed-artists")
-def embed_artists(bg: BackgroundTasks):
+def embed_artists(
+    bg: BackgroundTasks,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
     bg.add_task(_run_embed_artists)
     return {"status": "queued"}
 
@@ -67,7 +86,12 @@ def _run_embed_artists():
 
 
 @router.post("/sources")
-def ingest_sources(bg: BackgroundTasks):
+def ingest_sources(
+    bg: BackgroundTasks,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
     # For each active source: fetch feed, parse posts, match artists,
     # embed excerpts, insert mentions. Implementation: app/services/source_ingest.py
     bg.add_task(_run_source_ingest)
