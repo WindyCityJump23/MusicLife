@@ -37,20 +37,38 @@ export async function GET(req: NextRequest) {
 
   let artists: Artist[] = [];
   if (artistIds.length > 0) {
+    // Only select scalar columns — never fetch the embedding vector itself.
+    // Downloading 1024 floats × hundreds of artists would be megabytes and
+    // can easily timeout. Instead use embedding_source as the enriched proxy
+    // and a cast to check if embedding is non-null without transferring it.
     const { data: rows, error: aErr } = await sb
       .from("artists")
-      .select("id, name, genres, musicbrainz_id, embedding")
+      .select("id, name, genres, musicbrainz_id, embedding_source")
       .in("id", artistIds)
       .order("name", { ascending: true });
     if (aErr) {
       return NextResponse.json({ error: aErr.message }, { status: 500 });
+    }
+    // We can't easily check embedding != null without fetching it.
+    // Instead, if embedding_source is set, the artist was enriched and is
+    // eligible for embedding. We'll do a separate lightweight check.
+    const embeddedIds = new Set<number>();
+    if (artistIds.length > 0) {
+      const { data: embRows } = await sb
+        .from("artists")
+        .select("id")
+        .in("id", artistIds)
+        .not("embedding", "is", null);
+      for (const r of embRows ?? []) {
+        embeddedIds.add(r.id);
+      }
     }
     artists = (rows ?? []).map((r: any) => ({
       id: r.id,
       name: r.name,
       genres: r.genres ?? [],
       enriched: Boolean(r.musicbrainz_id),
-      embedded: r.embedding != null,
+      embedded: embeddedIds.has(r.id),
     }));
   }
 
