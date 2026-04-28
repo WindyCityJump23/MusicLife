@@ -1,92 +1,102 @@
-# Production Audit (April 24, 2026)
+# Production Audit — MusicLife
 
-This audit tracks what has been fixed and what remains.
+_Last updated: April 28, 2026_
 
-## Completed fixes
+## What's done
 
-1. **Ranking and taste-vector — implemented** ✅
-   - `app/services/ranking.py` now computes real affinity, context, and editorial scores in-process.
-   - Weight normalization and `limit` bounds validated at the request layer.
+1. **Spotify OAuth with CSRF hardening** ✅
+   - Authorization code flow with `state` nonce.
+   - Access token refresh via `/api/auth/token` with cookie-based sessions.
+   - Scopes: library read/modify, playback, playlists, streaming.
 
-2. **OAuth CSRF hardening** ✅
-   - `state` nonce generated on login and validated on callback.
-   - Cookie lifetimes tightened; `sp_refresh` only set when Spotify provides a refresh token.
+2. **Library ingestion persists** ✅
+   - `spotify_ingest.py` upserts artists, tracks, user_tracks, and listen_events.
+   - Idempotent: `ON CONFLICT` with dedupe constraints on listen_events and mentions.
 
-3. **CORS locked to env allowlist** ✅
-   - `CORS_ORIGINS` env var parsed into a list and passed to `CORSMiddleware`.
+3. **Artist enrichment + embedding pipeline** ✅
+   - MusicBrainz + Last.fm enrichment builds `embedding_source` text per artist.
+   - Voyage AI (or OpenAI) generates 1024-dim embeddings.
+   - Auto-loops all un-embedded artists in one job run (batch size 64).
 
-4. **RLS and per-request user-scoped clients** ✅
-   - `db/migrations/003_rls.sql` enables RLS on all user-owned and catalog tables.
-   - `/recommend` uses `get_validated_user_scoped_supabase` — service-role client is only used for trusted backend jobs.
-   - `ranking.py` functions accept a `client` parameter instead of using a global service-role client.
+4. **Editorial source ingestion** ✅
+   - RSS + Reddit feeds → extract artist mentions → embed excerpts → upsert into `mentions`.
 
-## Remaining work
+5. **Three-signal recommendation engine** ✅
+   - Affinity (cosine similarity to user taste vector).
+   - Context (prompt/taste vector vs. mention embeddings).
+   - Editorial (recency × trust × sentiment from mentions).
+   - Random exploration ±8%, genre diversity re-ranking, "already seen" deprioritization.
+
+6. **Song-level Discover** ✅
+   - Client-side hybrid: backend returns scored artists → browser fetches Spotify top tracks.
+   - Songs ranked by `artist_score × track_popularity_boost`.
+   - Max 2 songs per artist, deduplication, 30-song limit.
+
+7. **Playlists tab** ✅
+   - Create Spotify playlists from recommendations (direct track ID approach).
+   - View all MusicLife playlists with expandable track lists.
+
+8. **Favorites** ✅
+   - Heart button saves to Spotify Liked Songs + records in `user_favorites` table.
+   - Toggle on/off. Tracks source surface (discover, playlists) and score at favorite time.
+
+9. **Web Playback SDK** ✅
+   - Jukebox player with album art, progress, volume, prev/next.
+   - `playTrack()` plays specific songs by Spotify track ID.
+
+10. **Multi-user support** ✅
+    - Each Spotify account gets a unique Supabase user row.
+    - Session cookies (`app_user_id`, `sp_access`, `sp_refresh`) scoped per user.
+    - Spotify app in Development Mode (25-user allowlist cap until Quota Extension approved).
+
+11. **CORS locked to env allowlist** ✅
+
+12. **RLS policies defined** ✅ (but see Known Security Posture below)
+
+## What's outstanding
 
 ### High priority
 
-5. **Spotify ingestion does not persist**
-   - `app/services/spotify_ingest.py` fetches saved tracks, top artists, and recent plays but never writes to Supabase.
-   - Blocks end-to-end library ingestion and means all user taste vectors will be empty.
+- **Render cold starts**: Free-tier Render spins down after inactivity. First request after idle takes 30-60s. Upgrade to paid tier or add a keep-alive ping.
 
-6. **No token refresh mechanism**
-   - Spotify access tokens expire after ~1 hour. There is no route or background job to call the refresh token endpoint and reissue `sp_access`.
-   - Users will hit 401s from Spotify after the initial session without re-authenticating.
+- **Embedding provider keys**: Voyage AI or OpenAI key must be configured on Render for the embed pipeline to work. If missing, the embed job fails silently.
 
-7. **Add ingestion idempotency + dedupe keys**
-   - `mentions` now has `UNIQUE (source_id, url, artist_id)` (migration 005) and `source_ingest.py` uses it for ON CONFLICT DO NOTHING. ✅
-   - `listen_events` already has `UNIQUE (user_id, track_id, listened_at)` (migration 004). ✅
+- **Anthropic key for /synthesize**: The "Why this?" AI explanation feature requires an Anthropic API key. Not yet provided.
 
-8. **Editorial source ingestion — implemented** ✅
-   - `app/services/source_ingest.py` fetches RSS + Reddit feeds, extracts artist mentions
-     against the existing artist catalog, embeds excerpts, and upserts into `mentions`.
-   - `/ingest/sources` is wired to the background runner; the dashboard exposes a "Fetch
-     sources" button.
-   - The ranking system (`ranking.py`) was already consuming mentions; this closes the loop.
+### Medium priority
 
-### Data model
+- **No retry/backoff in ingestion**: Spotify, MusicBrainz, and Last.fm calls have no retry logic. Transient 429s or 5xx errors skip the item silently.
 
-- **Missing indexes for common filters**:
-  - `mentions(source_id, published_at desc)`
-  - `listen_events(user_id, listened_at desc)`
-  - partial indexes on null-heavy filter columns
-- **Vector index tuning not specified** (`lists`, `probes`, and ANALYZE cadence).
-- **Embedding dimension consistency**: schema fixes embeddings to `vector(1024)`; OpenAI `text-embedding-3-large` returns 3072 dimensions unless `dimensions` is explicitly requested.
+- **Job tracker is in-memory**: `job_tracker.py` uses a Python dict. Jobs are lost on Render restart. Consider a `job_runs` table in Supabase.
 
-### Ranking system
+- **Ranking thresholds are uncalibrated**: The 0.55/0.45 thresholds for reason tags ("Matches your taste", "In the press") are hardcoded, not tuned on real engagement data.
 
-- No calibration between signals — affinity, context, and editorial are on roughly comparable [0, 1] ranges after normalization, but thresholds (0.55 / 0.45) are untested on real data.
-- Better production approach:
-  - Two-stage retrieval: ANN candidate generation → re-rank top N.
-  - Persist feature values for offline weight tuning.
-  - Add anti-repetition and freshness decay.
+- **No offline eval loop**: No A/B testing, no click-through tracking (except favorites), no weight tuning pipeline.
 
-### Ingestion pipeline
+### Low priority
 
-- No retry/backoff/jitter or dead-letter handling in Spotify ingest.
-- Suggested: idempotent `job_runs` table with status transitions, raw `jsonb` payload snapshots for replay.
+- **Vector index tuning**: IVFFlat indexes exist but `lists` and `probes` are at defaults. ANALYZE cadence not specified.
 
-### Frontend
+- **Two-stage retrieval**: Current approach scores all candidates in Python. At scale (>10K artists), switch to ANN candidate generation in Postgres + re-rank top N.
 
-- Dashboard page is a placeholder; no API calls or state management wired up.
-- No loading/error/empty-state strategy for ranking and synthesis views.
-- Suggested: server actions or route handlers as a BFF layer to avoid exposing backend keys to the browser.
+## Deployment
 
-## Concrete phased plan
+| Service | Platform | Auto-deploy | URL |
+|---------|----------|------------|-----|
+| Frontend | Vercel | Yes (on push) | music-life-kappa.vercel.app |
+| Backend API | Render | Sometimes (manual trigger safer) | musiclife-api.onrender.com |
+| Database | Supabase | N/A | snylagqoqfkboyuydfgu.supabase.co |
 
-### Phase 1 (done ✅)
-- Implement ranking with real signals and request validation.
-- Add OAuth state checks and cookie hardening.
-- Move CORS to env allowlist.
-- Enforce RLS and per-request user-scoped clients.
+## Migrations
 
-### Phase 2 (next)
-- Implement Spotify ingest persistence (artists, tracks, user_tracks, listen_events upserts).
-- Add Spotify token refresh route.
-- Add dedupe constraints + migration backfills.
-- Add ingestion retries, run logs, and alerting.
-
-### Phase 3 (quality and scale)
-- Wire up dashboard with real API calls.
-- Two-stage retrieval + rerank calibration on real data.
-- Offline eval set and weight tuning loop.
-- Caching for hot prompts and top cohorts.
+| # | File | Status | Notes |
+|---|------|--------|-------|
+| 001 | init.sql | Applied | Core schema |
+| 002 | playlists.sql | Applied | Playlists + playlist_items |
+| 003 | rls.sql | Applied | RLS policies (see security note) |
+| 004 | ingest_constraints.sql | Applied | Dedupe keys |
+| 005 | mentions_dedup.sql | Applied | Mentions unique constraint |
+| 006 | triggers_and_indexes.sql | Applied | Additional indexes |
+| 007 | users_display_name.sql | Applied | display_name column |
+| 008 | track_audio_features.sql | Deprecated | Spotify deprecated /audio-features Nov 2024. Columns exist but are never populated. |
+| 009 | user_favorites.sql | Applied | Favorites tracking |
