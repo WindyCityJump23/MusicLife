@@ -20,6 +20,7 @@ type ArtistRec = {
   genres: string[];
   mention_count: number;
   top_mention: TopMention | null;
+  spotify_artist_id?: string | null;
 };
 
 type SpotifyTrackResult = {
@@ -125,59 +126,76 @@ export default function DiscoverView({
         return;
       }
 
-      // Step 3: Fetch top tracks for each artist from Spotify (client-side, no timeout)
+      // Step 3: Fetch top tracks for each artist from Spotify (client-side).
+      // Process in batches of 3 with a 100ms gap to respect Spotify's per-app
+      // rate limit — a single click previously fired 30 concurrent requests
+      // which was enough to trigger 429s on Development-mode quotas.
       setLoadingStage("Fetching songs from Spotify…");
       const spotifyHeaders = { Authorization: `Bearer ${accessToken}` };
-      const songArrays = await Promise.all(
-        artists.slice(0, 15).map(async (artist: ArtistRec) => {
-          try {
+      const targetArtists = artists.slice(0, 15);
+
+      async function fetchSongsForArtist(artist: ArtistRec): Promise<SongRecommendation[]> {
+        try {
+          let spotifyArtistId: string | null = artist.spotify_artist_id ?? null;
+          if (!spotifyArtistId) {
             const searchRes = await fetch(
               `https://api.spotify.com/v1/search?q=${encodeURIComponent(artist.artist_name)}&type=artist&limit=1`,
               { headers: spotifyHeaders }
             );
             if (!searchRes.ok) return [];
             const searchData = await searchRes.json();
-            const spotifyArtist = searchData.artists?.items?.[0];
-            if (!spotifyArtist) return [];
-
-            const tracksRes = await fetch(
-              `https://api.spotify.com/v1/artists/${spotifyArtist.id}/top-tracks?market=US`,
-              { headers: spotifyHeaders }
-            );
-            if (!tracksRes.ok) return [];
-            const tracksData = await tracksRes.json();
-            const tracks = (tracksData.tracks ?? []).slice(0, 3);
-
-            return tracks.map((track: SpotifyTrackResult): SongRecommendation => {
-              const trackPop = (track.popularity ?? 50) / 100;
-              const songScore = artist.score * (0.7 + 0.3 * trackPop);
-              return {
-                track_id: null,
-                track_name: track.name,
-                artist_id: artist.artist_id,
-                artist_name: track.artists?.[0]?.name ?? artist.artist_name,
-                album_name: track.album?.name ?? "",
-                duration_ms: track.duration_ms ?? 0,
-                explicit: track.explicit ?? false,
-                spotify_track_id: track.id,
-                score: songScore,
-                signals: {
-                  affinity: artist.signals.affinity,
-                  context: artist.signals.context,
-                  editorial: artist.signals.editorial,
-                  track_popularity: trackPop,
-                },
-                genres: artist.genres ?? [],
-                reasons: [...artist.reasons],
-                mention_count: artist.mention_count ?? 0,
-                top_mention: artist.top_mention ?? null,
-              };
-            });
-          } catch {
-            return [];
+            spotifyArtistId = searchData.artists?.items?.[0]?.id ?? null;
           }
-        })
-      );
+          if (!spotifyArtistId) return [];
+
+          const tracksRes = await fetch(
+            `https://api.spotify.com/v1/artists/${spotifyArtistId}/top-tracks?market=US`,
+            { headers: spotifyHeaders }
+          );
+          if (!tracksRes.ok) return [];
+          const tracksData = await tracksRes.json();
+          const tracks = (tracksData.tracks ?? []).slice(0, 3);
+
+          return tracks.map((track: SpotifyTrackResult): SongRecommendation => {
+            const trackPop = (track.popularity ?? 50) / 100;
+            const songScore = artist.score * (0.7 + 0.3 * trackPop);
+            return {
+              track_id: null,
+              track_name: track.name,
+              artist_id: artist.artist_id,
+              artist_name: track.artists?.[0]?.name ?? artist.artist_name,
+              album_name: track.album?.name ?? "",
+              duration_ms: track.duration_ms ?? 0,
+              explicit: track.explicit ?? false,
+              spotify_track_id: track.id,
+              score: songScore,
+              signals: {
+                affinity: artist.signals.affinity,
+                context: artist.signals.context,
+                editorial: artist.signals.editorial,
+                track_popularity: trackPop,
+              },
+              genres: artist.genres ?? [],
+              reasons: [...artist.reasons],
+              mention_count: artist.mention_count ?? 0,
+              top_mention: artist.top_mention ?? null,
+            };
+          });
+        } catch {
+          return [];
+        }
+      }
+
+      const songArrays: SongRecommendation[][] = [];
+      const BATCH_SIZE = 3;
+      for (let i = 0; i < targetArtists.length; i += BATCH_SIZE) {
+        const batch = targetArtists.slice(i, i + BATCH_SIZE);
+        const results = await Promise.all(batch.map(fetchSongsForArtist));
+        songArrays.push(...results);
+        if (i + BATCH_SIZE < targetArtists.length) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
 
       // Step 4: Sort, dedupe, cap per artist
       const allSongs = songArrays.flat();
