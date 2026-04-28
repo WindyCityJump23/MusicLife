@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
+import { supabaseServer } from "@/lib/supabase-server";
 
 export async function POST(request: NextRequest) {
   const user = requireUser(request);
@@ -41,32 +42,54 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "No access token" }, { status: 401 });
   }
 
-  // Search Spotify for the artist
-  const searchRes = await fetch(
-    `https://api.spotify.com/v1/search?q=${encodeURIComponent(artist_name)}&type=artist&limit=1`,
-    { headers: { Authorization: `Bearer ${access_token}` } }
-  );
-
-  if (!searchRes.ok) {
-    const errBody = await searchRes.json().catch(() => ({}));
-    return NextResponse.json(
-      { error: errBody?.error?.message ?? "Spotify search failed" },
-      { status: 502 }
-    );
+  // Resolve the Spotify artist ID. Prefer the cached value on the artists
+  // row (populated by the ingest job and recommend enrichment). Falling back
+  // to a /v1/search call should be rare for known artists and saves one
+  // Spotify request per playback click.
+  let spotifyArtist: { id: string; name: string } | null = null;
+  try {
+    const sb = supabaseServer();
+    const { data: row } = await sb
+      .from("artists")
+      .select("name, spotify_artist_id")
+      .ilike("name", artist_name)
+      .not("spotify_artist_id", "is", null)
+      .limit(1)
+      .maybeSingle();
+    if (row?.spotify_artist_id) {
+      spotifyArtist = { id: row.spotify_artist_id, name: row.name ?? artist_name };
+    }
+  } catch {
+    // Cache miss — fall through to live search.
   }
 
-  const searchData = await searchRes.json();
-  const artists: Array<{ id: string; name: string }> =
-    searchData.artists?.items ?? [];
-
-  if (artists.length === 0) {
-    return NextResponse.json(
-      { error: `Artist "${artist_name}" not found on Spotify` },
-      { status: 404 }
+  if (!spotifyArtist) {
+    const searchRes = await fetch(
+      `https://api.spotify.com/v1/search?q=${encodeURIComponent(artist_name)}&type=artist&limit=1`,
+      { headers: { Authorization: `Bearer ${access_token}` } }
     );
-  }
 
-  const spotifyArtist = artists[0];
+    if (!searchRes.ok) {
+      const errBody = await searchRes.json().catch(() => ({}));
+      return NextResponse.json(
+        { error: errBody?.error?.message ?? "Spotify search failed" },
+        { status: 502 }
+      );
+    }
+
+    const searchData = await searchRes.json();
+    const artists: Array<{ id: string; name: string }> =
+      searchData.artists?.items ?? [];
+
+    if (artists.length === 0) {
+      return NextResponse.json(
+        { error: `Artist "${artist_name}" not found on Spotify` },
+        { status: 404 }
+      );
+    }
+
+    spotifyArtist = artists[0];
+  }
 
   // Get top tracks
   const tracksRes = await fetch(
