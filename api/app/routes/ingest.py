@@ -99,11 +99,17 @@ def embed_artists(
 def _run_embed_artists(job_id: str):
     from app.services.artist_embeddings import run_artist_embeddings
 
-    update_job(job_id, JobStatus.RUNNING, "Generating artist embeddings...")
+    update_job(job_id, JobStatus.RUNNING, "Generating artist embeddings (processing all artists)...")
     try:
-        run_artist_embeddings()
-        update_job(job_id, JobStatus.SUCCESS, "Embeddings generated")
-        print("embed_artists: completed")
+        summary = run_artist_embeddings()
+        embedded = summary.get("embedded", 0) if isinstance(summary, dict) else 0
+        skipped = summary.get("skipped", 0) if isinstance(summary, dict) else 0
+        batches = summary.get("batches", 0) if isinstance(summary, dict) else 0
+        msg = f"Embedded {embedded} artists in {batches} batches"
+        if skipped > 0:
+            msg += f" ({skipped} skipped)"
+        update_job(job_id, JobStatus.SUCCESS, msg)
+        print(f"embed_artists: completed — {msg}")
     except Exception as exc:
         update_job(job_id, JobStatus.FAILED, str(exc)[:500])
         print(f"embed_artists: FAILED: {exc}")
