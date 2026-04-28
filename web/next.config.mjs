@@ -1,6 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: "standalone",
+  // standalone output is only used by the Docker build.
+  // Vercel handles Next.js natively and ignores this setting,
+  // but setting it unconditionally breaks Vercel deploys.
+  ...(process.env.DOCKER_BUILD === "true" ? { output: "standalone" } : {}),
   images: {
     remotePatterns: [
       {

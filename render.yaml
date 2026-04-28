@@ -3,8 +3,10 @@ services:
     name: musiclife-api
     runtime: python
     rootDir: api
+    pythonVersion: "3.12.0"
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: SUPABASE_URL
         sync: false
@@ -16,17 +18,15 @@ services:
         sync: false
       - key: VOYAGE_API_KEY
         sync: false
-      - key: OPENAI_API_KEY
+      - key: LASTFM_API_KEY
         sync: false
+      - key: MUSICBRAINZ_USER_AGENT
+        value: musiclife/1.0 (contact@musiclife.app)
       - key: EMBEDDING_PROVIDER
         value: voyage
       - key: EMBEDDING_MODEL
         value: voyage-3
       - key: EMBEDDING_DIMS
         value: "1024"
-      - key: LASTFM_API_KEY
-        sync: false
-      - key: MUSICBRAINZ_USER_AGENT
-        value: musiclife/1.0 (your@email.com)
       - key: CORS_ORIGINS
         sync: false
