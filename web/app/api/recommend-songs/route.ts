@@ -58,20 +58,33 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ results: [] });
   }
 
-  // ── Step 2: Get Spotify access token ───────────────────────
-  const cookieHeader = req.headers.get("cookie") ?? "";
-  const tokenRes = await fetch(`${req.nextUrl.origin}/api/auth/token`, {
-    headers: { cookie: cookieHeader },
-    cache: "no-store",
-  });
+  // ── Step 2: Get Spotify access token from cookies ──────────
+  // Read directly instead of calling /api/auth/token (avoids internal fetch issues)
+  let accessToken = req.cookies.get("sp_access")?.value ?? "";
 
-  if (!tokenRes.ok) {
-    // If we can't get a token, return artist-level results as fallback
-    return NextResponse.json({ results: artists.map(artistToSongFallback) });
+  if (!accessToken) {
+    const refresh = req.cookies.get("sp_refresh")?.value;
+    if (refresh && process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET) {
+      try {
+        const basic = Buffer.from(
+          `${process.env.SPOTIFY_CLIENT_ID}:${process.env.SPOTIFY_CLIENT_SECRET}`
+        ).toString("base64");
+        const refreshRes = await fetch("https://accounts.spotify.com/api/token", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            Authorization: `Basic ${basic}`,
+          },
+          body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refresh }),
+        });
+        if (refreshRes.ok) {
+          const tokens = await refreshRes.json();
+          accessToken = tokens.access_token ?? "";
+        }
+      } catch {}
+    }
   }
 
-  const tokenData = await tokenRes.json();
-  const accessToken: string = tokenData.access_token;
   if (!accessToken) {
     return NextResponse.json({ results: artists.map(artistToSongFallback) });
   }
