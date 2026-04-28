@@ -15,7 +15,9 @@ export default function Home({
   searchParams: { [key: string]: string | string[] | undefined };
 }) {
   const errorKey = typeof searchParams.error === "string" ? searchParams.error : null;
-  const errorMessage = errorKey ? (ERROR_MESSAGES[errorKey] ?? "An unexpected error occurred. Please try again.") : null;
+  const spotifyStatus = typeof searchParams.spotify_status === "string" ? searchParams.spotify_status : null;
+  const baseMessage = errorKey ? (ERROR_MESSAGES[errorKey] ?? "An unexpected error occurred. Please try again.") : null;
+  const errorMessage = baseMessage && spotifyStatus ? `${baseMessage} (Spotify status: ${spotifyStatus})` : baseMessage;
 
   return (
     <main

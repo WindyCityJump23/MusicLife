@@ -71,15 +71,37 @@ export async function GET(req: NextRequest) {
   // cache: 'no-store' prevents Next.js from caching this response in the Data
   // Cache — a stale/error response cached from a previous request would
   // otherwise cause every subsequent login attempt to fail.
-  const profileRes = await fetch("https://api.spotify.com/v1/me", {
-    headers: { Authorization: `Bearer ${tokens.access_token}` },
-    cache: "no-store",
-  });
+  // Retry transient failures (5xx, 429, network errors) — a single blip from
+  // Spotify shouldn't break the entire login flow.
+  let profileRes: Response | null = null;
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      profileRes = await fetch("https://api.spotify.com/v1/me", {
+        headers: {
+          Authorization: `Bearer ${tokens.access_token}`,
+          Accept: "application/json",
+          "User-Agent": "MusicLife/1.0",
+        },
+        cache: "no-store",
+      });
+      // 401/403 are deterministic — don't retry. 4xx other than 429 also won't change.
+      if (profileRes.ok || (profileRes.status < 500 && profileRes.status !== 429)) break;
+    } catch (e) {
+      lastErr = e;
+      profileRes = null;
+    }
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+  }
+
+  if (!profileRes) {
+    console.error("auth/callback: profile fetch network error", lastErr);
+    return NextResponse.redirect(new URL("/?error=profile_fetch&spotify_status=network", base));
+  }
 
   if (!profileRes.ok) {
     const body = await profileRes.text().catch(() => "");
     console.error(`auth/callback: profile fetch failed ${profileRes.status}: ${body}`);
-    // Surface the actual Spotify error to help debug
     const detail = profileRes.status === 403 ? "forbidden" : profileRes.status === 401 ? "token_invalid" : "profile_fetch";
     return NextResponse.redirect(new URL(`/?error=${detail}&spotify_status=${profileRes.status}`, base));
   }
