@@ -27,9 +27,9 @@ def run_checks() -> None:
     if not settings.supabase_anon_key:
         errors.append("SUPABASE_ANON_KEY is not set")
 
-    # ── Required for /synthesize ────────────────────────────────────────────
-    if not settings.anthropic_api_key:
-        errors.append("ANTHROPIC_API_KEY is not set (needed for /synthesize)")
+    # ── Required for /synthesize (optional — API boots without it) ───────────
+    if not settings.anthropic_api_key or settings.anthropic_api_key.startswith("placeholder"):
+        print("[startup] WARNING: ANTHROPIC_API_KEY not set — /synthesize will return errors")
 
     # ── Required for embedding jobs ─────────────────────────────────────────
     provider = settings.embedding_provider.lower().strip()

@@ -24,7 +24,15 @@ from app.config import settings
 from app.services.supabase_client import admin_supabase
 
 router = APIRouter()
-client = Anthropic(api_key=settings.anthropic_api_key)
+_anthropic_client: Anthropic | None = None
+
+def _get_client() -> Anthropic:
+    global _anthropic_client
+    if _anthropic_client is None:
+        if not settings.anthropic_api_key or settings.anthropic_api_key.startswith("placeholder"):
+            raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
+        _anthropic_client = Anthropic(api_key=settings.anthropic_api_key)
+    return _anthropic_client
 
 
 class SynthRequest(BaseModel):
@@ -71,7 +79,7 @@ def synthesize_for_artist(req: SynthForArtistRequest):
 
 def _call_claude(req: SynthRequest) -> str:
     user_msg = _format_context(req)
-    resp = client.messages.create(
+    resp = _get_client().messages.create(
         model="claude-sonnet-4-5",
         max_tokens=400,
         system=SYSTEM,
