@@ -1,8 +1,10 @@
 import { randomBytes } from "crypto";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 // Spotify OAuth — authorization code flow.
-// Scopes cover: read library, read listens, control playback, Web Playback SDK.
+// These scopes are used by first-session actions (sync, playback, playlist export,
+// favorites). If onboarding is split later, playback/modify scopes can be moved
+// to a second consent step.
 const SCOPES = [
   "user-read-email",
   "user-read-private",
@@ -19,7 +21,15 @@ const SCOPES = [
   "user-library-modify",
 ].join(" ");
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const existingUserId = req.cookies.get("app_user_id")?.value;
+  const existingAccess = req.cookies.get("sp_access")?.value;
+
+  // Prevent duplicate Spotify auth redirects when the user is already logged in.
+  if (existingUserId && existingAccess) {
+    return NextResponse.redirect(new URL("/dashboard", req.url));
+  }
+
   const state = randomBytes(16).toString("hex");
 
   const params = new URLSearchParams({
@@ -27,7 +37,7 @@ export async function GET() {
     client_id: process.env.SPOTIFY_CLIENT_ID!,
     scope: SCOPES,
     redirect_uri: process.env.SPOTIFY_REDIRECT_URI!,
-    state
+    state,
   });
   const res = NextResponse.redirect(
     `https://accounts.spotify.com/authorize?${params.toString()}`
