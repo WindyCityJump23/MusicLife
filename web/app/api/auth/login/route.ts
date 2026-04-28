@@ -14,6 +14,8 @@ const SCOPES = [
   "streaming",
   "playlist-read-private",
   "playlist-read-collaborative",
+  "playlist-modify-public",
+  "playlist-modify-private",
 ].join(" ");
 
 export async function GET() {
