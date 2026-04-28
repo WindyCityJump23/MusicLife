@@ -19,7 +19,26 @@ A personal music discovery dashboard powered by Spotify, editorial sources (musi
 
 ## Quickstart (local dev)
 
-### 1. Prerequisites
+### Option A — Docker (easiest, no installs needed)
+
+Requires: [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+
+```bash
+git clone https://github.com/WindyCityJump23/MusicLife.git
+cd MusicLife
+./setup.sh          # scaffolds env files and prints instructions
+
+# fill in web/.env.local and api/.env, run DB migrations, then:
+docker compose up
+```
+
+Open [http://localhost:3000](http://localhost:3000) — that's it.
+
+---
+
+### Option B — Manual (no Docker)
+
+#### Prerequisites
 
 | Tool | Version |
 |------|---------|
@@ -27,7 +46,7 @@ A personal music discovery dashboard powered by Spotify, editorial sources (musi
 | Python | 3.11+ |
 | Supabase project | with `pgvector` enabled |
 
-### 2. Clone and scaffold env files
+#### Clone and scaffold env files
 
 ```bash
 git clone https://github.com/WindyCityJump23/MusicLife.git
