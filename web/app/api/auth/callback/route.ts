@@ -83,32 +83,33 @@ export async function GET(req: NextRequest) {
   // so we must supply one on insert. ON CONFLICT (spotify_user_id) DO UPDATE
   // leaves the existing id untouched, so the generated UUID is only used
   // when creating a brand-new row.
-  const newId = randomUUID();
-  const { error: upsertErr } = await sb
-    .from("users")
-    .upsert(
-      { id: newId, spotify_user_id: spotifyId },
-      { onConflict: "spotify_user_id" }
-    );
-
-  if (upsertErr) {
-    console.error("auth/callback: user upsert failed", upsertErr.message);
-    return NextResponse.redirect(new URL("/?error=user_upsert", base));
-  }
-
-  // Fetch the real id (handles both new rows and existing ones).
-  const { data: userData, error: selectErr } = await sb
+  // Try to find existing user first.
+  const { data: existingUser } = await sb
     .from("users")
     .select("id")
     .eq("spotify_user_id", spotifyId)
-    .single();
+    .maybeSingle();
 
-  if (selectErr || !userData) {
-    console.error("auth/callback: user select failed", selectErr?.message);
-    return NextResponse.redirect(new URL("/?error=user_upsert", base));
+  let supabaseUserId: string;
+
+  if (existingUser) {
+    // Returning user — just use existing row.
+    supabaseUserId = existingUser.id;
+  } else {
+    // New user — insert with a fresh UUID.
+    const newId = randomUUID();
+    const { data: newUser, error: insertErr } = await sb
+      .from("users")
+      .insert({ id: newId, spotify_user_id: spotifyId, display_name: displayName })
+      .select("id")
+      .single();
+
+    if (insertErr || !newUser) {
+      console.error("auth/callback: user insert failed", insertErr?.message);
+      return NextResponse.redirect(new URL("/?error=user_upsert", base));
+    }
+    supabaseUserId = newUser.id;
   }
-
-  const supabaseUserId: string = userData.id;
 
   // ── Set cookies and redirect ───────────────────────────────────────────
   const res = NextResponse.redirect(new URL("/dashboard", base));
