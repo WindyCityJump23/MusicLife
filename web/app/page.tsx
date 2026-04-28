@@ -1,4 +1,20 @@
-export default function Home() {
+const ERROR_MESSAGES: Record<string, string> = {
+  no_code: "Spotify did not return an authorization code. Please try again.",
+  state_mismatch: "Login session expired or request was tampered with. Please try again.",
+  token_exchange: "Could not exchange the authorization code with Spotify. Check that your Spotify app credentials and redirect URI are correct.",
+  token_missing: "Spotify returned a successful response but no access token. Please try again.",
+  profile_fetch: "Could not fetch your Spotify profile. This may be a temporary Spotify issue — please try again in a moment.",
+  user_upsert: "Your account could not be created or updated. Please try again.",
+};
+
+export default function Home({
+  searchParams,
+}: {
+  searchParams: { [key: string]: string | string[] | undefined };
+}) {
+  const errorKey = typeof searchParams.error === "string" ? searchParams.error : null;
+  const errorMessage = errorKey ? (ERROR_MESSAGES[errorKey] ?? "An unexpected error occurred. Please try again.") : null;
+
   return (
     <main className="min-h-screen flex items-center justify-center px-5 py-8 sm:p-8 bg-white">
       <div className="max-w-md w-full text-center space-y-8 sm:space-y-10 pt-safe pb-safe">
@@ -13,6 +29,13 @@ export default function Home() {
             listening history, editorial sources, and AI taste matching.
           </p>
         </div>
+
+        {/* ── Error banner ─────────────────────────────────── */}
+        {errorMessage && (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 text-left">
+            {errorMessage}
+          </div>
+        )}
 
         {/* ── CTA ──────────────────────────────────────────── */}
         <a
