@@ -58,15 +58,27 @@ export async function GET(req: NextRequest) {
   }
 
   const tokens = await tokenRes.json();
+
+  if (!tokens.access_token) {
+    console.error("auth/callback: token exchange returned no access_token", JSON.stringify(tokens));
+    return NextResponse.redirect(new URL("/?error=token_missing", base));
+  }
+
   const expiresIn = Number(tokens.expires_in) || 3600;
   const cookieAge = Math.max(expiresIn - 60, 60);
 
   // ── Fetch Spotify profile ──────────────────────────────────────────────
+  // cache: 'no-store' prevents Next.js from caching this response in the Data
+  // Cache — a stale/error response cached from a previous request would
+  // otherwise cause every subsequent login attempt to fail.
   const profileRes = await fetch("https://api.spotify.com/v1/me", {
     headers: { Authorization: `Bearer ${tokens.access_token}` },
+    cache: "no-store",
   });
 
   if (!profileRes.ok) {
+    const body = await profileRes.text().catch(() => "");
+    console.error(`auth/callback: profile fetch failed ${profileRes.status}: ${body}`);
     return NextResponse.redirect(new URL("/?error=profile_fetch", base));
   }
 
