@@ -12,6 +12,17 @@ type SignalBreakdown = {
 };
 type TopMention = { source: string; excerpt: string; published_at: string };
 
+type ArtistRec = {
+  artist_id: string;
+  artist_name: string;
+  score: number;
+  signals: { affinity: number; context: number; editorial: number };
+  reasons: string[];
+  genres: string[];
+  mention_count: number;
+  top_mention: TopMention | null;
+};
+
 type SongRecommendation = {
   track_id: string | null;
   track_name: string;
@@ -54,6 +65,31 @@ export default function DiscoverView({
     failed: string[];
   } | null>(null);
 
+  function artistFallbackSongs(artists: ArtistRec[]): SongRecommendation[] {
+    return artists.map((artist) => ({
+      track_id: null,
+      track_name: `Top track by ${artist.artist_name}`,
+      artist_id: artist.artist_id,
+      artist_name: artist.artist_name,
+      album_name: "",
+      duration_ms: 0,
+      explicit: false,
+      spotify_track_id: "",
+      score: artist.score,
+      signals: {
+        affinity: artist.signals.affinity,
+        context: artist.signals.context,
+        editorial: artist.signals.editorial,
+        track_popularity: 0,
+        audio_match: 0,
+      },
+      reasons: artist.reasons ?? [],
+      genres: artist.genres ?? [],
+      mention_count: artist.mention_count ?? 0,
+      top_mention: artist.top_mention ?? null,
+    }));
+  }
+
   async function handleSubmit() {
     setLoading(true);
     setError(null);
@@ -68,8 +104,7 @@ export default function DiscoverView({
         editorial: weights.editorial / 100,
       };
 
-      // Get song-level recommendations from backend (it handles artist scoring
-      // + Spotify lookup/fallback server-side).
+      // Preferred path: song-level endpoint (server-side Spotify lookup/fallback).
       const songsRes = await fetch(`/api/recommend-songs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -80,13 +115,30 @@ export default function DiscoverView({
         }),
       });
       const songsData = await songsRes.json().catch(() => ({}));
-      if (!songsRes.ok) {
-        setError(songsData.error ?? songsData.detail ?? "Failed to get recommendations");
-        setResults([]);
-        return;
+      let songs = songsRes.ok ? (songsData.results ?? []) : [];
+
+      // Compatibility fallback for branch/version mismatches:
+      // if /recommend-songs is unavailable or returns no rows, fall back to
+      // artist recommendations and render placeholder song rows.
+      if (!songsRes.ok || songs.length === 0) {
+        const artistRes = await fetch(`/api/recommend`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: prompt || null,
+            weights: normalized,
+          }),
+        });
+        const artistData = await artistRes.json().catch(() => ({}));
+        if (!artistRes.ok) {
+          setError(artistData.error ?? artistData.detail ?? "Failed to get recommendations");
+          setResults([]);
+          return;
+        }
+        const artists = (artistData.results ?? []) as ArtistRec[];
+        songs = artistFallbackSongs(artists);
       }
 
-      const songs = songsData.results ?? [];
       if (songs.length === 0) {
         setResults([]);
         return;

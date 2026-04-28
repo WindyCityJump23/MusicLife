@@ -54,12 +54,14 @@ def run_artist_embeddings(batch_size: int = BATCH_SIZE) -> dict:
         # Keep candidate/text alignment stable and skip blank sources so one
         # malformed row does not poison the entire batch.
         valid_candidates: list[dict] = []
+        invalid_rows: list[dict] = []
         invalid_count = 0
         for artist in candidates:
             raw = artist.get("embedding_source")
             text = raw.strip() if isinstance(raw, str) else ""
             if not text:
                 invalid_count += 1
+                invalid_rows.append({"id": artist["id"], "embedding_source": None})
                 continue
             valid_candidates.append({**artist, "embedding_source": text})
 
@@ -70,7 +72,6 @@ def run_artist_embeddings(batch_size: int = BATCH_SIZE) -> dict:
                 "artists with blank embedding_source"
             )
             # Prevent repeatedly selecting the same invalid rows forever.
-            invalid_rows = [{"id": artist["id"], "embedding_source": None} for artist in candidates if not isinstance(artist.get("embedding_source"), str) or not artist.get("embedding_source", "").strip()]
             if invalid_rows:
                 try:
                     admin_supabase.table("artists").upsert(invalid_rows, on_conflict="id").execute()
