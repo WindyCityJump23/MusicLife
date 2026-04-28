@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 
 // Spotify Web Playback SDK lives on window.Spotify and signals readiness
@@ -172,12 +173,16 @@ export default function Player() {
       {track ? (
         <div className="space-y-3">
           {track.albumArt && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={track.albumArt}
-              alt={track.name}
-              className="w-full aspect-square object-cover rounded-md border border-neutral-200"
-            />
+            <div className="relative w-full aspect-square">
+              <Image
+                src={track.albumArt}
+                alt={track.name}
+                fill
+                sizes="320px"
+                className="object-cover rounded-md border border-neutral-200"
+                priority
+              />
+            </div>
           )}
           <div>
             <div className="text-sm font-medium text-neutral-900 truncate">{track.name}</div>

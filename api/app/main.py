@@ -16,6 +16,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.routes import ingest, recommend, synthesize
+from app.startup_check import run_checks
+
+run_checks()
 
 app = FastAPI(title="Music Dashboard API")
 
