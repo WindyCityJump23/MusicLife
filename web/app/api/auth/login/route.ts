@@ -2,7 +2,9 @@ import { randomBytes } from "crypto";
 import { NextResponse } from "next/server";
 
 // Spotify OAuth — authorization code flow.
-// Scopes cover: read library, read listens, control playback, Web Playback SDK.
+// These scopes are used by first-session actions (sync, playback, playlist export,
+// favorites). If onboarding is split later, playback/modify scopes can be moved
+// to a second consent step.
 const SCOPES = [
   "user-read-email",
   "user-read-private",
@@ -27,7 +29,7 @@ export async function GET() {
     client_id: process.env.SPOTIFY_CLIENT_ID!,
     scope: SCOPES,
     redirect_uri: process.env.SPOTIFY_REDIRECT_URI!,
-    state
+    state,
   });
   const res = NextResponse.redirect(
     `https://accounts.spotify.com/authorize?${params.toString()}`
