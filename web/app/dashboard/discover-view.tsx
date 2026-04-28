@@ -26,6 +26,12 @@ export default function DiscoverView({ onNavigate }: { onNavigate?: (view: strin
   const [playlistState, setPlaylistState] = useState<"idle" | "saving" | "done" | "error">("idle");
   const [playlistUrl, setPlaylistUrl] = useState<string | null>(null);
   const [playlistError, setPlaylistError] = useState<string | null>(null);
+  const [playlistErrorDetail, setPlaylistErrorDetail] = useState<{
+    detail?: string | null;
+    endpoint?: string | null;
+    spotify_status?: number | null;
+    scope_issue?: boolean;
+  } | null>(null);
   const [playlistStats, setPlaylistStats] = useState<{ added: number; failed: string[] } | null>(null);
 
   async function handleSubmit() {
@@ -34,6 +40,7 @@ export default function DiscoverView({ onNavigate }: { onNavigate?: (view: strin
     setPlaylistState("idle");
     setPlaylistUrl(null);
     setPlaylistError(null);
+    setPlaylistErrorDetail(null);
     setPlaylistStats(null);
     try {
       const normalized = {
@@ -131,6 +138,7 @@ export default function DiscoverView({ onNavigate }: { onNavigate?: (view: strin
               onSave={async () => {
                 setPlaylistState("saving");
                 setPlaylistError(null);
+                setPlaylistErrorDetail(null);
                 setPlaylistUrl(null);
                 setPlaylistStats(null);
                 try {
@@ -160,6 +168,12 @@ export default function DiscoverView({ onNavigate }: { onNavigate?: (view: strin
                   if (!res.ok) {
                     setPlaylistState("error");
                     setPlaylistError(data.error ?? "Failed to create playlist");
+                    setPlaylistErrorDetail({
+                      detail: data.detail ?? null,
+                      endpoint: data.endpoint ?? null,
+                      spotify_status: data.spotify_status ?? null,
+                      scope_issue: !!data.scope_issue,
+                    });
                     return;
                   }
                   setPlaylistState("done");
@@ -221,12 +235,40 @@ export default function DiscoverView({ onNavigate }: { onNavigate?: (view: strin
 
           {/* Playlist error banner */}
           {playlistState === "error" && playlistError && (
-            <div className="border border-red-200 bg-red-50 rounded-lg p-3 flex items-center gap-2">
-              <span className="text-sm">⚠️</span>
-              <p className="text-sm text-red-700 flex-1">{playlistError}</p>
+            <div className="border border-red-200 bg-red-50 rounded-lg p-3 flex items-start gap-2">
+              <span className="text-sm leading-5 mt-px">⚠️</span>
+              <div className="flex-1 min-w-0 space-y-1">
+                <p className="text-sm text-red-700">{playlistError}</p>
+                {playlistErrorDetail && (playlistErrorDetail.detail || playlistErrorDetail.endpoint) && (
+                  <p className="text-[11px] text-red-500/80 font-mono break-words">
+                    {playlistErrorDetail.endpoint && (
+                      <span>{playlistErrorDetail.endpoint}</span>
+                    )}
+                    {playlistErrorDetail.spotify_status && (
+                      <span> · {playlistErrorDetail.spotify_status}</span>
+                    )}
+                    {playlistErrorDetail.detail && (
+                      <span className="block mt-0.5">“{playlistErrorDetail.detail}”</span>
+                    )}
+                  </p>
+                )}
+                {playlistErrorDetail?.scope_issue && (
+                  <a
+                    href="/api/auth/login"
+                    className="inline-block text-[11px] text-red-700 underline hover:text-red-900"
+                  >
+                    Re-authorize Spotify →
+                  </a>
+                )}
+              </div>
               <button
-                onClick={() => { setPlaylistState("idle"); setPlaylistError(null); }}
-                className="text-xs text-red-400 hover:text-red-600"
+                onClick={() => {
+                  setPlaylistState("idle");
+                  setPlaylistError(null);
+                  setPlaylistErrorDetail(null);
+                }}
+                aria-label="Dismiss error"
+                className="text-xs text-red-400 hover:text-red-600 -mt-1 -mr-1 w-7 h-7 rounded flex items-center justify-center"
               >
                 ✕
               </button>

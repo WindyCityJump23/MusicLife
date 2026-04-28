@@ -3,6 +3,62 @@ import { requireUser, isErrorResponse } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
+// ── Spotify error helpers ──────────────────────────────────────────
+
+type SpotifyErrorBody = {
+  error?: {
+    status?: number;
+    message?: string;
+    reason?: string;
+  };
+  error_description?: string;
+};
+
+/**
+ * Build a structured failure response for a Spotify API error.
+ * Surfaces the failing endpoint, Spotify's HTTP status, and the
+ * underlying message so the UI can show actionable detail instead
+ * of a generic "Failed to ...".
+ */
+async function spotifyFailure(
+  endpoint: string,
+  res: Response,
+  fallback: string
+) {
+  let body: SpotifyErrorBody = {};
+  try {
+    body = (await res.json()) as SpotifyErrorBody;
+  } catch {
+    /* non-JSON body */
+  }
+  const spotifyMessage = body.error?.message ?? body.error_description ?? null;
+  const spotifyReason = body.error?.reason ?? null;
+
+  // Detect missing scopes — Spotify uses several phrasings for this.
+  const looksLikeScopeIssue =
+    res.status === 403 &&
+    !!spotifyMessage &&
+    /scope|permission|insufficient/i.test(spotifyMessage);
+
+  const headline = looksLikeScopeIssue
+    ? "Missing playlist permissions. Sign out and sign back in to grant the new permissions."
+    : spotifyMessage
+    ? `Spotify error (${res.status}): ${spotifyMessage}`
+    : fallback;
+
+  return NextResponse.json(
+    {
+      error: headline,
+      detail: spotifyMessage,
+      reason: spotifyReason,
+      endpoint,
+      spotify_status: res.status,
+      scope_issue: looksLikeScopeIssue,
+    },
+    { status: res.status }
+  );
+}
+
 /**
  * POST /api/playlist
  *
@@ -70,7 +126,7 @@ export async function POST(request: NextRequest) {
   // ── Get Spotify user ID ────────────────────────────────────
   const meRes = await fetch("https://api.spotify.com/v1/me", { headers });
   if (!meRes.ok) {
-    return NextResponse.json({ error: "Failed to get Spotify profile" }, { status: 502 });
+    return spotifyFailure("GET /v1/me", meRes, "Failed to get Spotify profile");
   }
   const meData = await meRes.json();
   const spotifyUserId: string = meData.id;
@@ -90,20 +146,11 @@ export async function POST(request: NextRequest) {
   );
 
   if (!createRes.ok) {
-    const err = await createRes.json().catch(() => ({}));
-    const msg = err?.error?.message ?? "Failed to create playlist";
-
-    if (createRes.status === 403) {
-      return NextResponse.json(
-        {
-          error:
-            "Missing playlist permissions. Please sign out and sign back in to grant the new permissions.",
-        },
-        { status: 403 }
-      );
-    }
-
-    return NextResponse.json({ error: msg }, { status: createRes.status });
+    return spotifyFailure(
+      `POST /v1/users/${spotifyUserId}/playlists`,
+      createRes,
+      "Failed to create playlist"
+    );
   }
 
   const playlist = await createRes.json();
@@ -213,10 +260,10 @@ export async function POST(request: NextRequest) {
     );
 
     if (!addRes.ok) {
-      const err = await addRes.json().catch(() => ({}));
-      return NextResponse.json(
-        { error: err?.error?.message ?? "Failed to add tracks to playlist" },
-        { status: addRes.status }
+      return spotifyFailure(
+        `POST /v1/playlists/${playlistId}/tracks`,
+        addRes,
+        "Failed to add tracks to playlist"
       );
     }
   }
