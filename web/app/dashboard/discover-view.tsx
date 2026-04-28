@@ -89,19 +89,13 @@ export default function DiscoverView({
         editorial: weights.editorial / 100,
       };
 
-      // Step 1: Get artist-level recommendations from our backend.
-      // exclude_library:false because mentions only match existing artists —
-      // every embedded artist came from the user's library, so excluding the
-      // library would empty the candidate pool. Spotify top-tracks gives us
-      // unfamiliar songs from those artists, and the client caps 2 per artist.
+      // Step 1: Get artist-level recommendations from our backend
       const artistRes = await fetch(`/api/recommend`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: prompt || null,
           weights: normalized,
-          exclude_library: false,
-          limit: 30,
         }),
       });
       const artistData = await artistRes.json().catch(() => ({}));
