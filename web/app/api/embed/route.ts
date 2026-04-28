@@ -1,8 +1,12 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { requireUser, isErrorResponse } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
-export async function POST() {
+export async function POST(req: NextRequest) {
+  const user = requireUser(req);
+  if (isErrorResponse(user)) return user;
+
   const apiUrl = process.env.NEXT_PUBLIC_API_URL;
   if (!apiUrl) {
     return NextResponse.json({ error: "NEXT_PUBLIC_API_URL not configured" }, { status: 500 });

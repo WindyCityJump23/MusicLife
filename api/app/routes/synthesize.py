@@ -80,7 +80,7 @@ def synthesize_for_artist(req: SynthForArtistRequest):
 def _call_claude(req: SynthRequest) -> str:
     user_msg = _format_context(req)
     resp = _get_client().messages.create(
-        model="claude-sonnet-4-5",
+        model="claude-sonnet-4-6",
         max_tokens=400,
         system=SYSTEM,
         messages=[{"role": "user", "content": user_msg}],

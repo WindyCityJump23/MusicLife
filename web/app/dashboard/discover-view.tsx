@@ -41,12 +41,12 @@ export default function DiscoverView() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, weights: normalized }),
       });
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        setError(data.error ?? data.detail ?? "Failed to get recommendations");
         setResults([]);
-        setError(null);
         return;
       }
-      const data = await res.json();
       setResults(data.results ?? []);
       setLastQuery({ prompt, weights: normalized });
     } catch (err) {
