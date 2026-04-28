@@ -28,11 +28,11 @@ export default function PlaylistsView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchPlaylists = useCallback(async () => {
+  const fetchPlaylists = useCallback(async (refresh = false) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/playlists");
+      const res = await fetch(refresh ? "/api/playlists?refresh=1" : "/api/playlists");
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setError(data.error ?? "Failed to load playlists");
@@ -49,7 +49,7 @@ export default function PlaylistsView() {
   }, []);
 
   useEffect(() => {
-    fetchPlaylists();
+    fetchPlaylists(false);
   }, [fetchPlaylists]);
 
   if (loading) {
@@ -93,7 +93,7 @@ export default function PlaylistsView() {
           {playlists.length} playlist{playlists.length !== 1 ? "s" : ""}
         </p>
         <button
-          onClick={fetchPlaylists}
+          onClick={() => fetchPlaylists(true)}
           className="text-[11px] text-neutral-400 hover:text-neutral-600 transition-colors"
         >
           ↻ Refresh

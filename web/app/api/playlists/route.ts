@@ -3,6 +3,14 @@ import { requireUser, isErrorResponse } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
+// Per-user in-memory cache of the playlist payload. Spotify quotas are tight
+// in Development mode, and the user's playlists rarely change between
+// dashboard navigations within a minute. Each /api/playlists hit otherwise
+// fans out into ~20 concurrent Spotify calls.
+type CacheEntry = { expires: number; payload: unknown };
+const PLAYLIST_CACHE_TTL_MS = 60_000;
+const playlistCache = new Map<string, CacheEntry>();
+
 /**
  * GET /api/playlists
  *
@@ -21,6 +29,16 @@ export async function GET(request: NextRequest) {
     Number(request.nextUrl.searchParams.get("limit") ?? "20"),
     50
   );
+  const bypassCache = request.nextUrl.searchParams.get("refresh") === "1";
+
+  // ── Cache check ────────────────────────────────────────────
+  const cacheKey = `${user.userId}:${limit}`;
+  if (!bypassCache) {
+    const hit = playlistCache.get(cacheKey);
+    if (hit && hit.expires > Date.now()) {
+      return NextResponse.json(hit.payload);
+    }
+  }
 
   // ── Get Spotify access token ───────────────────────────────
   const cookieHeader = request.headers.get("cookie") ?? "";
@@ -104,7 +122,12 @@ export async function GET(request: NextRequest) {
     })
   );
 
-  return NextResponse.json({ playlists: playlistsWithTracks });
+  const payload = { playlists: playlistsWithTracks };
+  playlistCache.set(cacheKey, {
+    expires: Date.now() + PLAYLIST_CACHE_TTL_MS,
+    payload,
+  });
+  return NextResponse.json(payload);
 }
 
 // ── Types ────────────────────────────────────────────────────────
