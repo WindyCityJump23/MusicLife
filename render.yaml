@@ -2,8 +2,6 @@ services:
   - type: web
     name: musiclife-api
     runtime: python
-    rootDir: api
-    pythonVersion: "3.12.0"
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
