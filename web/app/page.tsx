@@ -52,7 +52,7 @@ export default function Home({
         {/* ── CTA ──────────────────────────────────────────── */}
         <div className="space-y-3">
           <a
-            href="/api/auth/login"
+            href="/api/auth/login?force=1"
             className="inline-flex items-center justify-center gap-2 rounded-full bg-white text-neutral-900 px-7 sm:px-8 py-3 text-sm font-medium hover:bg-white/90 active:bg-white/80 transition w-full sm:w-auto"
           >
             <SpotifyIcon />
@@ -60,6 +60,11 @@ export default function Home({
           </a>
           <p className="text-xs text-white/45 leading-relaxed max-w-xs mx-auto">
             Requires Spotify Premium for in-browser playback. Free accounts can browse recommendations and export playlists.
+          </p>
+          <p className="text-[11px] text-white/30 leading-relaxed max-w-xs mx-auto">
+            If Spotify gets stuck on Facebook login, open{" "}
+            <a href="https://spotify.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-white/50">spotify.com</a>{" "}
+            first, log in directly, then return here and try again.
           </p>
         </div>
 
