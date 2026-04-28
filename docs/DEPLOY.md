@@ -99,7 +99,6 @@ No local installs needed. Everything runs in the browser.
    | `SPOTIFY_CLIENT_SECRET` | from Step 2 |
    | `SPOTIFY_REDIRECT_URI` | `https://your-app.vercel.app/api/auth/callback` |
    | `NEXT_PUBLIC_API_URL` | your Render URL from Step 4 |
-   | `TEST_USER_ID` | leave blank for now — fill in after first login |
 
 5. Click **Deploy** — wait for it to go green
 6. Copy your Vercel URL (e.g. `https://musiclife.vercel.app`)
@@ -108,32 +107,31 @@ No local installs needed. Everything runs in the browser.
 
 ## Step 6 — Connect everything
 
-1. **Update Spotify redirect URI**: go back to Spotify Dashboard → your app → add your real Vercel URL as redirect URI
-2. **Update Render CORS**: go to Render → your service → Environment → set `CORS_ORIGINS` to your Vercel URL
-3. **Update Vercel redirect URI**: set `SPOTIFY_REDIRECT_URI` to `https://your-real-url.vercel.app/api/auth/callback`
+1. **Update Spotify redirect URI**: go back to Spotify Dashboard → your app → add your real Vercel URL as redirect URI: `https://your-app.vercel.app/api/auth/callback`
+2. **Update Render CORS**: Render → your service → Environment → set `CORS_ORIGINS` to your Vercel URL
+3. **Update Vercel SPOTIFY_REDIRECT_URI**: set it to `https://your-app.vercel.app/api/auth/callback`
 
 ---
 
-## Step 7 — First login + get your user ID
+## Step 7 — First login
 
-1. Open your Vercel URL → click **Connect Spotify**
-2. Go to **Supabase → Authentication → Users** → copy your UUID
-3. Go to **Vercel → your project → Settings → Environment Variables**
-4. Add `TEST_USER_ID` = your UUID
-5. Go to **Vercel → Deployments → Redeploy** (top right)
+1. Open your Vercel URL → click **Connect with Spotify**
+2. That's it — your account is created automatically
 
 ---
 
 ## Step 8 — Populate your library
 
-In the dashboard sidebar:
+In the dashboard sidebar (bottom left):
 
-1. **Sync Spotify library** — imports your music
-2. **Enrich artists** — fetches bios and tags (takes a few minutes)
-3. **Embed artists** — generates taste vectors
-4. **Fetch sources** — crawls music blogs and Reddit
+1. **Sync Spotify library** — imports your music (~30 seconds)
+2. **Enrich artists** — fetches bios and tags (~2-5 minutes, runs at 1 req/s)
+3. **Embed artists** — generates taste vectors (~1 minute)
+4. **Fetch sources** — crawls music blogs and Reddit (~30 seconds)
 
-After all four, **Discover** returns real recommendations.
+After all four steps, the **Discover** tab returns real recommendations.
+
+Friends can do the same — just share your Vercel URL. Each person logs in with their own Spotify and gets their own separate data.
 
 ---
 

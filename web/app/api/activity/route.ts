@@ -1,23 +1,19 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { requireUser, isErrorResponse } from "@/lib/session";
 import { supabaseServer } from "@/lib/supabase-server";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-  const userId = process.env.TEST_USER_ID;
-  if (!userId) {
-    return NextResponse.json({ error: "TEST_USER_ID not configured" }, { status: 500 });
-  }
+export async function GET(req: NextRequest) {
+  const user = requireUser(req);
+  if (isErrorResponse(user)) return user;
 
   const sb = supabaseServer();
 
-  // Two-step fetch: listen_events → tracks, then tracks → artists.
-  // Supabase auto-join via nested select works only when the FK relationship
-  // name matches exactly. Fetching separately avoids the silent-null trap.
   const { data: events, error } = await sb
     .from("listen_events")
     .select("id, listened_at, track_id")
-    .eq("user_id", userId)
+    .eq("user_id", user.userId)
     .order("listened_at", { ascending: false })
     .limit(50);
 

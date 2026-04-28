@@ -1,16 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireUser, isErrorResponse } from "@/lib/session";
 import { supabaseServer } from "@/lib/supabase-server";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  const userId = process.env.TEST_USER_ID;
-  if (!userId) {
-    return NextResponse.json({ error: "TEST_USER_ID not configured" }, { status: 500 });
-  }
+  const user = requireUser(req);
+  if (isErrorResponse(user)) return user;
 
   const id = Number(params.id);
   if (!Number.isFinite(id)) {
@@ -22,8 +21,9 @@ export async function GET(
     .from("playlists")
     .select("id, name, description, updated_at")
     .eq("id", id)
-    .eq("user_id", userId)
+    .eq("user_id", user.userId)
     .single();
+
   if (pErr || !playlist) {
     return NextResponse.json({ error: pErr?.message ?? "not found" }, { status: 404 });
   }
@@ -33,6 +33,7 @@ export async function GET(
     .select("artist_id, rank, reason, artists(name, genres)")
     .eq("playlist_id", id)
     .order("rank", { ascending: true });
+
   if (iErr) {
     return NextResponse.json({ error: iErr.message }, { status: 500 });
   }
@@ -56,13 +57,11 @@ export async function GET(
 }
 
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  const userId = process.env.TEST_USER_ID;
-  if (!userId) {
-    return NextResponse.json({ error: "TEST_USER_ID not configured" }, { status: 500 });
-  }
+  const user = requireUser(req);
+  if (isErrorResponse(user)) return user;
 
   const id = Number(params.id);
   if (!Number.isFinite(id)) {
@@ -74,7 +73,8 @@ export async function DELETE(
     .from("playlists")
     .delete()
     .eq("id", id)
-    .eq("user_id", userId);
+    .eq("user_id", user.userId);
+
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

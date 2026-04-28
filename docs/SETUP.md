@@ -35,7 +35,6 @@ Fill required values:
 | `SPOTIFY_CLIENT_SECRET` | Spotify Developer Dashboard |
 | `SPOTIFY_REDIRECT_URI` | `http://localhost:3000/api/auth/callback` for local dev |
 | `NEXT_PUBLIC_API_URL` | `http://localhost:8000` |
-| `TEST_USER_ID` | Your Supabase user UUID (get after first login, see below) |
 
 ### API (`api/.env`)
 
@@ -98,16 +97,10 @@ make web         # Next.js on :3000
 - API docs: http://localhost:8000/docs
 - Health check: http://localhost:8000/health
 
-## 6) Get your TEST_USER_ID
+## 6) First login
 
-After running both services:
-
-1. Open http://localhost:3000
-2. Click **Connect Spotify** — completes OAuth and creates your user row
-3. Go to **Supabase → Authentication → Users**
-4. Copy your UUID
-5. Set `TEST_USER_ID=<uuid>` in `web/.env.local`
-6. Restart web: `make web`
+Open http://localhost:3000 and click **Connect with Spotify**.
+Your user row is created automatically — no UUID copying needed.
 
 ## 7) Smoke checks
 

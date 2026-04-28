@@ -1,3 +1,4 @@
+import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 
 function baseUrl(req: NextRequest): string {
@@ -6,28 +7,34 @@ function baseUrl(req: NextRequest): string {
   return `${proto}://${host}`;
 }
 
-// Exchange the authorization code for access + refresh tokens.
-// Stash tokens in HTTP-only cookies for now — a proper build would
-// store the refresh token in Supabase keyed to the user row.
+function setCookieOpts(secure: boolean) {
+  return {
+    httpOnly: true,
+    secure,
+    sameSite: "lax" as const,
+    path: "/",
+  };
+}
+
+// Exchange the Spotify authorization code for tokens, upsert the user into
+// Supabase, and store the user's Supabase UUID in a cookie so every route
+// handler can identify them without an extra Spotify API call on each request.
 export async function GET(req: NextRequest) {
+  const secure = process.env.NODE_ENV === "production";
+  const base = baseUrl(req);
+
   const code = req.nextUrl.searchParams.get("code");
   const returnedState = req.nextUrl.searchParams.get("state");
   const storedState = req.cookies.get("sp_oauth_state")?.value;
 
   if (!code) {
-    return NextResponse.redirect(new URL("/?error=no_code", baseUrl(req)));
+    return NextResponse.redirect(new URL("/?error=no_code", base));
   }
-
   if (!returnedState || !storedState || returnedState !== storedState) {
-    return NextResponse.redirect(new URL("/?error=state_mismatch", baseUrl(req)));
+    return NextResponse.redirect(new URL("/?error=state_mismatch", base));
   }
 
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    code,
-    redirect_uri: process.env.SPOTIFY_REDIRECT_URI!,
-  });
-
+  // ── Exchange code for tokens ───────────────────────────────────────────
   const basic = Buffer.from(
     `${process.env.SPOTIFY_CLIENT_ID}:${process.env.SPOTIFY_CLIENT_SECRET}`
   ).toString("base64");
@@ -38,55 +45,87 @@ export async function GET(req: NextRequest) {
       "Content-Type": "application/x-www-form-urlencoded",
       Authorization: `Basic ${basic}`,
     },
-    body,
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: process.env.SPOTIFY_REDIRECT_URI!,
+    }),
   });
 
   if (!tokenRes.ok) {
-    return NextResponse.redirect(new URL("/?error=token_exchange", baseUrl(req)));
+    return NextResponse.redirect(new URL("/?error=token_exchange", base));
   }
 
   const tokens = await tokenRes.json();
-  // tokens: { access_token, token_type, expires_in, refresh_token, scope }
-
-  const res = NextResponse.redirect(new URL("/dashboard", baseUrl(req)));
-  res.cookies.set("sp_oauth_state", "", {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    maxAge: 0,
-    path: "/",
-  });
-
   const expiresIn = Number(tokens.expires_in) || 3600;
   const cookieAge = Math.max(expiresIn - 60, 60);
 
+  // ── Fetch Spotify profile ──────────────────────────────────────────────
+  const profileRes = await fetch("https://api.spotify.com/v1/me", {
+    headers: { Authorization: `Bearer ${tokens.access_token}` },
+  });
+
+  if (!profileRes.ok) {
+    return NextResponse.redirect(new URL("/?error=profile_fetch", base));
+  }
+
+  const profile = await profileRes.json();
+  const spotifyId: string = profile.id;
+  const displayName: string = profile.display_name ?? profile.id;
+
+  // ── Upsert user into Supabase ──────────────────────────────────────────
+  const sbUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  const sb = createClient(sbUrl, sbKey, { auth: { persistSession: false } });
+
+  const { data: userData, error: upsertErr } = await sb
+    .from("users")
+    .upsert(
+      { spotify_user_id: spotifyId, display_name: displayName },
+      { onConflict: "spotify_user_id" }
+    )
+    .select("id")
+    .single();
+
+  if (upsertErr || !userData) {
+    console.error("auth/callback: user upsert failed", upsertErr?.message);
+    return NextResponse.redirect(new URL("/?error=user_upsert", base));
+  }
+
+  const supabaseUserId: string = userData.id;
+
+  // ── Set cookies and redirect ───────────────────────────────────────────
+  const res = NextResponse.redirect(new URL("/dashboard", base));
+
+  // Clear CSRF state cookie
+  res.cookies.set("sp_oauth_state", "", { ...setCookieOpts(secure), maxAge: 0 });
+
+  // Spotify tokens
   res.cookies.set("sp_access", tokens.access_token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
+    ...setCookieOpts(secure),
     maxAge: cookieAge,
-    path: "/",
   });
-
   res.cookies.set("sp_access_expires_at", String(Date.now() + expiresIn * 1000), {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
+    ...setCookieOpts(secure),
     maxAge: cookieAge,
-    path: "/",
   });
-
   if (tokens.refresh_token) {
     res.cookies.set("sp_refresh", tokens.refresh_token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      ...setCookieOpts(secure),
       maxAge: 60 * 60 * 24 * 30,
-      path: "/",
     });
-  } else {
-    res.cookies.delete("sp_refresh");
   }
+
+  // User identity — stored in a long-lived cookie so route handlers don't
+  // need to call Spotify /me on every request.
+  res.cookies.set("app_user_id", supabaseUserId, {
+    ...setCookieOpts(secure),
+    maxAge: 60 * 60 * 24 * 30,
+  });
+  res.cookies.set("app_display_name", encodeURIComponent(displayName), {
+    ...setCookieOpts(secure),
+    maxAge: 60 * 60 * 24 * 30,
+  });
 
   return res;
 }

@@ -67,7 +67,6 @@ make env        # copies .env.local.example → web/.env.local and api/.env.exam
 | `SPOTIFY_CLIENT_SECRET` | Spotify Developer Dashboard |
 | `SPOTIFY_REDIRECT_URI` | `http://localhost:3000/api/auth/callback` |
 | `NEXT_PUBLIC_API_URL` | `http://localhost:8000` |
-| `TEST_USER_ID` | Your Supabase user UUID (see step 6) |
 
 #### `api/.env`
 
@@ -125,16 +124,7 @@ make api   # FastAPI only
 make web   # Next.js only
 ```
 
-### 6. Get your Supabase user UUID for TEST_USER_ID
-
-1. Open [http://localhost:3000](http://localhost:3000)
-2. Click **Connect Spotify** and complete OAuth
-3. Go to **Supabase → Authentication → Users**
-4. Copy your user's UUID
-5. Paste it into `web/.env.local` as `TEST_USER_ID=<uuid>`
-6. Restart the web server (`Ctrl+C` then `make web`)
-
-### 7. Populate your library
+### 6. Populate your library
 
 In the dashboard sidebar (bottom section):
 

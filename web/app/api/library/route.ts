@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { requireUser, isErrorResponse } from "@/lib/session";
 import { supabaseServer } from "@/lib/supabase-server";
 
 export const dynamic = "force-dynamic";
@@ -11,18 +12,17 @@ type Artist = {
   embedded: boolean;
 };
 
-export async function GET() {
-  const userId = process.env.TEST_USER_ID;
-  if (!userId) {
-    return NextResponse.json({ error: "TEST_USER_ID not configured" }, { status: 500 });
-  }
+export async function GET(req: NextRequest) {
+  const user = requireUser(req);
+  if (isErrorResponse(user)) return user;
 
   const sb = supabaseServer();
 
   const { data: userTracks, error: utErr } = await sb
     .from("user_tracks")
     .select("track_id, tracks(artist_id)")
-    .eq("user_id", userId);
+    .eq("user_id", user.userId);
+
   if (utErr) {
     return NextResponse.json({ error: utErr.message }, { status: 500 });
   }
@@ -57,7 +57,7 @@ export async function GET() {
   const { count: recentPlayCount } = await sb
     .from("listen_events")
     .select("id", { count: "exact", head: true })
-    .eq("user_id", userId)
+    .eq("user_id", user.userId)
     .order("listened_at", { ascending: false })
     .limit(50);
 

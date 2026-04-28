@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireUser, isErrorResponse } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
-  const userId = process.env.TEST_USER_ID;
-  if (!userId) {
-    return NextResponse.json({ error: "TEST_USER_ID not configured" }, { status: 500 });
-  }
+  const user = requireUser(req);
+  if (isErrorResponse(user)) return user;
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL;
   if (!apiUrl) {
@@ -15,14 +14,11 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => ({}));
 
-  const upstream = await fetch(
-    `${apiUrl}/synthesize/for-artist`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: userId, ...body }),
-    }
-  );
+  const upstream = await fetch(`${apiUrl}/synthesize/for-artist`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: user.userId, ...body }),
+  });
 
   const data = await upstream.json().catch(() => ({}));
   return NextResponse.json(data, { status: upstream.status });

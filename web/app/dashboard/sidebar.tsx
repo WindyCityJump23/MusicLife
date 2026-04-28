@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import SyncButton from "./SyncButton";
 import EnrichButton from "./EnrichButton";
 import EmbedButton from "./EmbedButton";
@@ -21,10 +22,27 @@ export default function Sidebar({
   active: View;
   onChange: (v: View) => void;
 }) {
+  const [displayName, setDisplayName] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then((r) => r.json())
+      .then((d) => { if (d.displayName) setDisplayName(d.displayName); })
+      .catch(() => {});
+  }, []);
+
+  async function handleLogout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/";
+  }
+
   return (
     <aside className="flex flex-col h-full border-r border-neutral-200 bg-neutral-50/40">
       <div className="px-4 py-5 border-b border-neutral-200">
         <h1 className="text-sm font-semibold tracking-tight">Music Dashboard</h1>
+        {displayName && (
+          <p className="text-xs text-neutral-500 mt-0.5 truncate">{displayName}</p>
+        )}
       </div>
 
       <nav className="flex-1 p-2 space-y-0.5">
@@ -55,6 +73,12 @@ export default function Sidebar({
         <EnrichButton />
         <EmbedButton />
         <SourcesButton />
+        <button
+          onClick={handleLogout}
+          className="w-full px-2.5 py-1.5 rounded border border-neutral-200 bg-white text-xs text-neutral-500 hover:bg-neutral-50 hover:border-neutral-300 text-left mt-2"
+        >
+          Sign out
+        </button>
       </div>
     </aside>
   );

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireUser, isErrorResponse } from "@/lib/session";
 import { supabaseServer } from "@/lib/supabase-server";
 
 export const dynamic = "force-dynamic";
@@ -9,17 +10,15 @@ type SaveItem = {
   reason: string | null;
 };
 
-export async function GET() {
-  const userId = process.env.TEST_USER_ID;
-  if (!userId) {
-    return NextResponse.json({ error: "TEST_USER_ID not configured" }, { status: 500 });
-  }
+export async function GET(req: NextRequest) {
+  const user = requireUser(req);
+  if (isErrorResponse(user)) return user;
 
   const sb = supabaseServer();
   const { data, error } = await sb
     .from("playlists")
     .select("id, name, description, updated_at")
-    .eq("user_id", userId)
+    .eq("user_id", user.userId)
     .order("updated_at", { ascending: false })
     .limit(50);
 
@@ -41,10 +40,8 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const userId = process.env.TEST_USER_ID;
-  if (!userId) {
-    return NextResponse.json({ error: "TEST_USER_ID not configured" }, { status: 500 });
-  }
+  const user = requireUser(req);
+  if (isErrorResponse(user)) return user;
 
   const body = await req.json().catch(() => null);
   if (!body || typeof body.name !== "string" || !Array.isArray(body.items)) {
@@ -60,13 +57,14 @@ export async function POST(req: NextRequest) {
   const { data: playlist, error: pErr } = await sb
     .from("playlists")
     .insert({
-      user_id: userId,
+      user_id: user.userId,
       name: body.name.trim().slice(0, 120),
       description: JSON.stringify(meta),
       visibility: "private",
     })
     .select("id")
     .single();
+
   if (pErr || !playlist) {
     return NextResponse.json({ error: pErr?.message ?? "insert failed" }, { status: 500 });
   }
@@ -96,7 +94,7 @@ function parseMeta(description: string | null): { prompt?: string; weights?: any
     const parsed = JSON.parse(description);
     if (parsed && typeof parsed === "object") return parsed;
   } catch {
-    // older rows may not be JSON; ignore
+    // older rows may not be JSON
   }
   return {};
 }
