@@ -11,9 +11,12 @@ export async function GET() {
 
   const sb = supabaseServer();
 
-  const { data, error } = await sb
+  // Two-step fetch: listen_events → tracks, then tracks → artists.
+  // Supabase auto-join via nested select works only when the FK relationship
+  // name matches exactly. Fetching separately avoids the silent-null trap.
+  const { data: events, error } = await sb
     .from("listen_events")
-    .select("id, listened_at, tracks(name, artists(name))")
+    .select("id, listened_at, track_id")
     .eq("user_id", userId)
     .order("listened_at", { ascending: false })
     .limit(50);
@@ -22,11 +25,44 @@ export async function GET() {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const plays = (data ?? []).map((row: any) => ({
+  const trackIds = Array.from(
+    new Set((events ?? []).map((e: any) => e.track_id).filter(Boolean))
+  );
+
+  const trackMap: Record<number, { name: string; artistName: string }> = {};
+  if (trackIds.length > 0) {
+    const { data: tracks } = await sb
+      .from("tracks")
+      .select("id, name, artist_id")
+      .in("id", trackIds);
+
+    const artistIds = Array.from(
+      new Set((tracks ?? []).map((t: any) => t.artist_id).filter(Boolean))
+    );
+    const artistMap: Record<number, string> = {};
+    if (artistIds.length > 0) {
+      const { data: artists } = await sb
+        .from("artists")
+        .select("id, name")
+        .in("id", artistIds);
+      for (const a of artists ?? []) {
+        artistMap[a.id] = a.name;
+      }
+    }
+
+    for (const t of tracks ?? []) {
+      trackMap[t.id] = {
+        name: t.name ?? "Unknown track",
+        artistName: artistMap[t.artist_id] ?? "Unknown artist",
+      };
+    }
+  }
+
+  const plays = (events ?? []).map((row: any) => ({
     id: row.id,
     listenedAt: row.listened_at,
-    trackName: row.tracks?.name ?? "Unknown track",
-    artistName: row.tracks?.artists?.name ?? "Unknown artist",
+    trackName: trackMap[row.track_id]?.name ?? "Unknown track",
+    artistName: trackMap[row.track_id]?.artistName ?? "Unknown artist",
   }));
 
   return NextResponse.json({ plays });

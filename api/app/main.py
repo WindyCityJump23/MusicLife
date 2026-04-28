@@ -34,4 +34,12 @@ app.include_router(synthesize.router, prefix="/synthesize", tags=["synthesize"])
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    """Liveness probe. Optionally checks Supabase connectivity."""
+    from app.services.supabase_client import admin_supabase
+    try:
+        # Lightweight read to verify DB is reachable.
+        admin_supabase.table("sources").select("id").limit(1).execute()
+        db_ok = True
+    except Exception:
+        db_ok = False
+    return {"ok": True, "db": db_ok}

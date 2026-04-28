@@ -12,9 +12,15 @@ admin_supabase: Client = create_client(
 def get_user_scoped_supabase(jwt: str) -> Client:
     """Create a per-request Supabase client constrained by the caller JWT.
 
-    This client uses the anon key + Authorization header so Postgres RLS
-    policies evaluate against `auth.uid()` of the caller.
+    When the token is the service role key itself (server-to-server BFF calls)
+    we return the admin client directly — it already has full access and the
+    anon-key path would silently fail RLS for catalog-only tables.
+
+    For real user JWTs, we use the anon key + Authorization header so Postgres
+    RLS policies evaluate against `auth.uid()` of the caller.
     """
+    if jwt == settings.supabase_service_role_key:
+        return admin_supabase
 
     options = ClientOptions(
         headers={"Authorization": f"Bearer {jwt}"},

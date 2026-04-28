@@ -7,12 +7,23 @@ from app.config import settings
 
 
 class _Embedder:
-    def __init__(self):
+    """Lazy-initialised embedding client.
+
+    Client objects are created on first use rather than at import time so that
+    FastAPI can start up (and serve /health) even if the embedding provider
+    keys are temporarily missing or mis-configured.
+    """
+
+    def __init__(self) -> None:
         self.provider = settings.embedding_provider.lower().strip()
         self.model = settings.embedding_model
         self._voyage: VoyageClient | None = None
         self._openai: OpenAI | None = None
+        self._initialised = False
 
+    def _ensure_init(self) -> None:
+        if self._initialised:
+            return
         if self.provider == "voyage":
             if not settings.voyage_api_key:
                 raise RuntimeError("EMBEDDING_PROVIDER=voyage requires VOYAGE_API_KEY")
@@ -22,12 +33,15 @@ class _Embedder:
                 raise RuntimeError("EMBEDDING_PROVIDER=openai requires OPENAI_API_KEY")
             self._openai = OpenAI(api_key=settings.openai_api_key)
         else:
-            raise RuntimeError(f"Unsupported EMBEDDING_PROVIDER: {self.provider}")
+            raise RuntimeError(f"Unsupported EMBEDDING_PROVIDER: {self.provider!r}")
+        self._initialised = True
 
     def embed(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
         clean_texts = [t.strip() for t in texts if t and t.strip()]
         if not clean_texts:
             return []
+
+        self._ensure_init()
 
         if self.provider == "voyage":
             assert self._voyage is not None

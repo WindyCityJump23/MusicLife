@@ -148,9 +148,15 @@ def rank_candidates(
     artists_resp = (
         client.table("artists")
         .select("id,name,embedding,popularity")
+        .not_.is_("embedding", "null")
         .execute()
     )
     candidates = artists_resp.data or []
+
+    # Collect candidate artist ids so we only fetch relevant mentions.
+    candidate_ids = [
+        int(a["id"]) for a in candidates if a.get("id") is not None
+    ]
 
     source_resp = client.table("sources").select("id,trust_weight").execute()
     source_weights = {
@@ -159,11 +165,16 @@ def rank_candidates(
         if row.get("id") is not None
     }
 
-    mention_resp = (
-        client.table("mentions")
-        .select("artist_id,source_id,embedding,published_at,sentiment")
-        .execute()
-    )
+    # Only fetch mentions for artists in the candidate pool, not all mentions.
+    if candidate_ids:
+        mention_resp = (
+            client.table("mentions")
+            .select("artist_id,source_id,embedding,published_at,sentiment")
+            .in_("artist_id", candidate_ids)
+            .execute()
+        )
+    else:
+        mention_resp = type("_R", (), {"data": []})()  # type: ignore[assignment]
     mentions = mention_resp.data or []
 
     mentions_by_artist: dict[int, list[dict]] = defaultdict(list)

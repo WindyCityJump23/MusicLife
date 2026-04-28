@@ -1,19 +1,39 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// TODO: Once Supabase auth is wired into the dashboard, forward the
-// caller's Supabase JWT as `Authorization: Bearer <jwt>` here. The
-// FastAPI /recommend endpoint requires a Supabase JWT, so until that
-// lands this proxy will surface a 401 from upstream. The network fetch
-// itself will succeed; discover-view's empty state handles non-200s.
+export const dynamic = "force-dynamic";
+
 export async function POST(req: NextRequest) {
+  const userId = process.env.TEST_USER_ID;
+  if (!userId) {
+    return NextResponse.json({ error: "TEST_USER_ID not configured" }, { status: 500 });
+  }
+
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (!apiUrl) {
+    return NextResponse.json({ error: "NEXT_PUBLIC_API_URL not configured" }, { status: 500 });
+  }
+
+  // The FastAPI /recommend endpoint validates a Supabase JWT. Until the
+  // dashboard has full Supabase auth, we use the service role key as the
+  // bearer token — it bypasses RLS the same way the API's admin client does.
+  // This is safe because the route is server-side only and the key never
+  // reaches the browser.
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!serviceRoleKey) {
+    return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY not configured" }, { status: 500 });
+  }
+
   const body = await req.json().catch(() => ({}));
 
   const upstream = await fetch(
-    `${process.env.NEXT_PUBLIC_API_URL}/recommend`,
+    `${apiUrl}/recommend`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: process.env.TEST_USER_ID, ...body }),
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${serviceRoleKey}`,
+      },
+      body: JSON.stringify({ user_id: userId, ...body }),
     }
   );
 

@@ -42,8 +42,16 @@ def run_artist_embeddings(batch_size: int = 18) -> None:
         )
         return
 
-    for i, artist in enumerate(candidates):
-        admin_supabase.table("artists").update(
-            {"embedding": vectors[i]}
-        ).eq("id", artist["id"]).execute()
+    # Batch upsert all embeddings in a single round-trip instead of N individual updates.
+    rows = [
+        {
+            "id": artist["id"],
+            "spotify_artist_id": artist.get("spotify_artist_id"),
+            "name": artist["name"],
+            "embedding_source": artist["embedding_source"],
+            "embedding": vectors[i],
+        }
+        for i, artist in enumerate(candidates)
+    ]
+    admin_supabase.table("artists").upsert(rows, on_conflict="id").execute()
     print(f"artist_embeddings: wrote {len(candidates)} embeddings")
