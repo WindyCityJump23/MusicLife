@@ -74,6 +74,7 @@ export default function DiscoverView({
           prompt: prompt || null,
           weights: normalized,
           limit: 30,
+          exclude_library: false,
         }),
       });
       const data = await res.json().catch(() => ({}));
