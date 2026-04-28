@@ -110,7 +110,7 @@ function Stats({
   stats: { artistCount: number; trackCount: number; recentPlayCount: number };
 }) {
   return (
-    <header className="flex items-baseline gap-1 text-sm text-neutral-600">
+    <header className="flex flex-wrap items-baseline gap-x-1 gap-y-0.5 text-sm text-neutral-600">
       <span className="font-medium text-neutral-900">{stats.artistCount}</span>
       <span>artists,</span>
       <span className="font-medium text-neutral-900">{stats.trackCount}</span>

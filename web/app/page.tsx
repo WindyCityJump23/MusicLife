@@ -1,14 +1,14 @@
 export default function Home() {
   return (
-    <main className="min-h-screen flex items-center justify-center p-8 bg-white">
-      <div className="max-w-md w-full text-center space-y-10">
+    <main className="min-h-screen flex items-center justify-center px-5 py-8 sm:p-8 bg-white">
+      <div className="max-w-md w-full text-center space-y-8 sm:space-y-10 pt-safe pb-safe">
 
         {/* ── Hero ─────────────────────────────────────────── */}
         <div className="space-y-3">
-          <h1 className="text-4xl font-semibold tracking-tight text-neutral-900">
+          <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight text-neutral-900">
             MusicLife
           </h1>
-          <p className="text-neutral-500 leading-relaxed">
+          <p className="text-sm sm:text-base text-neutral-500 leading-relaxed">
             Discover music you&apos;ll actually like. Powered by your Spotify
             listening history, editorial sources, and AI taste matching.
           </p>
@@ -17,18 +17,18 @@ export default function Home() {
         {/* ── CTA ──────────────────────────────────────────── */}
         <a
           href="/api/auth/login"
-          className="inline-flex items-center gap-2 rounded-full bg-neutral-900 text-white px-8 py-3 text-sm font-medium hover:bg-neutral-700 transition"
+          className="inline-flex items-center justify-center gap-2 rounded-full bg-neutral-900 text-white px-7 sm:px-8 py-3 text-sm font-medium hover:bg-neutral-700 active:bg-neutral-800 transition w-full sm:w-auto"
         >
           <SpotifyIcon />
           Connect with Spotify
         </a>
 
         {/* ── How it works ─────────────────────────────────── */}
-        <div className="border-t border-neutral-100 pt-8">
-          <p className="text-xs uppercase tracking-widest text-neutral-400 font-medium mb-6">
+        <div className="border-t border-neutral-100 pt-6 sm:pt-8">
+          <p className="text-xs uppercase tracking-widest text-neutral-400 font-medium mb-5 sm:mb-6">
             How it works
           </p>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-3 gap-3 sm:gap-4">
             <HowStep
               emoji="🔗"
               step="1"
@@ -50,7 +50,7 @@ export default function Home() {
           </div>
         </div>
 
-        <p className="text-xs text-neutral-400">
+        <p className="text-xs text-neutral-400 px-2">
           Your data stays private. No ads. No algorithms selling your taste.
         </p>
       </div>

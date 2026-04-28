@@ -226,12 +226,10 @@ export default function Player() {
         <div className="flex flex-col items-center gap-4">
           {/* Spinning vinyl disc */}
           <div
-            className={`relative rounded-full overflow-hidden flex-shrink-0 ${
+            className={`relative rounded-full overflow-hidden flex-shrink-0 w-44 h-44 sm:w-52 sm:h-52 lg:w-48 lg:h-48 ${
               !paused ? "vinyl-spin glow-playing" : "vinyl-spin-paused"
             }`}
             style={{
-              width: 192,
-              height: 192,
               boxShadow: paused
                 ? "0 4px 24px rgba(0,0,0,0.6)"
                 : undefined,
@@ -242,7 +240,7 @@ export default function Player() {
                 src={track.albumArt}
                 alt={track.name}
                 fill
-                sizes="192px"
+                sizes="(max-width: 640px) 176px, (max-width: 1024px) 208px, 192px"
                 className="object-cover"
                 priority
               />
@@ -284,7 +282,7 @@ export default function Player() {
         /* Idle state */
         <div className="flex flex-col items-center gap-3 py-4 idle-float">
           <div
-            className="w-40 h-40 rounded-full flex items-center justify-center idle-rotate"
+            className="w-36 h-36 sm:w-40 sm:h-40 rounded-full flex items-center justify-center idle-rotate"
             style={{
               background: "radial-gradient(circle, #0f3460 0%, #1a1a2e 80%)",
               border: "3px solid rgba(233,69,96,0.3)",
@@ -369,7 +367,8 @@ export default function Player() {
           value={volume}
           onChange={(e) => handleVolumeChange(Number(e.target.value))}
           disabled={!isReady}
-          className="flex-1 h-1.5 rounded-full appearance-none disabled:opacity-40 cursor-pointer"
+          aria-label="Volume"
+          className="flex-1 h-2 rounded-full appearance-none disabled:opacity-40 cursor-pointer"
           style={
             {
               accentColor: "#e94560",
