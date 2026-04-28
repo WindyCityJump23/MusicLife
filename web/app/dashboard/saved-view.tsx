@@ -106,8 +106,14 @@ export default function SavedView() {
 
   if (error) {
     return (
-      <div className="border border-red-200 bg-red-50 text-red-700 rounded-md p-4 text-sm">
-        {error}
+      <div className="border border-red-200 bg-red-50 text-red-700 rounded-md p-4 text-sm flex items-center justify-between gap-3">
+        <span>{error}</span>
+        <button
+          onClick={fetchList}
+          className="shrink-0 px-3 py-1.5 rounded-lg border border-red-200 text-red-600 text-xs font-medium hover:bg-red-100 transition-colors"
+        >
+          Try again
+        </button>
       </div>
     );
   }

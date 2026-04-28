@@ -95,10 +95,27 @@ button, a, [role="button"] {
 .animate-slide-in-left { animation: slide-in-left 220ms ease-out; }
 .animate-fade-in     { animation: fade-in    200ms ease-out; }
 
+/* View switch fade-in */
+.view-fade-in {
+  animation: fade-in 180ms ease-out;
+}
+
+/* Skeleton shimmer for loading states */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton-shimmer {
+  background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .vinyl-spin, .vinyl-spin-paused, .glow-playing,
   .idle-float, .idle-rotate,
-  .animate-slide-up, .animate-slide-in-left, .animate-fade-in {
+  .animate-slide-up, .animate-slide-in-left, .animate-fade-in,
+  .view-fade-in, .skeleton-shimmer {
     animation: none !important;
   }
 }

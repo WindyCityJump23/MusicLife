@@ -115,6 +115,20 @@ export default function PlaylistsView() {
 
 function PlaylistCard({ playlist }: { playlist: Playlist }) {
   const [expanded, setExpanded] = useState(false);
+  const [favoritedIds, setFavoritedIds] = useState<Set<string>>(new Set());
+
+  // Fetch favorites when tracks are expanded
+  useEffect(() => {
+    if (!expanded || playlist.tracks.length === 0) return;
+    const trackIds = playlist.tracks
+      .map((t) => t.uri?.startsWith("spotify:track:") ? t.uri.replace("spotify:track:", "") : null)
+      .filter(Boolean) as string[];
+    if (trackIds.length === 0) return;
+    fetch(`/api/favorites-check?ids=${trackIds.join(",")}`)
+      .then((r) => r.json())
+      .then((d) => setFavoritedIds(new Set(d.favorited ?? [])))
+      .catch(() => {});
+  }, [expanded, playlist.tracks]);
 
   return (
     <div className="border border-neutral-200 rounded-lg overflow-hidden">
@@ -183,7 +197,14 @@ function PlaylistCard({ playlist }: { playlist: Playlist }) {
           ) : (
             <div className="divide-y divide-neutral-50">
               {playlist.tracks.map((track, i) => (
-                <TrackRow key={`${track.uri}-${i}`} track={track} index={i + 1} />
+                <TrackRow
+                  key={`${track.uri}-${i}`}
+                  track={track}
+                  index={i + 1}
+                  initialFavorited={favoritedIds.has(
+                    track.uri?.startsWith("spotify:track:") ? track.uri.replace("spotify:track:", "") : ""
+                  )}
+                />
               ))}
             </div>
           )}
@@ -197,10 +218,10 @@ function PlaylistCard({ playlist }: { playlist: Playlist }) {
 /*  Track row                                                     */
 /* ═══════════════════════════════════════════════════════════════ */
 
-function TrackRow({ track, index }: { track: Track; index: number }) {
+function TrackRow({ track, index, initialFavorited = false }: { track: Track; index: number; initialFavorited?: boolean }) {
   const { playArtist, playTrack } = usePlayer();
   const [playing, setPlaying] = useState(false);
-  const [favorited, setFavorited] = useState(false);
+  const [favorited, setFavorited] = useState(initialFavorited);
   const [favLoading, setFavLoading] = useState(false);
 
   // Extract spotify track ID from URI (spotify:track:XXXX → XXXX)

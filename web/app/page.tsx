@@ -16,15 +16,18 @@ export default function Home({
   const errorMessage = errorKey ? (ERROR_MESSAGES[errorKey] ?? "An unexpected error occurred. Please try again.") : null;
 
   return (
-    <main className="min-h-screen flex items-center justify-center px-5 py-8 sm:p-8 bg-white">
+    <main
+      className="min-h-screen flex items-center justify-center px-5 py-8 sm:p-8"
+      style={{ background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)" }}
+    >
       <div className="max-w-md w-full text-center space-y-8 sm:space-y-10 pt-safe pb-safe">
 
         {/* ── Hero ─────────────────────────────────────────── */}
         <div className="space-y-3">
-          <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight text-neutral-900">
+          <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight text-white">
             MusicLife
           </h1>
-          <p className="text-sm sm:text-base text-neutral-500 leading-relaxed">
+          <p className="text-sm sm:text-base text-white/70 leading-relaxed">
             Discover music you&apos;ll actually like. Powered by your Spotify
             listening history, editorial sources, and AI taste matching.
           </p>
@@ -32,23 +35,28 @@ export default function Home({
 
         {/* ── Error banner ─────────────────────────────────── */}
         {errorMessage && (
-          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 text-left">
+          <div className="rounded-xl border border-red-400/30 bg-red-900/30 px-4 py-3 text-sm text-red-300 text-left">
             {errorMessage}
           </div>
         )}
 
         {/* ── CTA ──────────────────────────────────────────── */}
-        <a
-          href="/api/auth/login"
-          className="inline-flex items-center justify-center gap-2 rounded-full bg-neutral-900 text-white px-7 sm:px-8 py-3 text-sm font-medium hover:bg-neutral-700 active:bg-neutral-800 transition w-full sm:w-auto"
-        >
-          <SpotifyIcon />
-          Connect with Spotify
-        </a>
+        <div className="space-y-3">
+          <a
+            href="/api/auth/login"
+            className="inline-flex items-center justify-center gap-2 rounded-full bg-white text-neutral-900 px-7 sm:px-8 py-3 text-sm font-medium hover:bg-white/90 active:bg-white/80 transition w-full sm:w-auto"
+          >
+            <SpotifyIcon />
+            Connect with Spotify
+          </a>
+          <p className="text-xs text-white/45 leading-relaxed max-w-xs mx-auto">
+            Requires Spotify Premium for in-browser playback. Free accounts can browse recommendations and export playlists.
+          </p>
+        </div>
 
         {/* ── How it works ─────────────────────────────────── */}
-        <div className="border-t border-neutral-100 pt-6 sm:pt-8">
-          <p className="text-xs uppercase tracking-widest text-neutral-400 font-medium mb-5 sm:mb-6">
+        <div className="border-t border-white/10 pt-6 sm:pt-8">
+          <p className="text-xs uppercase tracking-widest text-white/40 font-medium mb-5 sm:mb-6">
             How it works
           </p>
           <div className="grid grid-cols-3 gap-3 sm:gap-4">
@@ -73,7 +81,7 @@ export default function Home({
           </div>
         </div>
 
-        <p className="text-xs text-neutral-400 px-2">
+        <p className="text-xs text-white/40 px-2">
           Your data stays private. No ads. No algorithms selling your taste.
         </p>
       </div>
@@ -94,12 +102,12 @@ function HowStep({
 }) {
   return (
     <div className="flex flex-col items-center gap-2 text-center">
-      <div className="w-12 h-12 rounded-2xl bg-neutral-50 border border-neutral-100 flex items-center justify-center text-2xl">
+      <div className="w-12 h-12 rounded-2xl bg-white/10 border border-white/10 flex items-center justify-center text-2xl">
         {emoji}
       </div>
       <div>
-        <p className="text-xs font-semibold text-neutral-800">{title}</p>
-        <p className="text-[11px] text-neutral-400 leading-snug mt-0.5">{desc}</p>
+        <p className="text-xs font-semibold text-white">{title}</p>
+        <p className="text-[11px] text-white/50 leading-snug mt-0.5">{desc}</p>
       </div>
     </div>
   );

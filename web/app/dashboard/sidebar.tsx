@@ -34,6 +34,12 @@ export default function Sidebar({
 }) {
   const [displayName,    setDisplayName]    = useState<string | null>(null);
   const [completedSteps, setCompletedSteps] = useState<Set<number>>(new Set());
+  const allDone = completedSteps.size >= 4;
+  const [setupOpen,      setSetupOpen]      = useState(!allDone);
+
+  // Auto-collapse when all steps complete
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (allDone) setSetupOpen(false); }, [allDone]);
 
   // ── Fetch user display name ──────────────────────────────────
   useEffect(() => {
@@ -122,10 +128,34 @@ export default function Sidebar({
       <div className="mx-3 my-2 border-t border-neutral-200" />
 
       {/* ── Setup steps ─────────────────────────────────────── */}
-      <div className="px-3 pb-3 space-y-3 flex-1">
-        <p className="text-[10px] uppercase tracking-widest text-neutral-400 font-medium px-1 pt-1">
-          Setup Your Library
-        </p>
+      <div className="px-3 pb-3 flex-1">
+        <button
+          onClick={() => setSetupOpen(!setupOpen)}
+          className="w-full flex items-center justify-between px-1 pt-1 pb-2 group"
+          aria-expanded={setupOpen}
+        >
+          <p className="text-[10px] uppercase tracking-widest text-neutral-400 font-medium">
+            Setup Your Library
+          </p>
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={[
+              "text-neutral-400 transition-transform duration-200",
+              setupOpen ? "rotate-180" : "",
+            ].join(" ")}
+          >
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </button>
+
+        {setupOpen && <div className="space-y-3">
 
         <StepItem
           step={1}
@@ -162,6 +192,7 @@ export default function Sidebar({
         >
           <SourcesButton onComplete={checkLibraryStatus} />
         </StepItem>
+        </div>}
       </div>
 
       {/* ── Sign out ─────────────────────────────────────────── */}

@@ -10,6 +10,7 @@ type Artist = {
   genres: string[];
   enriched: boolean;
   embedded: boolean;
+  image_url: string | null;
 };
 
 export async function GET(req: NextRequest) {
@@ -43,7 +44,7 @@ export async function GET(req: NextRequest) {
     // and a cast to check if embedding is non-null without transferring it.
     const { data: rows, error: aErr } = await sb
       .from("artists")
-      .select("id, name, genres, musicbrainz_id, embedding_source")
+      .select("id, name, genres, musicbrainz_id, embedding_source, image_url")
       .in("id", artistIds)
       .order("name", { ascending: true });
     if (aErr) {
@@ -69,6 +70,7 @@ export async function GET(req: NextRequest) {
       genres: r.genres ?? [],
       enriched: Boolean(r.musicbrainz_id),
       embedded: embeddedIds.has(r.id),
+      image_url: r.image_url ?? null,
     }));
   }
 

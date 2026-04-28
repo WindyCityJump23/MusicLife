@@ -45,8 +45,31 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     setDeviceId(id);
   }, []);
 
+  // Auto-transfer playback to the SDK device before playing
+  const autoTransfer = useCallback(async () => {
+    const did = deviceIdRef.current;
+    if (!did) return;
+    try {
+      const tokenRes = await fetch("/api/auth/token", { cache: "no-store" });
+      if (!tokenRes.ok) return;
+      const { access_token } = await tokenRes.json();
+      if (!access_token) return;
+      await fetch("https://api.spotify.com/v1/me/player", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${access_token}`,
+        },
+        body: JSON.stringify({ device_ids: [did], play: false }),
+      });
+    } catch {
+      // Best effort — don't block playback if transfer fails
+    }
+  }, []);
+
   const playArtist = useCallback(async (artistName: string) => {
     setPlayingArtist(artistName);
+    await autoTransfer();
     try {
       const res = await fetch("/api/play-artist", {
         method: "POST",
@@ -70,6 +93,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const playTrack = useCallback(async (spotifyTrackId: string) => {
     setPlayingArtist(spotifyTrackId);
+    await autoTransfer();
     try {
       const res = await fetch("/api/play-track", {
         method: "POST",

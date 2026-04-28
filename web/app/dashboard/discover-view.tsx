@@ -63,7 +63,10 @@ export default function DiscoverView({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [results, setResults] = useState<SongRecommendation[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingStage, setLoadingStage] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  const [genreFilter, setGenreFilter] = useState<string>("");
+  const [favoritedIds, setFavoritedIds] = useState<Set<string>>(new Set());
   const [playlistState, setPlaylistState] = useState<
     "idle" | "saving" | "done" | "error"
   >("idle");
@@ -89,6 +92,7 @@ export default function DiscoverView({
       };
 
       // Step 1: Get artist-level recommendations from our backend
+      setLoadingStage("Getting recommendations…");
       const artistRes = await fetch(`/api/recommend`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -122,6 +126,7 @@ export default function DiscoverView({
       }
 
       // Step 3: Fetch top tracks for each artist from Spotify (client-side, no timeout)
+      setLoadingStage("Fetching songs from Spotify…");
       const spotifyHeaders = { Authorization: `Bearer ${accessToken}` };
       const songArrays = await Promise.all(
         artists.slice(0, 15).map(async (artist: ArtistRec) => {
@@ -194,11 +199,22 @@ export default function DiscoverView({
       }
 
       setResults(deduped);
+
+      // Fetch initial favorite state
+      const trackIds = deduped.map((s) => s.spotify_track_id).filter(Boolean);
+      if (trackIds.length > 0) {
+        try {
+          const favRes = await fetch(`/api/favorites-check?ids=${trackIds.join(",")}`);
+          const favData = await favRes.json().catch(() => ({}));
+          setFavoritedIds(new Set(favData.favorited ?? []));
+        } catch {}
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
       setResults([]);
     } finally {
       setLoading(false);
+      setLoadingStage("");
     }
   }
 
@@ -270,7 +286,7 @@ export default function DiscoverView({
             disabled={loading}
             className="px-5 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
           >
-            {loading ? "Finding\u2026" : "Discover"}
+            {loading ? loadingStage || "Finding\u2026" : "Discover"}
           </button>
         </div>
 
@@ -291,8 +307,8 @@ export default function DiscoverView({
                 onChange={(v) => setWeights({ ...weights, affinity: v })}
               />
               <WeightSlider
-                label="Mood"
-                hint="Vibe match from editorial context"
+                label={prompt ? "Mood" : "Mood (taste profile)"}
+                hint={prompt ? "Vibe match from editorial context" : "Using your taste profile as mood signal (no prompt entered)"}
                 value={weights.context}
                 onChange={(v) => setWeights({ ...weights, context: v })}
               />
@@ -311,10 +327,27 @@ export default function DiscoverView({
         )}
       </div>
 
+      {/* Loading stage indicator */}
+      {loading && loadingStage && (
+        <div className="flex items-center gap-2 text-sm text-neutral-500">
+          <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
+            <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
+          </svg>
+          {loadingStage}
+        </div>
+      )}
+
       {/* Error */}
       {error && (
-        <div className="border border-red-200 bg-red-50 text-red-700 rounded-lg p-3 text-sm">
-          {error}
+        <div className="border border-red-200 bg-red-50 text-red-700 rounded-lg p-3 text-sm flex items-center justify-between gap-3">
+          <span>{error}</span>
+          <button
+            onClick={handleSubmit}
+            className="shrink-0 px-3 py-1.5 rounded-lg border border-red-200 text-red-600 text-xs font-medium hover:bg-red-100 transition-colors"
+          >
+            Try again
+          </button>
         </div>
       )}
 
@@ -324,11 +357,33 @@ export default function DiscoverView({
       ) : results.length === 0 && !error ? (
         <EmptyNoResults />
       ) : results.length > 0 ? (
+        (() => {
+          // Collect unique genres for filter
+          const allGenres = Array.from(new Set(results.flatMap((r) => r.genres.map((g) => g.toLowerCase())))).sort();
+          const displayed = genreFilter
+            ? results.filter((r) => r.genres.some((g) => g.toLowerCase() === genreFilter))
+            : results;
+          return (
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-neutral-400">
-              {results.length} song{results.length !== 1 ? "s" : ""} recommended
-            </p>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-3">
+              <p className="text-xs text-neutral-400">
+                {displayed.length} song{displayed.length !== 1 ? "s" : ""}{genreFilter ? ` in ${genreFilter}` : " recommended"}
+              </p>
+              {allGenres.length > 1 && (
+                <select
+                  value={genreFilter}
+                  onChange={(e) => setGenreFilter(e.target.value)}
+                  className="text-[11px] border border-neutral-200 rounded-md px-2 py-1 bg-white text-neutral-600 focus:outline-none focus:border-emerald-500"
+                  aria-label="Filter by genre"
+                >
+                  <option value="">All genres</option>
+                  {allGenres.map((g) => (
+                    <option key={g} value={g}>{g}</option>
+                  ))}
+                </select>
+              )}
+            </div>
             <SavePlaylistButton
               state={playlistState}
               count={results.length}
@@ -396,11 +451,18 @@ export default function DiscoverView({
 
           {/* Song list */}
           <div className="border border-neutral-200 rounded-lg overflow-hidden divide-y divide-neutral-100">
-            {results.map((song, i) => (
-              <SongRow key={`${song.spotify_track_id}-${i}`} song={song} rank={i + 1} />
+            {displayed.map((song, i) => (
+              <SongRow
+                key={`${song.spotify_track_id}-${i}`}
+                song={song}
+                rank={i + 1}
+                initialFavorited={favoritedIds.has(song.spotify_track_id)}
+              />
             ))}
           </div>
         </div>
+          );
+        })()
       ) : null}
     </div>
   );
@@ -413,13 +475,15 @@ export default function DiscoverView({
 function SongRow({
   song,
   rank,
+  initialFavorited = false,
 }: {
   song: SongRecommendation;
   rank: number;
+  initialFavorited?: boolean;
 }) {
   const { playTrack, playArtist } = usePlayer();
   const [playState, setPlayState] = useState<"idle" | "loading">("idle");
-  const [favorited, setFavorited] = useState(false);
+  const [favorited, setFavorited] = useState(initialFavorited);
   const [favLoading, setFavLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
@@ -739,6 +803,7 @@ function WeightSlider({
         max={100}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
+        aria-label={`${label} weight`}
         className="w-full accent-emerald-600"
       />
     </label>
