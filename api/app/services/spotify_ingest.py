@@ -94,9 +94,18 @@ def _upsert_artists(artists: list[dict]) -> dict[str, int]:
         }
         for a in artists
     ]
-    result = admin_supabase.table("artists").upsert(
+    admin_supabase.table("artists").upsert(
         rows, on_conflict="spotify_artist_id"
     ).execute()
+    # SELECT after upsert: PostgREST may return empty data for rows resolved
+    # via ON CONFLICT DO UPDATE, so we can't rely on the upsert response alone.
+    spotify_ids = [r["spotify_artist_id"] for r in rows]
+    result = (
+        admin_supabase.table("artists")
+        .select("id, spotify_artist_id")
+        .in_("spotify_artist_id", spotify_ids)
+        .execute()
+    )
     return {row["spotify_artist_id"]: row["id"] for row in (result.data or [])}
 
 
@@ -118,9 +127,17 @@ def _upsert_tracks(tracks: list[dict], artist_id_map: dict[str, int]) -> dict[st
                 "popularity": t.get("popularity"),
             }
         )
-    result = admin_supabase.table("tracks").upsert(
+    admin_supabase.table("tracks").upsert(
         rows, on_conflict="spotify_track_id"
     ).execute()
+    # SELECT after upsert for the same reason as _upsert_artists.
+    spotify_ids = [r["spotify_track_id"] for r in rows]
+    result = (
+        admin_supabase.table("tracks")
+        .select("id, spotify_track_id")
+        .in_("spotify_track_id", spotify_ids)
+        .execute()
+    )
     return {row["spotify_track_id"]: row["id"] for row in (result.data or [])}
 
 

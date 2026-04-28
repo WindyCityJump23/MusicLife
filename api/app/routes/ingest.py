@@ -29,7 +29,11 @@ def ingest_spotify_library(req: SpotifyLibraryRequest, bg: BackgroundTasks):
 def _run_spotify_ingest(user_id: str, token: str):
     from app.services.spotify_ingest import run_spotify_library_ingest
 
-    run_spotify_library_ingest(user_id, token)
+    try:
+        run_spotify_library_ingest(user_id, token)
+        print(f"spotify_ingest: completed for user {user_id}")
+    except Exception as exc:
+        print(f"spotify_ingest: FAILED for user {user_id}: {exc}")
 
 
 @router.post("/enrich-artists")
@@ -41,7 +45,10 @@ def enrich_artists(bg: BackgroundTasks):
 def _run_enrich_artists():
     from app.services.artist_enrichment import run_artist_enrichment
 
-    run_artist_enrichment()
+    try:
+        run_artist_enrichment()
+    except Exception as exc:
+        print(f"enrich_artists: FAILED: {exc}")
 
 
 @router.post("/embed-artists")
@@ -53,7 +60,10 @@ def embed_artists(bg: BackgroundTasks):
 def _run_embed_artists():
     from app.services.artist_embeddings import run_artist_embeddings
 
-    run_artist_embeddings()
+    try:
+        run_artist_embeddings()
+    except Exception as exc:
+        print(f"embed_artists: FAILED: {exc}")
 
 
 @router.post("/sources")
@@ -67,4 +77,7 @@ def ingest_sources(bg: BackgroundTasks):
 def _run_source_ingest():
     from app.services.source_ingest import run_source_ingest
 
-    run_source_ingest()
+    try:
+        run_source_ingest()
+    except Exception as exc:
+        print(f"source_ingest: FAILED: {exc}")

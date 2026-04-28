@@ -61,11 +61,16 @@ export async function GET(req: NextRequest) {
     .order("listened_at", { ascending: false })
     .limit(50);
 
+  const { count: mentionCount } = await sb
+    .from("mentions")
+    .select("id", { count: "exact", head: true });
+
   return NextResponse.json({
     stats: {
       artistCount: artists.length,
       trackCount: userTracks?.length ?? 0,
       recentPlayCount: Math.min(recentPlayCount ?? 0, 50),
+      mentionCount: mentionCount ?? 0,
     },
     artists,
   });

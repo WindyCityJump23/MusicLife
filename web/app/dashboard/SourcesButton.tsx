@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 type State = "idle" | "loading" | "success" | "error";
 
-export default function SourcesButton() {
+export default function SourcesButton({ onComplete }: { onComplete?: () => void }) {
   const [state, setState] = useState<State>("idle");
   const [message, setMessage] = useState("");
   const [progress, setProgress] = useState(0);
@@ -37,6 +37,7 @@ export default function SourcesButton() {
       if (res.ok) {
         setState("success");
         setMessage("Sources queued — crawling in background");
+        onComplete?.();
       } else {
         setState("error");
         setMessage(data.error ?? data.detail ?? "Unknown error");
