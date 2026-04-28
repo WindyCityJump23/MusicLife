@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 function baseUrl(req: NextRequest): string {
@@ -78,20 +79,32 @@ export async function GET(req: NextRequest) {
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
   const sb = createClient(sbUrl, sbKey, { auth: { persistSession: false } });
 
-  // Note: display_name is stored in a cookie only — not in the DB row.
-  // Run db/migrations/007_users_display_name.sql to add the column if you
-  // want to persist it server-side. The app works fine without it.
-  const { data: userData, error: upsertErr } = await sb
+  // Upsert the user row. The users.id column is a plain uuid (not auth.uid)
+  // so we must supply one on insert. ON CONFLICT (spotify_user_id) DO UPDATE
+  // leaves the existing id untouched, so the generated UUID is only used
+  // when creating a brand-new row.
+  const newId = randomUUID();
+  const { error: upsertErr } = await sb
     .from("users")
     .upsert(
-      { spotify_user_id: spotifyId },
+      { id: newId, spotify_user_id: spotifyId },
       { onConflict: "spotify_user_id" }
-    )
+    );
+
+  if (upsertErr) {
+    console.error("auth/callback: user upsert failed", upsertErr.message);
+    return NextResponse.redirect(new URL("/?error=user_upsert", base));
+  }
+
+  // Fetch the real id (handles both new rows and existing ones).
+  const { data: userData, error: selectErr } = await sb
+    .from("users")
     .select("id")
+    .eq("spotify_user_id", spotifyId)
     .single();
 
-  if (upsertErr || !userData) {
-    console.error("auth/callback: user upsert failed", upsertErr?.message);
+  if (selectErr || !userData) {
+    console.error("auth/callback: user select failed", selectErr?.message);
     return NextResponse.redirect(new URL("/?error=user_upsert", base));
   }
 
