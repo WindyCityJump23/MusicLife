@@ -116,11 +116,18 @@ export async function POST(request: NextRequest) {
     const errorMsg = errBody?.error?.message ?? "Failed to start playback";
     const reason = errBody?.error?.reason;
 
-    // Provide a helpful message for the most common failure
+    // Provide helpful messages for the most common failures
     if (reason === "NO_ACTIVE_DEVICE" || playRes.status === 404) {
       return NextResponse.json(
-        { error: "No active player — click \"Transfer to this tab\" in the player panel first" },
+        { error: "No active player \u2014 click \"Transfer to this tab\" in the player panel first" },
         { status: 404 }
+      );
+    }
+
+    if (playRes.status === 403 || reason === "PREMIUM_REQUIRED") {
+      return NextResponse.json(
+        { error: "Spotify Premium required for in-browser playback. Open the artist in your Spotify app instead." },
+        { status: 403 }
       );
     }
 

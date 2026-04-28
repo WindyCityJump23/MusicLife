@@ -232,11 +232,23 @@ def _insert_listen_events(
             }
         )
     if rows:
-        admin_supabase.table("listen_events").upsert(
-            rows,
-            on_conflict="user_id,track_id,listened_at",
-            ignore_duplicates=True,
-        ).execute()
+        try:
+            admin_supabase.table("listen_events").upsert(
+                rows,
+                on_conflict="user_id,track_id,listened_at",
+                ignore_duplicates=True,
+            ).execute()
+        except Exception as e:
+            if "42P10" in str(e):
+                # Constraint missing — fall back to row-by-row insert
+                print("spotify_ingest: listen_events_dedup_key missing, inserting row-by-row")
+                for row in rows:
+                    try:
+                        admin_supabase.table("listen_events").insert(row).execute()
+                    except Exception:
+                        pass  # duplicate or transient error
+            else:
+                raise
 
 
 # ---------------------------------------------------------------------------

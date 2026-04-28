@@ -252,8 +252,25 @@ def _embed_and_upsert(candidates: list[dict]) -> None:
             }
         )
 
-    admin_supabase.table("mentions").upsert(
-        rows,
-        on_conflict="source_id,url,artist_id",
-        ignore_duplicates=True,
-    ).execute()
+    # Try upsert with dedup constraint first; fall back to plain insert if
+    # the constraint hasn't been applied yet (migration 005).
+    try:
+        admin_supabase.table("mentions").upsert(
+            rows,
+            on_conflict="source_id,url,artist_id",
+            ignore_duplicates=True,
+        ).execute()
+    except Exception as upsert_err:
+        if "42P10" in str(upsert_err):
+            # Constraint missing — insert row-by-row, skipping duplicates.
+            print("source_ingest: mentions_dedup_key constraint missing, falling back to row-by-row insert")
+            inserted = 0
+            for row in rows:
+                try:
+                    admin_supabase.table("mentions").insert(row).execute()
+                    inserted += 1
+                except Exception:
+                    pass  # duplicate or other transient error
+            print(f"source_ingest: inserted {inserted}/{len(rows)} mentions (row-by-row fallback)")
+        else:
+            raise
