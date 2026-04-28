@@ -112,14 +112,15 @@ def recommend_songs(
     _prompt_text = prompt
 
     # ── Phase 1: Score each artist (same as artist-level engine) ─
+    # NOTE: We include library artists in scoring (don't skip them)
+    # because tracks in the DB mostly belong to library artists.
+    # Instead, we apply a softer penalty to library-artist songs later.
     raw_affinities: list[tuple[dict, float]] = []
     for artist in all_artists:
         aid = artist.get("id")
         if aid is None:
             continue
         aid = int(aid)
-        if exclude_library and aid in library_artist_ids:
-            continue
         vec = _parse_vector(artist.get("embedding"))
         if not vec:
             continue
@@ -202,7 +203,7 @@ def recommend_songs(
         artist_scores.keys(),
         key=lambda a: artist_scores[a]["base_score"],
         reverse=True,
-    )[: limit * 4]  # Expand more artists than needed for diversity
+    )[: limit * 5]  # Expand more artists than needed for diversity
 
     if not top_artist_ids:
         return []
@@ -239,10 +240,10 @@ def recommend_songs(
         if not tracks:
             continue
 
-        # Sort tracks by popularity descending, take top 3 per artist
-        # to avoid one artist flooding the results
+        # Sort tracks by popularity descending, take top 5 per artist
+        # (diversity re-ranking later caps at 2 per artist in final output)
         tracks.sort(key=lambda t: t.get("popularity") or 0, reverse=True)
-        tracks = tracks[:3]
+        tracks = tracks[:5]
 
         for track in tracks:
             track_name = (track.get("name") or "").strip()
@@ -266,11 +267,13 @@ def recommend_songs(
                 track_boost *= (1.0 + audio_match * 0.25)  # Up to 25% boost
 
             # Familiarity: penalize songs already in user's library
+            # (soft penalty, not hard exclusion — we need these for results)
             in_library = track_id in user_track_map if track_id else False
-            if in_library and exclude_library:
-                continue  # Skip entirely
-            elif in_library:
-                track_boost *= 0.5  # Heavy penalty if not excluded
+            is_library_artist = aid in library_artist_ids
+            if in_library:
+                track_boost *= 0.55  # Significant penalty for exact tracks user owns
+            elif is_library_artist:
+                track_boost *= 0.75  # Mild penalty for library artist, different track
 
             # Exploration
             exploration = random.uniform(-EXPLORATION_STRENGTH, EXPLORATION_STRENGTH)
@@ -294,6 +297,8 @@ def recommend_songs(
                 reasons.append("Popular track")
             if audio_match > 0.6:
                 reasons.append("Matches your sound")
+            if in_library:
+                reasons.append("In your library")
             if not reasons:
                 reasons.append("Curated pick")
 
