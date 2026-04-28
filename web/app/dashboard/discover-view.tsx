@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { usePlayer } from "./player-context";
 
 type SignalBreakdown = {
@@ -839,15 +839,58 @@ function EmptyInitial() {
 }
 
 function EmptyNoResults() {
+  const [missingStep, setMissingStep] = useState<
+    "loading" | "sync" | "enrich" | "embed" | "ready" | "unknown"
+  >("loading");
+
+  useEffect(() => {
+    fetch("/api/library")
+      .then((r) => r.json())
+      .then((data) => {
+        const artists: Array<{ enriched: boolean; embedded: boolean }> =
+          data.artists ?? [];
+        if (artists.length === 0) return setMissingStep("sync");
+        if (!artists.some((a) => a.enriched)) return setMissingStep("enrich");
+        if (!artists.some((a) => a.embedded)) return setMissingStep("embed");
+        setMissingStep("ready");
+      })
+      .catch(() => setMissingStep("unknown"));
+  }, []);
+
+  const guidance = {
+    loading: { title: "Checking your library\u2026", body: "" },
+    sync: {
+      title: "Sync your library first",
+      body: "Click \u201cSync Library\u201d (step 1) in the left sidebar to import your Spotify artists.",
+    },
+    enrich: {
+      title: "Enrich your artists next",
+      body: "Click \u201cEnrich Artists\u201d (step 2) in the left sidebar to fetch genres and metadata.",
+    },
+    embed: {
+      title: "Generate embeddings next",
+      body: "Click \u201cGenerate Embeddings\u201d (step 3) in the left sidebar. This is what powers Discover.",
+    },
+    ready: {
+      title: "Nothing matched right now",
+      body: "Your library is set up, but Discover came back empty this time. Try a different prompt or hit Discover again.",
+    },
+    unknown: {
+      title: "No songs found",
+      body: "Make sure you\u2019ve synced, enriched, and embedded your library first.",
+    },
+  }[missingStep];
+
   return (
     <div className="border border-dashed border-neutral-200 rounded-xl p-12 text-center space-y-3">
       <div className="text-4xl">\ud83c\udfbb</div>
       <div>
-        <p className="text-sm font-medium text-neutral-700">No songs found</p>
-        <p className="text-xs text-neutral-400 mt-1 max-w-xs mx-auto">
-          Make sure you&apos;ve synced, enriched, and embedded your library
-          first.
-        </p>
+        <p className="text-sm font-medium text-neutral-700">{guidance.title}</p>
+        {guidance.body && (
+          <p className="text-xs text-neutral-400 mt-1 max-w-xs mx-auto leading-relaxed">
+            {guidance.body}
+          </p>
+        )}
       </div>
     </div>
   );
