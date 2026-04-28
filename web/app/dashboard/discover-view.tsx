@@ -3,12 +3,16 @@
 import { useState } from "react";
 
 type SignalBreakdown = { affinity: number; context: number; editorial: number };
+type TopMention = { source: string; excerpt: string; published_at: string };
 type Recommendation = {
   artist_id: string;
   artist_name: string;
   score: number;
   signals: SignalBreakdown;
   reasons: string[];
+  genres: string[];
+  mention_count: number;
+  top_mention: TopMention | null;
 };
 
 export default function DiscoverView() {
@@ -101,9 +105,9 @@ export default function DiscoverView() {
         />
 
         <div className="grid grid-cols-3 gap-4 pt-1">
-          <Slider label="Affinity"  value={weights.affinity}  onChange={(v) => setWeights({ ...weights, affinity: v })} />
-          <Slider label="Context"   value={weights.context}   onChange={(v) => setWeights({ ...weights, context: v })} />
-          <Slider label="Editorial" value={weights.editorial} onChange={(v) => setWeights({ ...weights, editorial: v })} />
+          <Slider label="Taste"  hint="Weight toward your personal listening history" value={weights.affinity}  onChange={(v) => setWeights({ ...weights, affinity: v })} />
+          <Slider label="Mood"   hint="Weight toward matching your search prompt"     value={weights.context}   onChange={(v) => setWeights({ ...weights, context: v })} />
+          <Slider label="Buzz"   hint="Weight toward recent editorial coverage"       value={weights.editorial} onChange={(v) => setWeights({ ...weights, editorial: v })} />
         </div>
 
         <div className="flex justify-end items-center gap-2">
@@ -194,18 +198,20 @@ function DiscoverEmptyNoResults() {
 
 function Slider({
   label,
+  hint,
   value,
   onChange,
 }: {
   label: string;
+  hint?: string;
   value: number;
   onChange: (v: number) => void;
 }) {
   return (
-    <label className="block">
+    <label className="block" title={hint}>
       <div className="flex items-center justify-between text-xs text-neutral-600 mb-1">
-        <span>{label}</span>
-        <span className="tabular-nums text-neutral-400">{value}</span>
+        <span className="font-medium">{label}</span>
+        <span className="tabular-nums text-neutral-400">{value}%</span>
       </div>
       <input
         type="range"
@@ -217,6 +223,17 @@ function Slider({
       />
     </label>
   );
+}
+
+// ── Helpers ───────────────────────────────────────────────────────
+
+function formatMentionDate(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+  } catch {
+    return "";
+  }
 }
 
 // ── Recommendation card ───────────────────────────────────────────
@@ -239,6 +256,8 @@ function RecommendationCard({
 
   const [playState, setPlayState] = useState<PlayState>("idle");
   const [playError, setPlayError] = useState<string | null>(null);
+
+  const hasPrompt = prompt.trim() !== "";
 
   async function loadSynthesis() {
     setSynthState({ status: "loading" });
@@ -294,15 +313,25 @@ function RecommendationCard({
 
   return (
     <div className="border border-neutral-200 rounded-lg p-4 space-y-3 hover:border-neutral-300 hover:shadow-sm transition-all">
-      {/* Header row: name + score + play button */}
-      <div className="flex items-center gap-2">
+      {/* Header row: name + play button */}
+      <div className="flex items-start gap-2">
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold text-neutral-900 truncate">
             {rec.artist_name}
           </div>
-          <div className="text-[10px] text-neutral-400 tabular-nums">
-            score {rec.score.toFixed(2)}
-          </div>
+          {/* Genre pills */}
+          {rec.genres && rec.genres.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1">
+              {rec.genres.slice(0, 3).map((g) => (
+                <span
+                  key={g}
+                  className="text-[10px] text-neutral-500 bg-neutral-100 rounded-full px-2 py-0.5 capitalize"
+                >
+                  {g}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Play button */}
@@ -315,7 +344,7 @@ function RecommendationCard({
               : `Play ${rec.artist_name} on Spotify`
           }
           className={[
-            "flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center",
+            "flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center mt-0.5",
             "transition-all active:scale-95 disabled:cursor-not-allowed",
             playState === "error"
               ? "bg-red-100 text-red-600 border border-red-200"
@@ -346,34 +375,60 @@ function RecommendationCard({
         </div>
       )}
 
-      {/* Signal bars */}
-      <div className="space-y-1">
-        <SignalBar label="A" value={rec.signals.affinity} />
-        <SignalBar label="C" value={rec.signals.context} />
-        <SignalBar label="E" value={rec.signals.editorial} />
+      {/* Signal bars with descriptive labels */}
+      <div className="space-y-1.5">
+        <SignalBar label="Taste match" value={rec.signals.affinity} />
+        {hasPrompt && <SignalBar label="Mood fit" value={rec.signals.context} />}
+        <SignalBar label="Buzz" value={rec.signals.editorial} />
       </div>
 
-      {/* Reasons */}
-      {rec.reasons.length > 0 && (
-        <ul className="text-xs text-neutral-600 space-y-0.5 list-disc list-inside">
-          {rec.reasons.slice(0, 3).map((r, i) => (
-            <li key={i} className="truncate">{r}</li>
+      {/* Reason chips + mention count */}
+      {(rec.reasons.length > 0 || rec.mention_count > 0) && (
+        <div className="flex flex-wrap gap-1.5">
+          {rec.reasons.map((r, i) => (
+            <span
+              key={i}
+              className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-full px-2 py-0.5"
+            >
+              {r}
+            </span>
           ))}
-        </ul>
+          {rec.mention_count > 0 && (
+            <span className="text-[10px] text-neutral-500 bg-neutral-50 border border-neutral-100 rounded-full px-2 py-0.5">
+              {rec.mention_count} press mention{rec.mention_count !== 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
       )}
 
-      {/* Synthesis */}
+      {/* Inline editorial excerpt */}
+      {rec.top_mention && rec.top_mention.excerpt && (
+        <div className="bg-neutral-50 border border-neutral-100 rounded-md px-3 py-2 space-y-1">
+          <p className="text-[11px] text-neutral-600 leading-relaxed line-clamp-2 italic">
+            &ldquo;{rec.top_mention.excerpt}&rdquo;
+          </p>
+          <div className="text-[10px] text-neutral-400">
+            {rec.top_mention.source && (
+              <span className="font-medium text-neutral-500">{rec.top_mention.source}</span>
+            )}
+            {rec.top_mention.source && rec.top_mention.published_at && " · "}
+            {rec.top_mention.published_at && formatMentionDate(rec.top_mention.published_at)}
+          </div>
+        </div>
+      )}
+
+      {/* Deep-dive synthesis */}
       <div className="pt-1 border-t border-neutral-100">
         {synthState.status === "idle" && (
           <button
             onClick={loadSynthesis}
-            className="text-xs text-emerald-700 hover:text-emerald-800"
+            className="text-xs text-emerald-700 hover:text-emerald-800 font-medium"
           >
-            Why this?
+            Full explanation →
           </button>
         )}
         {synthState.status === "loading" && (
-          <div className="text-xs text-neutral-400">Synthesizing…</div>
+          <div className="text-xs text-neutral-400">Generating explanation…</div>
         )}
         {synthState.status === "ready" && (
           <p className="text-xs text-neutral-700 leading-relaxed">{synthState.paragraph}</p>
@@ -390,10 +445,11 @@ function SignalBar({ label, value }: { label: string; value: number }) {
   const pct = Math.max(0, Math.min(1, value)) * 100;
   return (
     <div className="flex items-center gap-2 text-[10px] text-neutral-500">
-      <span className="w-3">{label}</span>
-      <div className="flex-1 h-1 bg-neutral-100 rounded">
-        <div className="h-1 bg-emerald-500 rounded" style={{ width: `${pct}%` }} />
+      <span className="w-20 shrink-0">{label}</span>
+      <div className="flex-1 h-1.5 bg-neutral-100 rounded-full">
+        <div className="h-1.5 bg-emerald-500 rounded-full transition-all" style={{ width: `${pct}%` }} />
       </div>
+      <span className="w-7 text-right tabular-nums text-neutral-400">{Math.round(pct)}%</span>
     </div>
   );
 }
