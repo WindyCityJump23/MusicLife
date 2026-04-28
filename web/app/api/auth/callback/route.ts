@@ -1,6 +1,16 @@
 import { createClient } from "@supabase/supabase-js";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
+
+const PROFILE_CACHE_COOKIE = "sp_profile_cache";
+const PROFILE_CACHE_TOKEN_HASH_COOKIE = "sp_profile_token_hash";
+const PROFILE_CACHE_MAX_AGE = 60 * 60 * 24; // 24h
+const MAX_PROFILE_ATTEMPTS = 3;
+
+type CachedProfile = {
+  id: string;
+  display_name?: string;
+};
 
 function baseUrl(req: NextRequest): string {
   const proto = req.headers.get("x-forwarded-proto") ?? new URL(req.url).protocol.replace(":", "");
@@ -15,6 +25,50 @@ function setCookieOpts(secure: boolean) {
     sameSite: "lax" as const,
     path: "/",
   };
+}
+
+function tokenHash(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function readCachedProfile(req: NextRequest, accessToken: string): CachedProfile | null {
+  const cached = req.cookies.get(PROFILE_CACHE_COOKIE)?.value;
+  const hash = req.cookies.get(PROFILE_CACHE_TOKEN_HASH_COOKIE)?.value;
+  if (!cached || !hash || hash !== tokenHash(accessToken)) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(decodeURIComponent(cached)) as CachedProfile;
+    if (!parsed.id) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function computeBackoffMs(attempt: number, retryAfterSeconds: number | null): number {
+  if (retryAfterSeconds !== null && Number.isFinite(retryAfterSeconds)) {
+    return Math.max(0, retryAfterSeconds) * 1000;
+  }
+  const base = 1000 * 2 ** attempt;
+  const jitter = Math.floor(Math.random() * 350);
+  return base + jitter;
+}
+
+async function fetchSpotifyProfile(accessToken: string): Promise<{ response: Response; retryAfterSeconds: number | null }> {
+  const response = await fetch("https://api.spotify.com/v1/me", {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+      "User-Agent": "MusicLife/1.0",
+    },
+    cache: "no-store",
+  });
+
+  const retryAfterHeader = response.headers.get("retry-after");
+  const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : null;
+  return { response, retryAfterSeconds: Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : null };
 }
 
 // Exchange the Spotify authorization code for tokens, upsert the user into
@@ -54,7 +108,9 @@ export async function GET(req: NextRequest) {
   });
 
   if (!tokenRes.ok) {
-    return NextResponse.redirect(new URL("/?error=token_exchange", base));
+    const tokenBody = await tokenRes.text().catch(() => "");
+    console.error(`auth/callback: token exchange failed ${tokenRes.status}: ${tokenBody}`);
+    return NextResponse.redirect(new URL(`/?error=token_exchange&spotify_status=${tokenRes.status}`, base));
   }
 
   const tokens = await tokenRes.json();
@@ -71,27 +127,55 @@ export async function GET(req: NextRequest) {
   // cache: 'no-store' prevents Next.js from caching this response in the Data
   // Cache — a stale/error response cached from a previous request would
   // otherwise cause every subsequent login attempt to fail.
-  // Retry transient failures (5xx, 429, network errors) — a single blip from
-  // Spotify shouldn't break the entire login flow.
   let profileRes: Response | null = null;
+  let retryAfterSeconds: number | null = null;
   let lastErr: unknown = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const cachedProfile = readCachedProfile(req, tokens.access_token);
+
+  for (let attempt = 0; attempt < MAX_PROFILE_ATTEMPTS; attempt++) {
     try {
-      profileRes = await fetch("https://api.spotify.com/v1/me", {
-        headers: {
-          Authorization: `Bearer ${tokens.access_token}`,
-          Accept: "application/json",
-          "User-Agent": "MusicLife/1.0",
-        },
-        cache: "no-store",
-      });
-      // 401/403 are deterministic — don't retry. 4xx other than 429 also won't change.
-      if (profileRes.ok || (profileRes.status < 500 && profileRes.status !== 429)) break;
+      const result = await fetchSpotifyProfile(tokens.access_token);
+      const currentRes = result.response;
+      profileRes = currentRes;
+      retryAfterSeconds = result.retryAfterSeconds;
+
+      if (currentRes.ok) break;
+
+      if (currentRes.status === 429) {
+        const waitMs = computeBackoffMs(attempt, retryAfterSeconds);
+        console.warn(
+          `auth/callback: Spotify profile rate limited (429), attempt ${attempt + 1}/${MAX_PROFILE_ATTEMPTS}, waiting ${waitMs}ms`
+        );
+        if (attempt < MAX_PROFILE_ATTEMPTS - 1) {
+          await new Promise((r) => setTimeout(r, waitMs));
+        }
+        continue;
+      }
+
+      if (currentRes.status === 401 || currentRes.status === 403) {
+        console.warn(`auth/callback: Spotify profile fetch denied with ${currentRes.status}`);
+      }
+
+      // Deterministic non-429 4xx failures should not be retried.
+      if (currentRes.status < 500) break;
+
+      // 5xx fallback with exponential backoff.
+      const waitMs = computeBackoffMs(attempt, null);
+      console.warn(
+        `auth/callback: Spotify profile server error ${currentRes.status}, attempt ${attempt + 1}/${MAX_PROFILE_ATTEMPTS}, waiting ${waitMs}ms`
+      );
+      if (attempt < MAX_PROFILE_ATTEMPTS - 1) {
+        await new Promise((r) => setTimeout(r, waitMs));
+      }
     } catch (e) {
       lastErr = e;
       profileRes = null;
+      const waitMs = computeBackoffMs(attempt, null);
+      console.warn(`auth/callback: Spotify profile fetch network error on attempt ${attempt + 1}/${MAX_PROFILE_ATTEMPTS}; waiting ${waitMs}ms`);
+      if (attempt < MAX_PROFILE_ATTEMPTS - 1) {
+        await new Promise((r) => setTimeout(r, waitMs));
+      }
     }
-    if (attempt < 2) await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
   }
 
   if (!profileRes) {
@@ -99,27 +183,45 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(new URL("/?error=profile_fetch&spotify_status=network", base));
   }
 
+  let spotifyId: string;
+  let displayName: string;
+
   if (!profileRes.ok) {
     const body = await profileRes.text().catch(() => "");
     console.error(`auth/callback: profile fetch failed ${profileRes.status}: ${body}`);
-    const detail = profileRes.status === 403 ? "forbidden" : profileRes.status === 401 ? "token_invalid" : "profile_fetch";
-    return NextResponse.redirect(new URL(`/?error=${detail}&spotify_status=${profileRes.status}`, base));
-  }
 
-  const profile = await profileRes.json();
-  const spotifyId: string = profile.id;
-  const displayName: string = profile.display_name ?? profile.id;
+    // If rate-limited but we already have a cached profile for this token,
+    // continue login without another /v1/me call.
+    if (profileRes.status === 429 && cachedProfile) {
+      spotifyId = cachedProfile.id;
+      displayName = cachedProfile.display_name ?? cachedProfile.id;
+      console.warn("auth/callback: using cached Spotify profile after 429 rate limit");
+    } else {
+      const detail =
+        profileRes.status === 429
+          ? "rate_limited"
+          : profileRes.status === 403
+            ? "forbidden"
+            : profileRes.status === 401
+              ? "token_invalid"
+              : "profile_fetch";
+      const query = new URLSearchParams({ error: detail, spotify_status: String(profileRes.status) });
+      if (profileRes.status === 429 && retryAfterSeconds !== null) {
+        query.set("retry_after", String(Math.ceil(retryAfterSeconds)));
+      }
+      return NextResponse.redirect(new URL(`/?${query.toString()}`, base));
+    }
+  } else {
+    const profile = (await profileRes.json()) as CachedProfile;
+    spotifyId = profile.id;
+    displayName = profile.display_name ?? profile.id;
+  }
 
   // ── Upsert user into Supabase ──────────────────────────────────────────
   const sbUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
   const sb = createClient(sbUrl, sbKey, { auth: { persistSession: false } });
 
-  // Upsert the user row. The users.id column is a plain uuid (not auth.uid)
-  // so we must supply one on insert. ON CONFLICT (spotify_user_id) DO UPDATE
-  // leaves the existing id untouched, so the generated UUID is only used
-  // when creating a brand-new row.
-  // Try to find existing user first.
   const { data: existingUser } = await sb
     .from("users")
     .select("id")
@@ -129,14 +231,12 @@ export async function GET(req: NextRequest) {
   let supabaseUserId: string;
 
   if (existingUser) {
-    // Returning user — use existing row and refresh display_name.
     supabaseUserId = existingUser.id;
     await sb
       .from("users")
       .update({ display_name: displayName })
       .eq("id", supabaseUserId);
   } else {
-    // New user — insert with a fresh UUID.
     const newId = randomUUID();
     const { data: newUser, error: insertErr } = await sb
       .from("users")
@@ -172,6 +272,17 @@ export async function GET(req: NextRequest) {
       maxAge: 60 * 60 * 24 * 30,
     });
   }
+
+  // Cache Spotify profile for this access token to avoid repeated /v1/me calls
+  // if the callback is retried and Spotify rate-limits.
+  res.cookies.set(PROFILE_CACHE_COOKIE, encodeURIComponent(JSON.stringify({ id: spotifyId, display_name: displayName })), {
+    ...setCookieOpts(secure),
+    maxAge: PROFILE_CACHE_MAX_AGE,
+  });
+  res.cookies.set(PROFILE_CACHE_TOKEN_HASH_COOKIE, tokenHash(tokens.access_token), {
+    ...setCookieOpts(secure),
+    maxAge: PROFILE_CACHE_MAX_AGE,
+  });
 
   // User identity — stored in a long-lived cookie so route handlers don't
   // need to call Spotify /me on every request.

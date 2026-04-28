@@ -6,6 +6,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   profile_fetch: "Could not fetch your Spotify profile. This may be a temporary Spotify issue — please try again in a moment.",
   forbidden: "Spotify returned 403 Forbidden. Your app may need re-authorization — try clearing your browser cookies for this site and signing in again.",
   token_invalid: "Spotify access token was rejected. Please clear cookies and try again.",
+  rate_limited: "Spotify is rate-limiting login requests right now. Please wait a moment and try again.",
   user_upsert: "Your account could not be created or updated. Please try again.",
 };
 
@@ -16,8 +17,12 @@ export default function Home({
 }) {
   const errorKey = typeof searchParams.error === "string" ? searchParams.error : null;
   const spotifyStatus = typeof searchParams.spotify_status === "string" ? searchParams.spotify_status : null;
+  const retryAfter = typeof searchParams.retry_after === "string" ? searchParams.retry_after : null;
   const baseMessage = errorKey ? (ERROR_MESSAGES[errorKey] ?? "An unexpected error occurred. Please try again.") : null;
-  const errorMessage = baseMessage && spotifyStatus ? `${baseMessage} (Spotify status: ${spotifyStatus})` : baseMessage;
+  const retrySuffix = retryAfter ? ` Retry after ~${retryAfter}s.` : "";
+  const errorMessage = baseMessage
+    ? `${baseMessage}${retrySuffix}${spotifyStatus ? ` (Spotify status: ${spotifyStatus})` : ""}`
+    : null;
 
   return (
     <main
