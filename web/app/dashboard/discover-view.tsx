@@ -8,6 +8,7 @@ type SignalBreakdown = {
   context: number;
   editorial: number;
   track_popularity?: number;
+  audio_match?: number;
 };
 type TopMention = { source: string; excerpt: string; published_at: string };
 
@@ -469,6 +470,9 @@ function SongRow({
             {song.signals.track_popularity !== undefined && (
               <SignalPill label="Popularity" value={song.signals.track_popularity} color="purple" />
             )}
+            {(song.signals.audio_match ?? 0) > 0 && (
+              <SignalPill label="Sound" value={song.signals.audio_match!} color="rose" />
+            )}
           </div>
 
           {/* All reasons */}
@@ -542,6 +546,7 @@ function SignalPill({
     blue: "text-blue-700 bg-blue-50 border-blue-100",
     amber: "text-amber-700 bg-amber-50 border-amber-100",
     purple: "text-purple-700 bg-purple-50 border-purple-100",
+    rose: "text-rose-700 bg-rose-50 border-rose-100",
   };
   return (
     <span

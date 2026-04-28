@@ -37,6 +37,9 @@ def run_spotify_library_ingest(user_id: str, access_token: str) -> None:
         for term in ("short_term", "medium_term", "long_term"):
             top_artists.extend(_fetch_top_artists(client, headers, term))
         recent_items = _fetch_recently_played(client, headers)
+        # Will fetch audio features after tracks are upserted
+        _client_ref = client
+        _headers_ref = headers
 
     # Build a deduped artist map keyed by Spotify artist ID.
     # Top-artist objects carry genres + popularity; prefer them over the
@@ -68,6 +71,9 @@ def run_spotify_library_ingest(user_id: str, access_token: str) -> None:
             track_objs[t["id"]] = t
 
     track_id_map = _upsert_tracks(list(track_objs.values()), artist_id_map)
+
+    # Fetch and store audio features for all tracks
+    _fetch_and_store_audio_features(_client_ref, _headers_ref, list(track_objs.keys()))
 
     # Saved tracks establish added_at; run before recent so the play_count
     # written by _upsert_user_tracks_recent always takes precedence.
@@ -296,3 +302,80 @@ def _fetch_recently_played(
     )
     resp.raise_for_status()
     return resp.json().get("items", [])
+
+
+def _fetch_and_store_audio_features(
+    client: httpx.Client, headers: dict[str, str], spotify_track_ids: list[str]
+) -> None:
+    """Fetch Spotify audio features for tracks and store them in the DB.
+
+    The Spotify audio-features endpoint accepts up to 100 track IDs at once.
+    We only fetch features for tracks that don't already have them stored.
+    """
+    if not spotify_track_ids:
+        return
+
+    # Check which tracks already have audio features
+    existing_resp = (
+        admin_supabase.table("tracks")
+        .select("spotify_track_id")
+        .in_("spotify_track_id", spotify_track_ids)
+        .not_.is_("energy", "null")
+        .execute()
+    )
+    already_have = {
+        row["spotify_track_id"] for row in (existing_resp.data or [])
+    }
+    need_features = [tid for tid in spotify_track_ids if tid not in already_have]
+
+    if not need_features:
+        print(f"spotify_ingest: all {len(spotify_track_ids)} tracks already have audio features")
+        return
+
+    print(f"spotify_ingest: fetching audio features for {len(need_features)} tracks")
+
+    # Process in batches of 100 (Spotify API limit)
+    for i in range(0, len(need_features), 100):
+        batch = need_features[i : i + 100]
+        ids_param = ",".join(batch)
+
+        try:
+            resp = client.get(
+                "https://api.spotify.com/v1/audio-features",
+                headers=headers,
+                params={"ids": ids_param},
+            )
+            resp.raise_for_status()
+            features_list = resp.json().get("audio_features", [])
+        except Exception as exc:
+            print(f"spotify_ingest: audio features fetch failed for batch {i // 100 + 1}: {exc}")
+            continue
+
+        updates = []
+        for feat in features_list:
+            if not feat or not feat.get("id"):
+                continue
+            updates.append({
+                "spotify_track_id": feat["id"],
+                "energy": feat.get("energy"),
+                "danceability": feat.get("danceability"),
+                "valence": feat.get("valence"),
+                "tempo": feat.get("tempo"),
+                "acousticness": feat.get("acousticness"),
+                "instrumentalness": feat.get("instrumentalness"),
+                "speechiness": feat.get("speechiness"),
+                "loudness": feat.get("loudness"),
+                "mode": feat.get("mode"),
+                "key": feat.get("key"),
+            })
+
+        if updates:
+            try:
+                admin_supabase.table("tracks").upsert(
+                    updates, on_conflict="spotify_track_id"
+                ).execute()
+                print(f"spotify_ingest: wrote audio features for {len(updates)} tracks (batch {i // 100 + 1})")
+            except Exception as exc:
+                print(f"spotify_ingest: audio features DB write failed: {exc}")
+
+    print("spotify_ingest: audio features sync complete")
