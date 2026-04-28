@@ -2,8 +2,8 @@
 
 import { useJobPoller } from "./useJobPoller";
 
-export default function EmbedButton() {
-  const { state, message, trigger } = useJobPoller("/api/embed");
+export default function EmbedButton({ onComplete }: { onComplete?: () => void }) {
+  const { state, message, trigger } = useJobPoller("/api/embed", onComplete);
 
   return (
     <div className="space-y-1.5">

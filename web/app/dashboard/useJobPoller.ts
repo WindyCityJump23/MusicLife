@@ -13,7 +13,7 @@ type JobStatusResponse = {
  *
  * Returns { state, message, trigger } where trigger() kicks off the job.
  */
-export function useJobPoller(endpoint: string) {
+export function useJobPoller(endpoint: string, onComplete?: () => void) {
   const [state, setState] = useState<JobState>("idle");
   const [message, setMessage] = useState("");
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -59,6 +59,7 @@ export function useJobPoller(endpoint: string) {
             cleanup();
             setState("success");
             setMessage(data.message || "Done!");
+            onComplete?.();
             return;
           }
 

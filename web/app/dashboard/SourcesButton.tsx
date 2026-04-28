@@ -2,8 +2,8 @@
 
 import { useJobPoller } from "./useJobPoller";
 
-export default function SourcesButton() {
-  const { state, message, trigger } = useJobPoller("/api/sources");
+export default function SourcesButton({ onComplete }: { onComplete?: () => void }) {
+  const { state, message, trigger } = useJobPoller("/api/sources", onComplete);
 
   return (
     <div className="space-y-1.5">

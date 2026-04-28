@@ -2,8 +2,8 @@
 
 import { useJobPoller } from "./useJobPoller";
 
-export default function EnrichButton() {
-  const { state, message, trigger } = useJobPoller("/api/enrich");
+export default function EnrichButton({ onComplete }: { onComplete?: () => void }) {
+  const { state, message, trigger } = useJobPoller("/api/enrich", onComplete);
 
   return (
     <div className="space-y-1.5">

@@ -2,8 +2,8 @@
 
 import { useJobPoller } from "./useJobPoller";
 
-export default function SyncButton() {
-  const { state, message, trigger } = useJobPoller("/api/sync");
+export default function SyncButton({ onComplete }: { onComplete?: () => void }) {
+  const { state, message, trigger } = useJobPoller("/api/sync", onComplete);
 
   return (
     <div className="space-y-1.5">
@@ -17,7 +17,9 @@ export default function SyncButton() {
 
       {state === "running" && (
         <div className="space-y-1 px-0.5">
-          <ProgressPulse color="emerald" />
+          <div className="w-full h-2 bg-neutral-100 rounded-full overflow-hidden">
+            <div className="h-full bg-emerald-500 rounded-full animate-pulse" style={{ width: "100%" }} />
+          </div>
           <p className="text-[10px] text-neutral-500">{message}</p>
         </div>
       )}
@@ -29,17 +31,6 @@ export default function SyncButton() {
       {state === "error" && (
         <p className="text-[11px] text-red-500 px-0.5">✗ {message}</p>
       )}
-    </div>
-  );
-}
-
-function ProgressPulse({ color }: { color: string }) {
-  return (
-    <div className="w-full h-2 bg-neutral-100 rounded-full overflow-hidden">
-      <div
-        className={`h-full bg-${color}-500 rounded-full animate-pulse`}
-        style={{ width: "100%" }}
-      />
     </div>
   );
 }
