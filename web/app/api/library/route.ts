@@ -18,13 +18,13 @@ export async function GET(req: NextRequest) {
 
   const sb = supabaseServer();
 
-  const { data: userTracks, error: utErr } = await sb
+  const { data: userTracks, error: utErr, count: utCount } = await sb
     .from("user_tracks")
-    .select("track_id, tracks(artist_id)")
+    .select("track_id, tracks(artist_id)", { count: "exact" })
     .eq("user_id", user.userId);
 
   if (utErr) {
-    return NextResponse.json({ error: utErr.message }, { status: 500 });
+    return NextResponse.json({ error: utErr.message, debug_user_id: user.userId }, { status: 500 });
   }
 
   const artistIds = Array.from(
