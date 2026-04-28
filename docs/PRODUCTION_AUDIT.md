@@ -79,6 +79,28 @@ _Last updated: April 28, 2026_
 
 - **Two-stage retrieval**: Current approach scores all candidates in Python. At scale (>10K artists), switch to ANN candidate generation in Postgres + re-rank top N.
 
+## Known Security Posture
+
+### Current state
+
+All Next.js route handlers use `SUPABASE_SERVICE_ROLE_KEY` via `supabaseServer()` in `web/lib/supabase-server.ts`. The service role key **bypasses RLS entirely**. User scoping is done manually: route handlers read `app_user_id` from cookies and pass it as a filter (e.g., `.eq("user_id", userId)`).
+
+### What this means
+
+- RLS policies in `db/migrations/003_rls.sql` are **correctly defined** but **effectively dormant**. Every query runs as the service role, so Postgres never evaluates the policies.
+- A bug in any route handler that forgets the `.eq("user_id", ...)` filter would expose all users' data.
+- The service role key is server-side only (never sent to the browser), so the blast radius is limited to server-side code bugs, not client-side exploits.
+
+### Path forward
+
+1. **On Spotify OAuth callback**, mint a short-lived Supabase JWT (using `supabase.auth.admin.generateLink` or a custom JWT signed with the Supabase JWT secret). Embed the user's Supabase UUID as `sub`.
+2. **Store the Supabase JWT** in an httpOnly cookie alongside the existing `sp_access` / `app_user_id` cookies.
+3. **Switch `supabaseServer()`** to use the anon key + the per-request Supabase JWT as a bearer token. This activates RLS — `auth.uid()` in policies will resolve to the user's UUID.
+4. **Remove manual `.eq("user_id", ...)` filters** from route handlers once RLS is enforcing.
+5. **Keep service role** only for trusted backend jobs (ingestion, enrichment, embedding) that write catalog data across users.
+
+This is too large for a single session. The manual filtering is correct today and the service role key is not exposed to clients, so the risk is moderate. But this should be the next security hardening pass.
+
 ## Deployment
 
 | Service | Platform | Auto-deploy | URL |
