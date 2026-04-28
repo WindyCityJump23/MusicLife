@@ -60,8 +60,20 @@ export default function ActivityView() {
 
   if (!plays || plays.length === 0) {
     return (
-      <div className="border border-dashed border-neutral-300 rounded-md p-8 text-center text-sm text-neutral-500 max-w-2xl">
-        No recent plays. Sync your library to populate activity.
+      <div className="border border-dashed border-neutral-300 rounded-xl p-12 text-center space-y-4 max-w-2xl">
+        <div className="text-5xl">📊</div>
+        <div>
+          <p className="text-base font-semibold text-neutral-800">No activity yet</p>
+          <p className="text-sm text-neutral-500 mt-1 max-w-xs mx-auto leading-relaxed">
+            Your recent Spotify plays will appear here after you sync your library.
+          </p>
+        </div>
+        <div className="flex items-center justify-center gap-2 text-sm text-neutral-400">
+          <span>Run</span>
+          <span className="font-medium text-neutral-600">&ldquo;Step 1 — Sync Library&rdquo;</span>
+          <span>in the sidebar to get started</span>
+          <span className="text-lg">←</span>
+        </div>
       </div>
     );
   }

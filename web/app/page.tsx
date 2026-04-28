@@ -1,17 +1,20 @@
 export default function Home() {
   return (
     <main className="min-h-screen flex items-center justify-center p-8 bg-white">
-      <div className="max-w-md w-full text-center space-y-8">
+      <div className="max-w-md w-full text-center space-y-10">
+
+        {/* ── Hero ─────────────────────────────────────────── */}
         <div className="space-y-3">
           <h1 className="text-4xl font-semibold tracking-tight text-neutral-900">
             MusicLife
           </h1>
           <p className="text-neutral-500 leading-relaxed">
-            Discover music you'll actually like. Powered by your Spotify
+            Discover music you&apos;ll actually like. Powered by your Spotify
             listening history, editorial sources, and AI taste matching.
           </p>
         </div>
 
+        {/* ── CTA ──────────────────────────────────────────── */}
         <a
           href="/api/auth/login"
           className="inline-flex items-center gap-2 rounded-full bg-neutral-900 text-white px-8 py-3 text-sm font-medium hover:bg-neutral-700 transition"
@@ -20,11 +23,62 @@ export default function Home() {
           Connect with Spotify
         </a>
 
+        {/* ── How it works ─────────────────────────────────── */}
+        <div className="border-t border-neutral-100 pt-8">
+          <p className="text-xs uppercase tracking-widest text-neutral-400 font-medium mb-6">
+            How it works
+          </p>
+          <div className="grid grid-cols-3 gap-4">
+            <HowStep
+              emoji="🔗"
+              step="1"
+              title="Connect"
+              desc="Link your Spotify account securely"
+            />
+            <HowStep
+              emoji="⚡"
+              step="2"
+              title="Sync"
+              desc="Import your library & listening history"
+            />
+            <HowStep
+              emoji="✨"
+              step="3"
+              title="Discover"
+              desc="Get AI-powered recommendations"
+            />
+          </div>
+        </div>
+
         <p className="text-xs text-neutral-400">
           Your data stays private. No ads. No algorithms selling your taste.
         </p>
       </div>
     </main>
+  );
+}
+
+function HowStep({
+  emoji,
+  step,
+  title,
+  desc,
+}: {
+  emoji: string;
+  step: string;
+  title: string;
+  desc: string;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-2 text-center">
+      <div className="w-12 h-12 rounded-2xl bg-neutral-50 border border-neutral-100 flex items-center justify-center text-2xl">
+        {emoji}
+      </div>
+      <div>
+        <p className="text-xs font-semibold text-neutral-800">{title}</p>
+        <p className="text-[11px] text-neutral-400 leading-snug mt-0.5">{desc}</p>
+      </div>
+    </div>
   );
 }
 

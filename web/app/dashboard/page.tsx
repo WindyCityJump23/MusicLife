@@ -19,7 +19,7 @@ export default function Dashboard() {
   const [view, setView] = useState<View>("library");
 
   return (
-    <div className="grid grid-cols-[240px_1fr_320px] h-screen text-neutral-900">
+    <div className="grid grid-cols-[240px_1fr_360px] h-screen text-neutral-900">
       <Sidebar active={view} onChange={setView} />
 
       <main className="overflow-y-auto">
@@ -34,12 +34,8 @@ export default function Dashboard() {
         </div>
       </main>
 
-      <aside className="border-l border-neutral-200 bg-neutral-50/40 overflow-y-auto">
-        <div className="px-5 py-5 border-b border-neutral-200">
-          <h3 className="text-sm font-semibold tracking-tight">Now playing</h3>
-          <p className="text-xs text-neutral-500 mt-0.5">Spotify Web Playback</p>
-        </div>
-        <div className="p-5">
+      <aside className="border-l border-neutral-200 overflow-y-auto" style={{ background: "linear-gradient(180deg, #1a1a2e 0%, #16213e 100%)" }}>
+        <div className="p-4">
           <Player />
         </div>
       </aside>

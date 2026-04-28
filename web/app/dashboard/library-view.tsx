@@ -71,8 +71,22 @@ export default function LibraryView() {
     return (
       <div className="space-y-6">
         <Stats stats={{ artistCount: 0, trackCount: 0, recentPlayCount: 0 }} />
-        <div className="border border-dashed border-neutral-300 rounded-md p-8 text-center text-sm text-neutral-500">
-          No library data yet. Use “Sync Spotify library” in the sidebar to ingest.
+        <div className="border border-dashed border-neutral-300 rounded-xl p-12 text-center space-y-4">
+          <div className="text-5xl">🎧</div>
+          <div>
+            <p className="text-base font-semibold text-neutral-800">
+              Your library is empty
+            </p>
+            <p className="text-sm text-neutral-500 mt-1 max-w-xs mx-auto leading-relaxed">
+              Sync your Spotify library to get started.
+            </p>
+          </div>
+          <div className="flex items-center justify-center gap-2 text-sm text-neutral-400">
+            <span>Use</span>
+            <span className="font-medium text-neutral-600">&ldquo;Step 1 — Sync Library&rdquo;</span>
+            <span>in the sidebar</span>
+            <span className="text-lg">←</span>
+          </div>
         </div>
       </div>
     );
@@ -112,7 +126,7 @@ function ArtistCard({ artist }: { artist: Artist }) {
     <div className="border border-neutral-200 rounded-md p-3 hover:border-neutral-300 transition-colors">
       <div className="text-sm font-medium text-neutral-900 truncate">{artist.name}</div>
       <div className="mt-0.5 text-xs text-neutral-500 truncate min-h-[16px]">
-        {artist.genres.length > 0 ? artist.genres.slice(0, 3).join(", ") : "—"}
+        {artist.genres.length > 0 ? artist.genres.slice(0, 3).join(", ") : "-"}
       </div>
       <div className="mt-2 flex gap-1.5">
         <Badge on={artist.enriched} label="enriched" />

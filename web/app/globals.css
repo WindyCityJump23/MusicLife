@@ -1,3 +1,54 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ── Jukebox animations ─────────────────────────────────────────── */
+
+@keyframes spin-vinyl {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 18px rgba(233, 69, 96, 0.45),
+      0 0 40px rgba(233, 69, 96, 0.2);
+  }
+  50% {
+    box-shadow:
+      0 0 32px rgba(233, 69, 96, 0.75),
+      0 0 60px rgba(233, 69, 96, 0.4);
+  }
+}
+
+@keyframes idle-float {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-8px); }
+}
+
+@keyframes idle-rotate {
+  0%, 100% { transform: rotate(-4deg); }
+  50%       { transform: rotate(4deg); }
+}
+
+.vinyl-spin {
+  animation: spin-vinyl 8s linear infinite;
+}
+
+.vinyl-spin-paused {
+  animation: spin-vinyl 8s linear infinite;
+  animation-play-state: paused;
+}
+
+.glow-playing {
+  animation: pulse-glow 2.5s ease-in-out infinite;
+}
+
+.idle-float {
+  animation: idle-float 3s ease-in-out infinite;
+}
+
+.idle-rotate {
+  animation: idle-rotate 4s ease-in-out infinite;
+}

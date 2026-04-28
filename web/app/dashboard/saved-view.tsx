@@ -114,8 +114,16 @@ export default function SavedView() {
 
   if (!views || views.length === 0) {
     return (
-      <div className="border border-dashed border-neutral-300 rounded-md p-8 text-center text-sm text-neutral-500 max-w-2xl">
-        No saved views yet. Run a Discover query, then click "Save view".
+      <div className="border border-dashed border-neutral-300 rounded-xl p-12 text-center space-y-4 max-w-2xl">
+        <div className="text-5xl">💾</div>
+        <div>
+          <p className="text-base font-semibold text-neutral-800">No saved views yet</p>
+          <p className="text-sm text-neutral-500 mt-1 max-w-xs mx-auto leading-relaxed">
+            Head to <span className="font-medium text-neutral-700">Discover</span>, run a query,
+            and click <span className="font-medium text-neutral-700">&ldquo;Save view&rdquo;</span> to
+            bookmark your favourite recommendation sets.
+          </p>
+        </div>
       </div>
     );
   }
