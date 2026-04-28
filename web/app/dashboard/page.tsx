@@ -4,6 +4,7 @@ import { useState } from "react";
 import Sidebar, { type View } from "./sidebar";
 import LibraryView from "./library-view";
 import DiscoverView from "./discover-view";
+import PlaylistsView from "./playlists-view";
 import ActivityView from "./activity-view";
 import SavedView from "./saved-view";
 import Player from "./Player";
@@ -12,6 +13,7 @@ import { PlayerProvider } from "./player-context";
 const TITLES: Record<View, string> = {
   library: "Library",
   discover: "Discover",
+  playlists: "Playlists",
   activity: "Activity",
   saved: "Saved views",
 };
@@ -30,7 +32,8 @@ export default function Dashboard() {
               <h2 className="text-lg font-semibold tracking-tight">{TITLES[view]}</h2>
             </header>
             {view === "library" && <LibraryView />}
-            {view === "discover" && <DiscoverView />}
+            {view === "discover" && <DiscoverView onNavigate={(v) => setView(v as View)} />}
+            {view === "playlists" && <PlaylistsView />}
             {view === "activity" && <ActivityView />}
             {view === "saved" && <SavedView />}
           </div>

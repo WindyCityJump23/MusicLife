@@ -6,13 +6,14 @@ import EnrichButton from "./EnrichButton";
 import EmbedButton from "./EmbedButton";
 import SourcesButton from "./SourcesButton";
 
-export type View = "library" | "discover" | "activity" | "saved";
+export type View = "library" | "discover" | "playlists" | "activity" | "saved";
 
 const NAV: { id: View; label: string; icon: string }[] = [
-  { id: "library",  label: "Library",  icon: "🎵" },
-  { id: "discover", label: "Discover", icon: "🔍" },
-  { id: "activity", label: "Activity", icon: "📊" },
-  { id: "saved",    label: "Saved",    icon: "💾" },
+  { id: "library",    label: "Library",    icon: "🎵" },
+  { id: "discover",   label: "Discover",   icon: "🔍" },
+  { id: "playlists",  label: "Playlists",  icon: "📀" },
+  { id: "activity",   label: "Activity",   icon: "📊" },
+  { id: "saved",      label: "Saved",      icon: "💾" },
 ];
 
 const STEP_META = [

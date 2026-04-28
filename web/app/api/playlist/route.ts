@@ -110,8 +110,17 @@ export async function POST(request: NextRequest) {
   const playlistId: string = playlist.id;
   const playlistUrl: string = playlist.external_urls?.spotify ?? "";
 
-  // ── Resolve artist names → top track URIs ──────────────────
-  const trackUris: string[] = [];
+  // ── Resolve artist names → top track details ──────────────
+  type TrackInfo = {
+    uri: string;
+    name: string;
+    artist: string;
+    album: string;
+    album_art: string | null;
+    duration_ms: number;
+    spotify_url: string;
+  };
+  const tracks: TrackInfo[] = [];
   const failed: string[] = [];
 
   // Process in batches of 5 to avoid rate limits
@@ -119,7 +128,7 @@ export async function POST(request: NextRequest) {
     const batch = artists.slice(i, i + 5);
 
     const results = await Promise.all(
-      batch.map(async (artistName) => {
+      batch.map(async (artistName): Promise<{ artist: string; track: TrackInfo | null }> => {
         try {
           // Search for the artist
           const searchRes = await fetch(
@@ -127,11 +136,11 @@ export async function POST(request: NextRequest) {
             { headers }
           );
 
-          if (!searchRes.ok) return { artist: artistName, uri: null };
+          if (!searchRes.ok) return { artist: artistName, track: null };
 
           const searchData = await searchRes.json();
           const found = searchData.artists?.items?.[0];
-          if (!found) return { artist: artistName, uri: null };
+          if (!found) return { artist: artistName, track: null };
 
           // Get top tracks
           const tracksRes = await fetch(
@@ -139,22 +148,33 @@ export async function POST(request: NextRequest) {
             { headers }
           );
 
-          if (!tracksRes.ok) return { artist: artistName, uri: null };
+          if (!tracksRes.ok) return { artist: artistName, track: null };
 
           const tracksData = await tracksRes.json();
           const topTrack = tracksData.tracks?.[0];
-          if (!topTrack) return { artist: artistName, uri: null };
+          if (!topTrack) return { artist: artistName, track: null };
 
-          return { artist: artistName, uri: topTrack.uri as string };
+          return {
+            artist: artistName,
+            track: {
+              uri: topTrack.uri,
+              name: topTrack.name,
+              artist: topTrack.artists?.map((a: { name: string }) => a.name).join(", ") ?? artistName,
+              album: topTrack.album?.name ?? "",
+              album_art: topTrack.album?.images?.[0]?.url ?? null,
+              duration_ms: topTrack.duration_ms ?? 0,
+              spotify_url: topTrack.external_urls?.spotify ?? "",
+            },
+          };
         } catch {
-          return { artist: artistName, uri: null };
+          return { artist: artistName, track: null };
         }
       })
     );
 
     for (const r of results) {
-      if (r.uri) {
-        trackUris.push(r.uri);
+      if (r.track) {
+        tracks.push(r.track);
       } else {
         failed.push(r.artist);
       }
@@ -166,7 +186,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  if (trackUris.length === 0) {
+  if (tracks.length === 0) {
     // Delete the empty playlist we just created
     await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/followers`, {
       method: "DELETE",
@@ -180,6 +200,7 @@ export async function POST(request: NextRequest) {
   }
 
   // ── Add tracks to the playlist (max 100 per request) ───────
+  const trackUris = tracks.map((t) => t.uri);
   for (let i = 0; i < trackUris.length; i += 100) {
     const batch = trackUris.slice(i, i + 100);
     const addRes = await fetch(
@@ -204,7 +225,9 @@ export async function POST(request: NextRequest) {
     ok: true,
     playlist_url: playlistUrl,
     playlist_id: playlistId,
-    tracks_added: trackUris.length,
+    playlist_name: playlistName,
+    tracks_added: tracks.length,
     tracks_failed: failed,
+    tracks,
   });
 }
