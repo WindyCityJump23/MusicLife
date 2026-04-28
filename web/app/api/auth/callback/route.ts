@@ -1,20 +1,20 @@
 import { createClient } from "@supabase/supabase-js";
-import { createHash, randomUUID } from "crypto";
+import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 
-const PROFILE_CACHE_COOKIE = "sp_profile_cache";
-const PROFILE_CACHE_TOKEN_HASH_COOKIE = "sp_profile_token_hash";
-const PROFILE_CACHE_MAX_AGE = 60 * 60 * 24; // 24h
-const MAX_PROFILE_ATTEMPTS = 3;
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-type CachedProfile = {
-  id: string;
-  display_name?: string;
-};
+// Hard cap: total time spent retrying inside this request must stay under this.
+const MAX_TOTAL_RETRY_MS = 6000;
+const MAX_RETRY_ATTEMPTS = 2; // Only retry for 5xx/network, never for 429
 
 function baseUrl(req: NextRequest): string {
-  const proto = req.headers.get("x-forwarded-proto") ?? new URL(req.url).protocol.replace(":", "");
-  const host = req.headers.get("x-forwarded-host") ?? new URL(req.url).host;
+  const proto =
+    req.headers.get("x-forwarded-proto") ??
+    new URL(req.url).protocol.replace(":", "");
+  const host =
+    req.headers.get("x-forwarded-host") ?? new URL(req.url).host;
   return `${proto}://${host}`;
 }
 
@@ -27,53 +27,8 @@ function setCookieOpts(secure: boolean) {
   };
 }
 
-function tokenHash(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
-
-function readCachedProfile(req: NextRequest, accessToken: string): CachedProfile | null {
-  const cached = req.cookies.get(PROFILE_CACHE_COOKIE)?.value;
-  const hash = req.cookies.get(PROFILE_CACHE_TOKEN_HASH_COOKIE)?.value;
-  if (!cached || !hash || hash !== tokenHash(accessToken)) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(decodeURIComponent(cached)) as CachedProfile;
-    if (!parsed.id) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function computeBackoffMs(attempt: number, retryAfterSeconds: number | null): number {
-  if (retryAfterSeconds !== null && Number.isFinite(retryAfterSeconds)) {
-    return Math.max(0, retryAfterSeconds) * 1000;
-  }
-  const base = 1000 * 2 ** attempt;
-  const jitter = Math.floor(Math.random() * 350);
-  return base + jitter;
-}
-
-async function fetchSpotifyProfile(accessToken: string): Promise<{ response: Response; retryAfterSeconds: number | null }> {
-  const response = await fetch("https://api.spotify.com/v1/me", {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-      "User-Agent": "MusicLife/1.0",
-    },
-    cache: "no-store",
-  });
-
-  const retryAfterHeader = response.headers.get("retry-after");
-  const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : null;
-  return { response, retryAfterSeconds: Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : null };
-}
-
 // Exchange the Spotify authorization code for tokens, upsert the user into
-// Supabase, and store the user's Supabase UUID in a cookie so every route
-// handler can identify them without an extra Spotify API call on each request.
+// Supabase, and store the user's Supabase UUID in a cookie.
 export async function GET(req: NextRequest) {
   const secure = process.env.NODE_ENV === "production";
   const base = baseUrl(req);
@@ -89,7 +44,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(new URL("/?error=state_mismatch", base));
   }
 
-  // ── Exchange code for tokens ───────────────────────────────────────────
+  // ── Exchange code for tokens ───────────────────────────────
   const basic = Buffer.from(
     `${process.env.SPOTIFY_CLIENT_ID}:${process.env.SPOTIFY_CLIENT_SECRET}`
   ).toString("base64");
@@ -108,116 +63,115 @@ export async function GET(req: NextRequest) {
   });
 
   if (!tokenRes.ok) {
-    const tokenBody = await tokenRes.text().catch(() => "");
-    console.error(`auth/callback: token exchange failed ${tokenRes.status}: ${tokenBody}`);
-    return NextResponse.redirect(new URL(`/?error=token_exchange&spotify_status=${tokenRes.status}`, base));
+    console.error(
+      `[auth/callback] token exchange failed: ${tokenRes.status}`
+    );
+    return NextResponse.redirect(
+      new URL(
+        `/?error=token_exchange&spotify_status=${tokenRes.status}`,
+        base
+      )
+    );
   }
 
   const tokens = await tokenRes.json();
 
   if (!tokens.access_token) {
-    console.error("auth/callback: token exchange returned no access_token", JSON.stringify(tokens));
+    console.error("[auth/callback] token exchange returned no access_token");
     return NextResponse.redirect(new URL("/?error=token_missing", base));
   }
 
   const expiresIn = Number(tokens.expires_in) || 3600;
   const cookieAge = Math.max(expiresIn - 60, 60);
 
-  // ── Fetch Spotify profile ──────────────────────────────────────────────
-  // cache: 'no-store' prevents Next.js from caching this response in the Data
-  // Cache — a stale/error response cached from a previous request would
-  // otherwise cause every subsequent login attempt to fail.
+  // ── Fetch Spotify profile ──────────────────────────────────
+  // CRITICAL: Never sleep for Spotify's Retry-After value inside a
+  // serverless function. 429 → redirect immediately. Only retry 5xx.
   let profileRes: Response | null = null;
-  let retryAfterSeconds: number | null = null;
-  let lastErr: unknown = null;
-  const cachedProfile = readCachedProfile(req, tokens.access_token);
+  let totalWaited = 0;
 
-  for (let attempt = 0; attempt < MAX_PROFILE_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
     try {
-      const result = await fetchSpotifyProfile(tokens.access_token);
-      const currentRes = result.response;
-      profileRes = currentRes;
-      retryAfterSeconds = result.retryAfterSeconds;
+      profileRes = await fetch("https://api.spotify.com/v1/me", {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+        cache: "no-store",
+      });
 
-      if (currentRes.ok) break;
+      // ── 429: Rate limited — redirect immediately, never wait ──
+      if (profileRes.status === 429) {
+        const retryAfter = profileRes.headers.get("retry-after");
+        const retrySeconds = retryAfter ? Number(retryAfter) : null;
 
-      if (currentRes.status === 429) {
-        const waitMs = computeBackoffMs(attempt, retryAfterSeconds);
         console.warn(
-          `auth/callback: Spotify profile rate limited (429), attempt ${attempt + 1}/${MAX_PROFILE_ATTEMPTS}, waiting ${waitMs}ms`
+          `[auth/callback] Spotify 429 rate limited | retry-after=${retryAfter}s | redirecting immediately (not waiting)`
         );
-        if (attempt < MAX_PROFILE_ATTEMPTS - 1) {
-          await new Promise((r) => setTimeout(r, waitMs));
+
+        const query = new URLSearchParams({
+          error: "rate_limited",
+          spotify_status: "429",
+        });
+        if (retrySeconds && Number.isFinite(retrySeconds)) {
+          query.set("retry_after", String(Math.ceil(retrySeconds)));
         }
-        continue;
+        return NextResponse.redirect(new URL(`/?${query}`, base));
       }
 
-      if (currentRes.status === 401 || currentRes.status === 403) {
-        console.warn(`auth/callback: Spotify profile fetch denied with ${currentRes.status}`);
+      // ── Success
+      if (profileRes.ok) break;
+
+      // ── 4xx (non-429): deterministic failure, don't retry ──
+      if (profileRes.status < 500) {
+        console.error(
+          `[auth/callback] Spotify profile ${profileRes.status}`
+        );
+        break;
       }
 
-      // Deterministic non-429 4xx failures should not be retried.
-      if (currentRes.status < 500) break;
-
-      // 5xx fallback with exponential backoff.
-      const waitMs = computeBackoffMs(attempt, null);
-      console.warn(
-        `auth/callback: Spotify profile server error ${currentRes.status}, attempt ${attempt + 1}/${MAX_PROFILE_ATTEMPTS}, waiting ${waitMs}ms`
-      );
-      if (attempt < MAX_PROFILE_ATTEMPTS - 1) {
-        await new Promise((r) => setTimeout(r, waitMs));
+      // ── 5xx: transient, retry with short backoff ──
+      if (attempt < MAX_RETRY_ATTEMPTS) {
+        const waitMs = Math.min(1000 * (attempt + 1), MAX_TOTAL_RETRY_MS - totalWaited);
+        if (waitMs > 0) {
+          console.warn(
+            `[auth/callback] Spotify 5xx (${profileRes.status}), retry ${attempt + 1}/${MAX_RETRY_ATTEMPTS} in ${waitMs}ms`
+          );
+          await new Promise((r) => setTimeout(r, waitMs));
+          totalWaited += waitMs;
+        }
       }
-    } catch (e) {
-      lastErr = e;
+    } catch (err) {
+      console.error(`[auth/callback] profile fetch network error`, err);
       profileRes = null;
-      const waitMs = computeBackoffMs(attempt, null);
-      console.warn(`auth/callback: Spotify profile fetch network error on attempt ${attempt + 1}/${MAX_PROFILE_ATTEMPTS}; waiting ${waitMs}ms`);
-      if (attempt < MAX_PROFILE_ATTEMPTS - 1) {
-        await new Promise((r) => setTimeout(r, waitMs));
+
+      if (attempt < MAX_RETRY_ATTEMPTS) {
+        const waitMs = Math.min(1000 * (attempt + 1), MAX_TOTAL_RETRY_MS - totalWaited);
+        if (waitMs > 0) {
+          await new Promise((r) => setTimeout(r, waitMs));
+          totalWaited += waitMs;
+        }
       }
     }
   }
 
-  if (!profileRes) {
-    console.error("auth/callback: profile fetch network error", lastErr);
-    return NextResponse.redirect(new URL("/?error=profile_fetch&spotify_status=network", base));
+  if (!profileRes || !profileRes.ok) {
+    const status = profileRes?.status ?? "network";
+    console.error(`[auth/callback] profile fetch failed: ${status}`);
+
+    const detail =
+      profileRes?.status === 403
+        ? "forbidden"
+        : profileRes?.status === 401
+          ? "token_invalid"
+          : "profile_fetch";
+    return NextResponse.redirect(
+      new URL(`/?error=${detail}&spotify_status=${status}`, base)
+    );
   }
 
-  let spotifyId: string;
-  let displayName: string;
+  const profile = await profileRes.json();
+  const spotifyId: string = profile.id;
+  const displayName: string = profile.display_name ?? profile.id;
 
-  if (!profileRes.ok) {
-    const body = await profileRes.text().catch(() => "");
-    console.error(`auth/callback: profile fetch failed ${profileRes.status}: ${body}`);
-
-    // If rate-limited but we already have a cached profile for this token,
-    // continue login without another /v1/me call.
-    if (profileRes.status === 429 && cachedProfile) {
-      spotifyId = cachedProfile.id;
-      displayName = cachedProfile.display_name ?? cachedProfile.id;
-      console.warn("auth/callback: using cached Spotify profile after 429 rate limit");
-    } else {
-      const detail =
-        profileRes.status === 429
-          ? "rate_limited"
-          : profileRes.status === 403
-            ? "forbidden"
-            : profileRes.status === 401
-              ? "token_invalid"
-              : "profile_fetch";
-      const query = new URLSearchParams({ error: detail, spotify_status: String(profileRes.status) });
-      if (profileRes.status === 429 && retryAfterSeconds !== null) {
-        query.set("retry_after", String(Math.ceil(retryAfterSeconds)));
-      }
-      return NextResponse.redirect(new URL(`/?${query.toString()}`, base));
-    }
-  } else {
-    const profile = (await profileRes.json()) as CachedProfile;
-    spotifyId = profile.id;
-    displayName = profile.display_name ?? profile.id;
-  }
-
-  // ── Upsert user into Supabase ──────────────────────────────────────────
+  // ── Upsert user into Supabase ──────────────────────────────
   const sbUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
   const sb = createClient(sbUrl, sbKey, { auth: { persistSession: false } });
@@ -240,32 +194,43 @@ export async function GET(req: NextRequest) {
     const newId = randomUUID();
     const { data: newUser, error: insertErr } = await sb
       .from("users")
-      .insert({ id: newId, spotify_user_id: spotifyId, display_name: displayName })
+      .insert({
+        id: newId,
+        spotify_user_id: spotifyId,
+        display_name: displayName,
+      })
       .select("id")
       .single();
 
     if (insertErr || !newUser) {
-      console.error("auth/callback: user insert failed", insertErr?.message);
+      console.error(
+        "[auth/callback] user insert failed",
+        insertErr?.message
+      );
       return NextResponse.redirect(new URL("/?error=user_upsert", base));
     }
     supabaseUserId = newUser.id;
   }
 
-  // ── Set cookies and redirect ───────────────────────────────────────────
+  // ── Set cookies and redirect to dashboard ──────────────────
   const res = NextResponse.redirect(new URL("/dashboard", base));
 
-  // Clear CSRF state cookie
-  res.cookies.set("sp_oauth_state", "", { ...setCookieOpts(secure), maxAge: 0 });
+  // Clear CSRF state
+  res.cookies.set("sp_oauth_state", "", {
+    ...setCookieOpts(secure),
+    maxAge: 0,
+  });
 
   // Spotify tokens
   res.cookies.set("sp_access", tokens.access_token, {
     ...setCookieOpts(secure),
     maxAge: cookieAge,
   });
-  res.cookies.set("sp_access_expires_at", String(Date.now() + expiresIn * 1000), {
-    ...setCookieOpts(secure),
-    maxAge: cookieAge,
-  });
+  res.cookies.set(
+    "sp_access_expires_at",
+    String(Date.now() + expiresIn * 1000),
+    { ...setCookieOpts(secure), maxAge: cookieAge }
+  );
   if (tokens.refresh_token) {
     res.cookies.set("sp_refresh", tokens.refresh_token, {
       ...setCookieOpts(secure),
@@ -273,19 +238,7 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // Cache Spotify profile for this access token to avoid repeated /v1/me calls
-  // if the callback is retried and Spotify rate-limits.
-  res.cookies.set(PROFILE_CACHE_COOKIE, encodeURIComponent(JSON.stringify({ id: spotifyId, display_name: displayName })), {
-    ...setCookieOpts(secure),
-    maxAge: PROFILE_CACHE_MAX_AGE,
-  });
-  res.cookies.set(PROFILE_CACHE_TOKEN_HASH_COOKIE, tokenHash(tokens.access_token), {
-    ...setCookieOpts(secure),
-    maxAge: PROFILE_CACHE_MAX_AGE,
-  });
-
-  // User identity — stored in a long-lived cookie so route handlers don't
-  // need to call Spotify /me on every request.
+  // User identity
   res.cookies.set("app_user_id", supabaseUserId, {
     ...setCookieOpts(secure),
     maxAge: 60 * 60 * 24 * 30,
@@ -295,5 +248,8 @@ export async function GET(req: NextRequest) {
     maxAge: 60 * 60 * 24 * 30,
   });
 
+  console.log(
+    `[auth/callback] success | user=${supabaseUserId} | spotify=${spotifyId}`
+  );
   return res;
 }
