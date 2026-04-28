@@ -44,7 +44,6 @@ def recommend_songs(
     weights: dict[str, float],
     exclude_library: bool,
     limit: int,
-    prompt: str | None = None,
 ) -> list[dict]:
     """Return a ranked list of song-level recommendations."""
 
@@ -107,9 +106,6 @@ def recommend_songs(
 
     effective_prompt_vector = prompt_vector if prompt_vector else taste_vector
     has_explicit_prompt = prompt_vector is not None
-
-    # Keep original prompt text for audio feature matching
-    _prompt_text = prompt
 
     # ── Phase 1: Score each artist (same as artist-level engine) ─
     # NOTE: We include library artists in scoring (don't skip them)
@@ -217,9 +213,6 @@ def recommend_songs(
     )
     all_tracks = tracks_resp.data or []
 
-    # Build the user's average audio profile from their library tracks
-    user_audio_profile = _build_user_audio_profile(client, user_id)
-
     # Group tracks by artist
     tracks_by_artist: dict[int, list[dict]] = defaultdict(list)
     for t in all_tracks:
@@ -258,14 +251,6 @@ def recommend_songs(
             # Track-level boost: popularity + audio feature match
             track_boost = 0.7 + (0.3 * track_pop)  # 0.7–1.0 range
 
-            # Audio feature match bonus: if user has a taste profile and
-            # the track has audio features, reward tracks that match
-            audio_match = _audio_feature_match(
-                track, user_audio_profile, has_explicit_prompt, _prompt_text
-            )
-            if audio_match > 0:
-                track_boost *= (1.0 + audio_match * 0.25)  # Up to 25% boost
-
             # Familiarity: penalize songs already in user's library
             # (soft penalty, not hard exclusion — we need these for results)
             in_library = track_id in user_track_map if track_id else False
@@ -295,8 +280,6 @@ def recommend_songs(
                 reasons.append(f"Featured in {src_name}" if src_name else "In the press")
             if track_pop > 0.7:
                 reasons.append("Popular track")
-            if audio_match > 0.6:
-                reasons.append("Matches your sound")
             if in_library:
                 reasons.append("In your library")
             if not reasons:
@@ -317,7 +300,6 @@ def recommend_songs(
                     "context": round(a_info["context"], 4),
                     "editorial": round(a_info["editorial"], 4),
                     "track_popularity": round(track_pop, 4),
-                    "audio_match": round(audio_match, 4),
                 },
                 "genres": a_info["genres"],
                 "reasons": reasons,
@@ -390,196 +372,3 @@ def _song_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
 
     return selected
 
-
-# ── Audio feature helpers ────────────────────────────────────────
-
-# Keywords in prompts that map to audio feature preferences.
-# Each keyword maps to {feature: target_value} pairs.
-_MOOD_KEYWORDS: dict[str, dict[str, float]] = {
-    "chill": {"energy": 0.3, "valence": 0.4, "tempo": 90},
-    "relaxing": {"energy": 0.2, "valence": 0.4, "acousticness": 0.7},
-    "calm": {"energy": 0.2, "valence": 0.4, "acousticness": 0.6},
-    "lo-fi": {"energy": 0.3, "acousticness": 0.5, "instrumentalness": 0.5},
-    "lofi": {"energy": 0.3, "acousticness": 0.5, "instrumentalness": 0.5},
-    "energetic": {"energy": 0.85, "danceability": 0.7, "tempo": 130},
-    "hype": {"energy": 0.9, "danceability": 0.8, "valence": 0.7},
-    "party": {"energy": 0.8, "danceability": 0.85, "valence": 0.7},
-    "dance": {"danceability": 0.85, "energy": 0.75, "tempo": 120},
-    "workout": {"energy": 0.85, "tempo": 140, "danceability": 0.6},
-    "gym": {"energy": 0.9, "tempo": 140},
-    "sad": {"valence": 0.2, "energy": 0.3},
-    "melancholy": {"valence": 0.2, "energy": 0.3, "acousticness": 0.5},
-    "happy": {"valence": 0.8, "energy": 0.7},
-    "upbeat": {"valence": 0.75, "energy": 0.75, "tempo": 120},
-    "acoustic": {"acousticness": 0.8, "instrumentalness": 0.3},
-    "instrumental": {"instrumentalness": 0.8},
-    "focus": {"energy": 0.4, "instrumentalness": 0.5, "speechiness": 0.05},
-    "study": {"energy": 0.3, "instrumentalness": 0.5, "speechiness": 0.05},
-    "sleep": {"energy": 0.15, "acousticness": 0.7, "instrumentalness": 0.5},
-    "slow": {"tempo": 75, "energy": 0.3},
-    "fast": {"tempo": 140, "energy": 0.8},
-    "dark": {"valence": 0.2, "energy": 0.5},
-    "aggressive": {"energy": 0.9, "valence": 0.3},
-    "intense": {"energy": 0.85, "loudness": -5},
-    "summer": {"valence": 0.75, "energy": 0.7, "danceability": 0.7},
-    "road trip": {"energy": 0.65, "valence": 0.65},
-    "late night": {"energy": 0.35, "valence": 0.35, "acousticness": 0.4},
-    "morning": {"energy": 0.5, "valence": 0.6, "acousticness": 0.5},
-}
-
-# Feature normalization ranges for computing distance
-_FEATURE_RANGES: dict[str, tuple[float, float]] = {
-    "energy": (0.0, 1.0),
-    "danceability": (0.0, 1.0),
-    "valence": (0.0, 1.0),
-    "acousticness": (0.0, 1.0),
-    "instrumentalness": (0.0, 1.0),
-    "speechiness": (0.0, 1.0),
-    "tempo": (40.0, 200.0),
-    "loudness": (-60.0, 0.0),
-}
-
-
-def _build_user_audio_profile(
-    client: Client, user_id: str
-) -> dict[str, float] | None:
-    """Build the user's average audio feature profile from their library.
-
-    Returns a dict like {"energy": 0.65, "valence": 0.55, ...} or None
-    if no audio features are available.
-    """
-    try:
-        # Get the user's track IDs
-        ut_resp = (
-            client.table("user_tracks")
-            .select("track_id,play_count")
-            .eq("user_id", user_id)
-            .execute()
-        )
-        user_tracks = ut_resp.data or []
-        if not user_tracks:
-            return None
-
-        track_ids = [row["track_id"] for row in user_tracks if row.get("track_id")]
-        if not track_ids:
-            return None
-
-        # Fetch audio features for these tracks
-        tracks_resp = (
-            client.table("tracks")
-            .select("id,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,loudness")
-            .in_("id", track_ids)
-            .not_.is_("energy", "null")
-            .execute()
-        )
-        tracks_with_features = tracks_resp.data or []
-        if not tracks_with_features:
-            return None
-
-        # Build play_count map for weighting
-        play_map = {row["track_id"]: max(row.get("play_count") or 1, 1) for row in user_tracks}
-
-        features = ["energy", "danceability", "valence", "tempo", "acousticness",
-                     "instrumentalness", "speechiness", "loudness"]
-        weighted_sums: dict[str, float] = {f: 0.0 for f in features}
-        total_weight = 0.0
-
-        for t in tracks_with_features:
-            w = float(play_map.get(t["id"], 1))
-            for f in features:
-                val = t.get(f)
-                if val is not None:
-                    weighted_sums[f] += float(val) * w
-            total_weight += w
-
-        if total_weight == 0:
-            return None
-
-        return {f: weighted_sums[f] / total_weight for f in features}
-
-    except Exception as exc:
-        print(f"song_ranking: failed to build user audio profile: {exc}")
-        return None
-
-
-def _audio_feature_match(
-    track: dict,
-    user_profile: dict[str, float] | None,
-    has_prompt: bool,
-    prompt_text: str | None,
-) -> float:
-    """Score how well a track's audio features match the user's taste and/or prompt.
-
-    Returns 0.0–1.0 where higher = better match.
-    Returns 0.0 if the track has no audio features.
-    """
-    # Check if track has audio features at all
-    if track.get("energy") is None:
-        return 0.0
-
-    scores: list[float] = []
-
-    # 1. Match against user's audio profile (if available)
-    if user_profile:
-        profile_match = _feature_distance_score(track, user_profile)
-        scores.append(profile_match)
-
-    # 2. Match against prompt keywords (if a prompt was given)
-    if has_prompt and prompt_text:
-        prompt_targets = _extract_prompt_targets(prompt_text)
-        if prompt_targets:
-            prompt_match = _feature_distance_score(track, prompt_targets)
-            # Weight prompt match more heavily when a prompt is given
-            scores.append(prompt_match * 1.3)
-
-    if not scores:
-        return 0.0
-
-    return min(1.0, sum(scores) / len(scores))
-
-
-def _feature_distance_score(track: dict, targets: dict[str, float]) -> float:
-    """Score based on how close the track's features are to target values.
-
-    Returns 0.0–1.0 where 1.0 = perfect match.
-    """
-    if not targets:
-        return 0.0
-
-    distances: list[float] = []
-    for feature, target in targets.items():
-        actual = track.get(feature)
-        if actual is None:
-            continue
-
-        lo, hi = _FEATURE_RANGES.get(feature, (0.0, 1.0))
-        range_size = hi - lo
-        if range_size <= 0:
-            continue
-
-        normalized_dist = abs(float(actual) - target) / range_size
-        # Convert distance to similarity (0 = far, 1 = close)
-        similarity = max(0.0, 1.0 - normalized_dist)
-        distances.append(similarity)
-
-    if not distances:
-        return 0.0
-
-    return sum(distances) / len(distances)
-
-
-def _extract_prompt_targets(prompt: str) -> dict[str, float]:
-    """Extract audio feature targets from natural language prompt."""
-    prompt_lower = prompt.lower()
-    combined: dict[str, list[float]] = {}
-
-    for keyword, targets in _MOOD_KEYWORDS.items():
-        if keyword in prompt_lower:
-            for feature, value in targets.items():
-                combined.setdefault(feature, []).append(value)
-
-    if not combined:
-        return {}
-
-    # Average when multiple keywords target the same feature
-    return {f: sum(vals) / len(vals) for f, vals in combined.items()}

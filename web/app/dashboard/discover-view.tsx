@@ -8,7 +8,6 @@ type SignalBreakdown = {
   context: number;
   editorial: number;
   track_popularity?: number;
-  audio_match?: number;
 };
 type TopMention = { source: string; excerpt: string; published_at: string };
 
@@ -623,9 +622,7 @@ function SongRow({
             {song.signals.track_popularity !== undefined && (
               <SignalPill label="Popularity" value={song.signals.track_popularity} color="purple" />
             )}
-            {(song.signals.audio_match ?? 0) > 0 && (
-              <SignalPill label="Sound" value={song.signals.audio_match!} color="rose" />
-            )}
+
           </div>
 
           {/* All reasons */}

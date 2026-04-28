@@ -140,7 +140,6 @@ def recommend_songs(
         weights=req.weights,
         exclude_library=req.exclude_library,
         limit=req.limit,
-        prompt=req.prompt,
     )
     return RecommendResponse(results=results)
 

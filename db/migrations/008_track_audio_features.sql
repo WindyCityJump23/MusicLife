@@ -1,5 +1,10 @@
--- Add Spotify audio features to tracks for song-level recommendation scoring.
--- These are fetched via GET /audio-features during library sync.
+-- DEPRECATED: Spotify deprecated /audio-features for apps created after Nov 2024.
+-- These columns may exist in production but are no longer populated.
+-- The embedding-based context signal handles mood matching instead.
+-- Safe to leave columns in place (all nullable); do not add new code that reads them.
+--
+-- Original purpose: Add Spotify audio features to tracks for song-level scoring.
+-- Was fetched via GET /audio-features during library sync.
 
 alter table public.tracks
   add column if not exists energy        real,      -- 0.0–1.0: intensity/activity
