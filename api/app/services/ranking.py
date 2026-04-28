@@ -147,7 +147,7 @@ def rank_candidates(
 
     artists_resp = (
         client.table("artists")
-        .select("id,name,embedding,popularity")
+        .select("id,name,embedding,popularity,genres")
         .not_.is_("embedding", "null")
         .execute()
     )
@@ -158,9 +158,12 @@ def rank_candidates(
         int(a["id"]) for a in candidates if a.get("id") is not None
     ]
 
-    source_resp = client.table("sources").select("id,trust_weight").execute()
-    source_weights = {
-        int(row["id"]): float(row.get("trust_weight") or 0.7)
+    source_resp = client.table("sources").select("id,name,trust_weight").execute()
+    source_info: dict[int, dict] = {
+        int(row["id"]): {
+            "trust_weight": float(row.get("trust_weight") or 0.7),
+            "name": row.get("name") or "",
+        }
         for row in (source_resp.data or [])
         if row.get("id") is not None
     }
@@ -169,7 +172,7 @@ def rank_candidates(
     if candidate_ids:
         mention_resp = (
             client.table("mentions")
-            .select("artist_id,source_id,embedding,published_at,sentiment")
+            .select("artist_id,source_id,embedding,published_at,sentiment,excerpt")
             .in_("artist_id", candidate_ids)
             .execute()
         )
@@ -209,6 +212,8 @@ def rank_candidates(
         artist_mentions = mentions_by_artist.get(artist_id, [])
         context_scores: list[float] = []
         editorial_components: list[float] = []
+        best_mention: dict | None = None
+        best_mention_score: float = -1.0
 
         for mention in artist_mentions:
             mention_vec = _parse_vector(mention.get("embedding"))
@@ -225,10 +230,21 @@ def rank_candidates(
                 except ValueError:
                     recency_multiplier = 0.2
 
-            trust = source_weights.get(int(mention.get("source_id") or 0), 0.7)
+            src_id = int(mention.get("source_id") or 0)
+            src = source_info.get(src_id, {"trust_weight": 0.7, "name": ""})
+            trust = src["trust_weight"]
             sentiment = float(mention.get("sentiment") or 0.5)
             sentiment_factor = max(0.0, min(1.0, sentiment))
-            editorial_components.append(trust * recency_multiplier * (0.5 + 0.5 * sentiment_factor))
+            component = trust * recency_multiplier * (0.5 + 0.5 * sentiment_factor)
+            editorial_components.append(component)
+
+            if component > best_mention_score and mention.get("excerpt"):
+                best_mention_score = component
+                best_mention = {
+                    "source": src["name"],
+                    "excerpt": mention.get("excerpt"),
+                    "published_at": published_at_raw,
+                }
 
         context = max(context_scores) if context_scores else 0.0
         editorial = min(1.0, sum(editorial_components) / max(len(editorial_components), 1))
@@ -241,13 +257,14 @@ def rank_candidates(
 
         reasons = []
         if affinity > 0.55:
-            reasons.append("High similarity to your listening profile")
+            reasons.append("Matches your taste")
         if context > 0.55:
-            reasons.append("Strong match to your current prompt context")
+            reasons.append("Matches your search")
         if editorial > 0.45:
-            reasons.append("Recent trusted editorial momentum")
+            src_name = best_mention["source"] if best_mention and best_mention.get("source") else ""
+            reasons.append(f"Featured in {src_name}" if src_name else "In the press")
         if not reasons:
-            reasons.append("Balanced across affinity, context, and editorial signals")
+            reasons.append("Curated pick")
 
         scored.append(
             {
@@ -259,6 +276,9 @@ def rank_candidates(
                     "context": round(context, 4),
                     "editorial": round(editorial, 4),
                 },
+                "genres": list(artist.get("genres") or []),
+                "mention_count": len(artist_mentions),
+                "top_mention": best_mention,
                 "reasons": reasons,
             }
         )
