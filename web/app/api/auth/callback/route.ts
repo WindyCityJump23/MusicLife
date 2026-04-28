@@ -93,8 +93,12 @@ export async function GET(req: NextRequest) {
   let supabaseUserId: string;
 
   if (existingUser) {
-    // Returning user — just use existing row.
+    // Returning user — use existing row and refresh display_name.
     supabaseUserId = existingUser.id;
+    await sb
+      .from("users")
+      .update({ display_name: displayName })
+      .eq("id", supabaseUserId);
   } else {
     // New user — insert with a fresh UUID.
     const newId = randomUUID();

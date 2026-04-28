@@ -18,7 +18,7 @@ from app.services.supabase_client import admin_supabase
 def run_artist_embeddings(batch_size: int = 18) -> None:
     result = (
         admin_supabase.table("artists")
-        .select("id, name, embedding_source")
+        .select("id, name, spotify_artist_id, embedding_source")
         .not_.is_("embedding_source", "null")
         .is_("embedding", "null")
         .limit(batch_size)

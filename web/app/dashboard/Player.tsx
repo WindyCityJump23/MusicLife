@@ -146,6 +146,7 @@ export default function Player() {
     }
 
     return () => {
+      window.onSpotifyWebPlaybackSDKReady = undefined;
       playerRef.current?.disconnect();
       playerRef.current = null;
     };
