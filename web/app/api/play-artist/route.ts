@@ -7,9 +7,11 @@ export async function POST(request: NextRequest) {
 
   // Parse request body
   let artist_name: string | undefined;
+  let device_id: string | undefined;
   try {
     const body = await request.json();
     artist_name = body.artist_name;
+    device_id = body.device_id;
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
@@ -81,9 +83,8 @@ export async function POST(request: NextRequest) {
   }
 
   const tracksData = await tracksRes.json();
-  const uris: string[] = (tracksData.tracks ?? [])
-    .slice(0, 5)
-    .map((t: { uri: string }) => t.uri);
+  const tracks: Array<{ uri: string; name: string }> = (tracksData.tracks ?? []).slice(0, 5);
+  const uris = tracks.map((t) => t.uri);
 
   if (uris.length === 0) {
     return NextResponse.json(
@@ -92,8 +93,15 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Start playback
-  const playRes = await fetch("https://api.spotify.com/v1/me/player/play", {
+  // Build playback URL — include device_id as query param if provided so
+  // Spotify targets the Web Playback SDK player instead of whatever was
+  // last active (phone, desktop app, etc.)
+  let playUrl = "https://api.spotify.com/v1/me/player/play";
+  if (device_id && typeof device_id === "string") {
+    playUrl += `?device_id=${encodeURIComponent(device_id)}`;
+  }
+
+  const playRes = await fetch(playUrl, {
     method: "PUT",
     headers: {
       Authorization: `Bearer ${access_token}`,
@@ -105,8 +113,19 @@ export async function POST(request: NextRequest) {
   // 204 = success with no content; 202 = accepted
   if (!playRes.ok && playRes.status !== 204 && playRes.status !== 202) {
     const errBody = await playRes.json().catch(() => ({}));
+    const errorMsg = errBody?.error?.message ?? "Failed to start playback";
+    const reason = errBody?.error?.reason;
+
+    // Provide a helpful message for the most common failure
+    if (reason === "NO_ACTIVE_DEVICE" || playRes.status === 404) {
+      return NextResponse.json(
+        { error: "No active player — click \"Transfer to this tab\" in the player panel first" },
+        { status: 404 }
+      );
+    }
+
     return NextResponse.json(
-      { error: errBody?.error?.message ?? "Failed to start playback" },
+      { error: errorMsg },
       { status: playRes.status }
     );
   }
@@ -114,6 +133,7 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     ok: true,
     artist: spotifyArtist.name,
+    tracks: tracks.map((t) => t.name),
     uris,
   });
 }

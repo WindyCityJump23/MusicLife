@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
+import { usePlayer } from "./player-context";
 
 // ── Spotify Web Playback SDK types ───────────────────────────────
 declare global {
@@ -60,6 +61,7 @@ function formatMs(ms: number): string {
 
 // ── Component ────────────────────────────────────────────────────
 export default function Player() {
+  const playerCtx = usePlayer();
   const [status,      setStatus]      = useState<Status>({ kind: "loading" });
   const [deviceId,    setDeviceId]    = useState<string | null>(null);
   const [track,       setTrack]       = useState<Track | null>(null);
@@ -101,6 +103,8 @@ export default function Player() {
 
       player.addListener("ready", ({ device_id }) => {
         setDeviceId(device_id);
+        playerCtx.setDeviceId(device_id);
+        playerCtx.setIsReady(true);
         setStatus({ kind: "ready" });
       });
       player.addListener("not_ready", () => {});

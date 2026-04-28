@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usePlayer } from "./player-context";
 
 type SignalBreakdown = { affinity: number; context: number; editorial: number };
 type TopMention = { source: string; excerpt: string; published_at: string };
@@ -256,6 +257,7 @@ function RecommendationCard({
 
   const [playState, setPlayState] = useState<PlayState>("idle");
   const [playError, setPlayError] = useState<string | null>(null);
+  const { playArtist, isReady: playerReady } = usePlayer();
 
   const hasPrompt = prompt.trim() !== "";
 
@@ -290,24 +292,13 @@ function RecommendationCard({
   async function handlePlay() {
     setPlayState("loading");
     setPlayError(null);
-    try {
-      const res = await fetch("/api/play-artist", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ artist_name: rec.artist_name }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setPlayError(data.error ?? "Playback failed");
-        setPlayState("error");
-        setTimeout(() => { setPlayState("idle"); setPlayError(null); }, 3500);
-      } else {
-        setPlayState("idle");
-      }
-    } catch (err) {
-      setPlayError(err instanceof Error ? err.message : "Network error");
+    const result = await playArtist(rec.artist_name);
+    if (!result.ok) {
+      setPlayError(result.error ?? "Playback failed");
       setPlayState("error");
-      setTimeout(() => { setPlayState("idle"); setPlayError(null); }, 3500);
+      setTimeout(() => { setPlayState("idle"); setPlayError(null); }, 5000);
+    } else {
+      setPlayState("idle");
     }
   }
 
@@ -341,6 +332,8 @@ function RecommendationCard({
           title={
             playState === "error"
               ? (playError ?? "Playback failed")
+              : !playerReady
+              ? "Player not connected — click \"Transfer to this tab\" in the player panel"
               : `Play ${rec.artist_name} on Spotify`
           }
           className={[
