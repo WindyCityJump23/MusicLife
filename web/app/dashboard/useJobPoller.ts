@@ -13,7 +13,7 @@ type JobStatusResponse = {
  *
  * Returns { state, message, trigger } where trigger() kicks off the job.
  */
-export function useJobPoller(endpoint: string, onComplete?: () => void) {
+export function useJobPoller(endpoint: string, onComplete?: () => void, maxPolls = 600) {
   const [state, setState] = useState<JobState>("idle");
   const [message, setMessage] = useState("");
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -31,14 +31,13 @@ export function useJobPoller(endpoint: string, onComplete?: () => void) {
   const pollJob = useCallback(
     (jobId: string) => {
       let polls = 0;
-      const maxPolls = 120; // 120 * 2.5s = 5 min max
 
       intervalRef.current = setInterval(async () => {
         polls++;
         if (polls > maxPolls) {
           cleanup();
           setState("error");
-          setMessage("Timed out waiting for job to complete. It may still be running — check back later.");
+          setMessage("UI polling stopped — the job may still be running on the server. Refresh the page to check.");
           return;
         }
 
