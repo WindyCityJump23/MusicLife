@@ -15,6 +15,10 @@ type PlayerContextValue = {
    *  Returns { ok, error? }. Handles device transfer automatically. */
   playArtist: (artistName: string) => Promise<{ ok: boolean; error?: string }>;
 
+  /** Play a specific track by Spotify track ID on the SDK device.
+   *  Returns { ok, error? }. Much more direct than playArtist. */
+  playTrack: (spotifyTrackId: string) => Promise<{ ok: boolean; error?: string }>;
+
   /** Currently playing indicator for the rec card that triggered playback. */
   playingArtist: string | null;
 };
@@ -25,6 +29,7 @@ const PlayerContext = createContext<PlayerContextValue>({
   isReady: false,
   setIsReady: () => {},
   playArtist: async () => ({ ok: false, error: "no provider" }),
+  playTrack: async () => ({ ok: false, error: "no provider" }),
   playingArtist: null,
 });
 
@@ -56,7 +61,29 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         setPlayingArtist(null);
         return { ok: false, error: data.error ?? "Playback failed" };
       }
-      // Keep playingArtist set — Player will update via SDK state listener
+      return { ok: true };
+    } catch (err) {
+      setPlayingArtist(null);
+      return { ok: false, error: err instanceof Error ? err.message : "Network error" };
+    }
+  }, []);
+
+  const playTrack = useCallback(async (spotifyTrackId: string) => {
+    setPlayingArtist(spotifyTrackId);
+    try {
+      const res = await fetch("/api/play-track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          spotify_track_id: spotifyTrackId,
+          device_id: deviceIdRef.current ?? undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setPlayingArtist(null);
+        return { ok: false, error: data.error ?? "Playback failed" };
+      }
       return { ok: true };
     } catch (err) {
       setPlayingArtist(null);
@@ -72,6 +99,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         isReady,
         setIsReady,
         playArtist,
+        playTrack,
         playingArtist,
       }}
     >
