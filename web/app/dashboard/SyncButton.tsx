@@ -22,7 +22,7 @@ const STAGES = [
   { pct: 95,  label: "Finishing up…" },
 ];
 
-export default function SyncButton() {
+export default function SyncButton({ onComplete }: { onComplete?: () => void }) {
   const [state, setState] = useState<SyncState>("idle");
   const [message, setMessage] = useState("");
   const [progress, setProgress] = useState(0);
@@ -70,11 +70,9 @@ export default function SyncButton() {
       const res = await fetch("/api/sync", { method: "POST" });
       const data = await res.json();
       if (res.ok) {
-        stopProgress(true);
-        setState("success");
-        setMessage("Library synced!");
-        // After success, start polling to detect when the background job completes
-        pollForCompletion();
+        // Job is queued — keep "syncing" state and poll until data appears.
+        setStageLabel("Processing in background…");
+        await pollForCompletion();
       } else {
         stopProgress(false);
         setState("error");
@@ -87,7 +85,7 @@ export default function SyncButton() {
     }
   }
 
-  // The API returns immediately (queued). Poll the library to detect completion.
+  // Poll until the background job writes data, then flip to success.
   async function pollForCompletion() {
     const maxPolls = 20;
     for (let i = 0; i < maxPolls; i++) {
@@ -97,16 +95,22 @@ export default function SyncButton() {
         if (res.ok) {
           const data = await res.json();
           if (data.stats?.trackCount > 0) {
+            stopProgress(true);
+            setState("success");
             setMessage(`Synced! ${data.stats.trackCount} tracks, ${data.stats.artistCount} artists`);
-            setProgress(100);
             setStageLabel("Complete!");
+            onComplete?.();
             return;
           }
         }
       } catch {
-        // ignore polling errors
+        // ignore transient polling errors
       }
     }
+    // Timed out waiting — job queued but not yet visible; surface a hint.
+    stopProgress(true);
+    setState("success");
+    setMessage("Sync queued — reload the page to see your library");
   }
 
   return (

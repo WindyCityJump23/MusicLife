@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 type State = "idle" | "loading" | "success" | "error";
 
-export default function EnrichButton() {
+export default function EnrichButton({ onComplete }: { onComplete?: () => void }) {
   const [state, setState] = useState<State>("idle");
   const [message, setMessage] = useState("");
   const [progress, setProgress] = useState(0);
@@ -38,6 +38,7 @@ export default function EnrichButton() {
       if (res.ok) {
         setState("success");
         setMessage("Enrichment queued — running in background");
+        onComplete?.();
       } else {
         setState("error");
         setMessage(data.error ?? data.detail ?? "Unknown error");

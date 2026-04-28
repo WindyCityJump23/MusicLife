@@ -41,7 +41,7 @@ export default function Sidebar({
   }, []);
 
   // ── Derive completed steps from library state ────────────────
-  useEffect(() => {
+  function checkLibraryStatus() {
     fetch("/api/library")
       .then((r) => r.json())
       .then((data) => {
@@ -51,11 +51,18 @@ export default function Sidebar({
         if (artists.length > 0)                          done.add(1);
         if (artists.some((a) => a.enriched))             done.add(2);
         if (artists.some((a) => a.embedded))             done.add(3);
-        // Step 4 (sources) is harder to detect; mark done if steps 1-3 done and
-        // there's a hint in the payload — for now leave it user-driven.
+        if ((data.stats?.mentionCount ?? 0) > 0)         done.add(4);
         setCompletedSteps(done);
       })
       .catch(() => {});
+  }
+
+  // Check on mount then poll every 30 s so steps tick off automatically
+  // as background jobs complete — no page reload required.
+  useEffect(() => {
+    checkLibraryStatus();
+    const id = setInterval(checkLibraryStatus, 30_000);
+    return () => clearInterval(id);
   }, []);
 
   async function handleLogout() {
@@ -110,7 +117,7 @@ export default function Sidebar({
           desc={STEP_META[0].desc}
           done={completedSteps.has(1)}
         >
-          <SyncButton />
+          <SyncButton onComplete={checkLibraryStatus} />
         </StepItem>
 
         <StepItem
@@ -119,7 +126,7 @@ export default function Sidebar({
           desc={STEP_META[1].desc}
           done={completedSteps.has(2)}
         >
-          <EnrichButton />
+          <EnrichButton onComplete={checkLibraryStatus} />
         </StepItem>
 
         <StepItem
@@ -128,7 +135,7 @@ export default function Sidebar({
           desc={STEP_META[2].desc}
           done={completedSteps.has(3)}
         >
-          <EmbedButton />
+          <EmbedButton onComplete={checkLibraryStatus} />
         </StepItem>
 
         <StepItem
@@ -137,7 +144,7 @@ export default function Sidebar({
           desc={STEP_META[3].desc}
           done={completedSteps.has(4)}
         >
-          <SourcesButton />
+          <SourcesButton onComplete={checkLibraryStatus} />
         </StepItem>
       </div>
 
