@@ -2,16 +2,25 @@
 
 The implementation is intentionally Python-first while schema and SQL RPCs
 settle. It uses Supabase reads and computes the blend in-process.
+
+v2 improvements:
+  - Random exploration factor for varied results each run
+  - "Already seen" deprioritization (artists in saved playlists)
+  - Mood signal fallback: taste vector → mention embeddings when no prompt
+  - Genre diversity re-ranking to avoid top-heavy genre clusters
 """
 
 from __future__ import annotations
 
 import math
-from collections import defaultdict
+import random
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 from supabase import Client
 
+
+# ── Vector utilities ─────────────────────────────────────────────
 
 def _parse_vector(value: object) -> list[float]:
     if value is None:
@@ -67,6 +76,8 @@ def _percentile_rank(values: list[float]) -> list[float]:
     return ranks
 
 
+# ── Data helpers ─────────────────────────────────────────────────
+
 def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
     tracks_resp = (
         client.table("user_tracks")
@@ -105,6 +116,32 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
     return dict(artist_weights)
 
 
+def _get_previously_recommended_artist_ids(client: Client, user_id: str) -> set[int]:
+    """Return artist IDs that appear in any of the user's saved playlists."""
+    try:
+        playlists_resp = (
+            client.table("playlists")
+            .select("id")
+            .eq("user_id", user_id)
+            .execute()
+        )
+        playlist_ids = [row["id"] for row in (playlists_resp.data or []) if row.get("id")]
+        if not playlist_ids:
+            return set()
+
+        items_resp = (
+            client.table("playlist_items")
+            .select("artist_id")
+            .in_("playlist_id", playlist_ids)
+            .not_.is_("artist_id", "null")
+            .execute()
+        )
+        return {int(row["artist_id"]) for row in (items_resp.data or []) if row.get("artist_id")}
+    except Exception:
+        # If the playlists tables don't exist yet, just skip.
+        return set()
+
+
 def build_taste_vector(client: Client, user_id: str) -> list[float]:
     artist_weights = _get_user_artist_weights(client, user_id)
     if not artist_weights:
@@ -139,7 +176,6 @@ def build_taste_vector(client: Client, user_id: str) -> list[float]:
             weighted_sum = [0.0 for _ in vector]
 
         if len(weighted_sum) != len(vector):
-            # Ignore inconsistent dimensions instead of crashing request flow.
             continue
 
         for i, val in enumerate(vector):
@@ -152,6 +188,67 @@ def build_taste_vector(client: Client, user_id: str) -> list[float]:
     return [val / total_weight for val in weighted_sum]
 
 
+# ── Diversity re-ranking ─────────────────────────────────────────
+
+def _diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
+    """Re-rank to ensure genre diversity in the top results.
+
+    Greedy selection: pick the best remaining candidate, but penalize
+    artists whose primary genre is already well-represented in the
+    selected set. This prevents the top 10 from all being the same genre.
+    """
+    if len(scored) <= limit:
+        return scored
+
+    # Work with a larger pool so we have room to diversify.
+    pool = scored[: limit * 3]
+    selected: list[dict] = []
+    genre_counts: Counter[str] = Counter()
+    used_ids: set[str] = set()
+
+    # Maximum fraction of results from a single genre before penalty kicks in.
+    MAX_GENRE_FRACTION = 0.3
+
+    while len(selected) < limit and pool:
+        best_idx = -1
+        best_adjusted = -1.0
+
+        for i, candidate in enumerate(pool):
+            if candidate["artist_id"] in used_ids:
+                continue
+
+            base_score = candidate["score"]
+            genres = candidate.get("genres") or []
+            primary_genre = genres[0].lower() if genres else "__none__"
+
+            # Penalty: if this genre already fills >MAX_GENRE_FRACTION of
+            # selected slots, scale down the score.
+            genre_share = genre_counts.get(primary_genre, 0) / max(len(selected), 1)
+            penalty = 1.0
+            if genre_share >= MAX_GENRE_FRACTION:
+                penalty = 0.7  # 30% score reduction
+
+            adjusted = base_score * penalty
+            if adjusted > best_adjusted:
+                best_adjusted = adjusted
+                best_idx = i
+
+        if best_idx < 0:
+            break
+
+        pick = pool[best_idx]
+        selected.append(pick)
+        used_ids.add(pick["artist_id"])
+
+        genres = pick.get("genres") or []
+        primary_genre = genres[0].lower() if genres else "__none__"
+        genre_counts[primary_genre] += 1
+
+    return selected
+
+
+# ── Main ranking function ────────────────────────────────────────
+
 def rank_candidates(
     client: Client,
     user_id: str,
@@ -163,6 +260,7 @@ def rank_candidates(
 ) -> list[dict]:
     artist_weights = _get_user_artist_weights(client, user_id)
     library_artist_ids = set(artist_weights.keys())
+    previously_recommended = _get_previously_recommended_artist_ids(client, user_id)
 
     artists_resp = (
         client.table("artists")
@@ -209,6 +307,13 @@ def rank_candidates(
     now = datetime.now(timezone.utc)
     recent_window_days = 45
 
+    # ── Mood fallback: when no prompt, use taste vector for context ──
+    # This makes the "Mood" slider meaningful even without a search query.
+    # Instead of being 0 for everyone, it measures how well each artist's
+    # editorial coverage aligns with your overall listening taste.
+    effective_prompt_vector = prompt_vector if prompt_vector else taste_vector
+    has_explicit_prompt = prompt_vector is not None
+
     # ── Phase 1: compute raw affinity for all candidates ─────────
     raw_affinities: list[tuple[dict, float]] = []
     for artist in candidates:
@@ -232,6 +337,12 @@ def rank_candidates(
     scored: list[dict] = []
     seen_names: set[str] = set()  # deduplicate by lowercase artist name
 
+    # ── Exploration: controlled randomness ───────────────────────
+    # Each run gets slightly different results. The exploration factor
+    # is small enough to not overwhelm good matches, but large enough
+    # to shuffle mid-tier candidates around.
+    EXPLORATION_STRENGTH = 0.08  # ±8% random nudge on final score
+
     for idx, (artist, affinity_raw) in enumerate(raw_affinities):
         artist_id = int(artist["id"])
         name_lower = (artist.get("name") or "").strip().lower()
@@ -248,8 +359,10 @@ def rank_candidates(
 
         for mention in artist_mentions:
             mention_vec = _parse_vector(mention.get("embedding"))
-            if prompt_vector and mention_vec:
-                context_scores.append(_normalize_01(_cosine_similarity(prompt_vector, mention_vec)))
+            if effective_prompt_vector and mention_vec:
+                context_scores.append(
+                    _normalize_01(_cosine_similarity(effective_prompt_vector, mention_vec))
+                )
 
             published_at_raw = mention.get("published_at")
             recency_multiplier = 0.2
@@ -292,14 +405,31 @@ def rank_candidates(
             + tiebreaker
         )
 
+        # ── "Already seen" penalty ───────────────────────────────
+        # Artists already in user's playlists get a score reduction.
+        # They can still appear, just lower ranked — keeps things fresh.
+        if artist_id in previously_recommended:
+            final_score *= 0.65  # 35% penalty
+
+        # ── Exploration factor ───────────────────────────────────
+        # Random nudge so each run produces different ordering,
+        # especially among similarly-scored candidates.
+        exploration = random.uniform(-EXPLORATION_STRENGTH, EXPLORATION_STRENGTH)
+        final_score += exploration
+
         reasons = []
         if affinity > 0.55:
             reasons.append("Matches your taste")
         if context > 0.55:
-            reasons.append("Matches your search")
+            if has_explicit_prompt:
+                reasons.append("Matches your search")
+            else:
+                reasons.append("Fits your vibe")
         if editorial > 0.45:
             src_name = best_mention["source"] if best_mention and best_mention.get("source") else ""
             reasons.append(f"Featured in {src_name}" if src_name else "In the press")
+        if artist_id in previously_recommended:
+            reasons.append("Previously saved")
         if not reasons:
             reasons.append("Curated pick")
 
@@ -307,7 +437,7 @@ def rank_candidates(
             {
                 "artist_id": str(artist_id),
                 "artist_name": artist.get("name") or "Unknown artist",
-                "score": round(final_score, 4),
+                "score": round(max(0.0, final_score), 4),
                 "signals": {
                     "affinity": round(affinity, 4),
                     "context": round(context, 4),
@@ -321,4 +451,9 @@ def rank_candidates(
         )
 
     scored.sort(key=lambda row: row["score"], reverse=True)
-    return scored[: max(limit, 0)]
+
+    # ── Genre diversity re-ranking ───────────────────────────────
+    # Greedy selection that penalizes over-represented genres in top N.
+    diverse_results = _diversity_rerank(scored, max(limit, 0))
+
+    return diverse_results

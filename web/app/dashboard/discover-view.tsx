@@ -91,10 +91,15 @@ export default function DiscoverView({ onNavigate }: { onNavigate?: (view: strin
           {showAdvanced ? "▾ Hide tuning" : "▸ Tune weights"}
         </button>
         {showAdvanced && (
-          <div className="grid grid-cols-3 gap-4 pt-1 pb-2">
-            <WeightSlider label="Taste" value={weights.affinity} onChange={(v) => setWeights({ ...weights, affinity: v })} />
-            <WeightSlider label="Mood" value={weights.context} onChange={(v) => setWeights({ ...weights, context: v })} />
-            <WeightSlider label="Buzz" value={weights.editorial} onChange={(v) => setWeights({ ...weights, editorial: v })} />
+          <div className="space-y-3 pt-1 pb-2">
+            <div className="grid grid-cols-3 gap-4">
+              <WeightSlider label="Taste" hint="How close to your listening DNA" value={weights.affinity} onChange={(v) => setWeights({ ...weights, affinity: v })} />
+              <WeightSlider label="Mood" hint="Vibe match from editorial context" value={weights.context} onChange={(v) => setWeights({ ...weights, context: v })} />
+              <WeightSlider label="Buzz" hint="Currently talked about in press" value={weights.editorial} onChange={(v) => setWeights({ ...weights, editorial: v })} />
+            </div>
+            <p className="text-[10px] text-neutral-400 leading-relaxed">
+              🎲 Results shuffle each time you hit Discover. Artists you&apos;ve already saved to playlists are ranked lower.
+            </p>
           </div>
         )}
       </div>
@@ -398,13 +403,14 @@ function ArtistRow({ rec, rank }: { rec: Recommendation; rank: number }) {
 /*  Small components                                              */
 /* ═══════════════════════════════════════════════════════════════ */
 
-function WeightSlider({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+function WeightSlider({ label, hint, value, onChange }: { label: string; hint?: string; value: number; onChange: (v: number) => void }) {
   return (
     <label className="block">
       <div className="flex items-center justify-between text-xs text-neutral-600 mb-1">
-        <span className="font-medium">{label}</span>
+        <span className="font-medium" title={hint}>{label}</span>
         <span className="tabular-nums text-neutral-400">{value}%</span>
       </div>
+      {hint && <p className="text-[9px] text-neutral-400 mb-1.5 leading-tight">{hint}</p>}
       <input type="range" min={0} max={100} value={value} onChange={(e) => onChange(Number(e.target.value))} className="w-full accent-emerald-600" />
     </label>
   );
