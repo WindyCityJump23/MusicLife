@@ -71,11 +71,14 @@ export async function GET(req: NextRequest) {
   // cache: 'no-store' prevents Next.js from caching this response in the Data
   // Cache — a stale/error response cached from a previous request would
   // otherwise cause every subsequent login attempt to fail.
-  // Retry transient failures (5xx, 429, network errors) — a single blip from
-  // Spotify shouldn't break the entire login flow.
+  // Retry transient failures, honoring Spotify's Retry-After header on 429.
+  // Cap each wait at 5s and total wait at ~10s so we don't blow the serverless
+  // function timeout. If Spotify says wait longer, we surface 429 to the user.
   let profileRes: Response | null = null;
   let lastErr: unknown = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  let totalWaited = 0;
+  const MAX_TOTAL_WAIT_MS = 10_000;
+  for (let attempt = 0; attempt < 4; attempt++) {
     try {
       profileRes = await fetch("https://api.spotify.com/v1/me", {
         headers: {
@@ -85,13 +88,21 @@ export async function GET(req: NextRequest) {
         },
         cache: "no-store",
       });
-      // 401/403 are deterministic — don't retry. 4xx other than 429 also won't change.
+      // 401/403 and other deterministic 4xx (except 429) won't change with retry.
       if (profileRes.ok || (profileRes.status < 500 && profileRes.status !== 429)) break;
     } catch (e) {
       lastErr = e;
       profileRes = null;
     }
-    if (attempt < 2) await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+    let waitMs = 500 * Math.pow(2, attempt);
+    if (profileRes?.status === 429) {
+      const ra = Number(profileRes.headers.get("retry-after"));
+      if (Number.isFinite(ra) && ra > 0) waitMs = ra * 1000;
+    }
+    waitMs = Math.min(waitMs, 5_000);
+    if (totalWaited + waitMs > MAX_TOTAL_WAIT_MS) break;
+    totalWaited += waitMs;
+    await new Promise((r) => setTimeout(r, waitMs));
   }
 
   if (!profileRes) {
@@ -101,9 +112,16 @@ export async function GET(req: NextRequest) {
 
   if (!profileRes.ok) {
     const body = await profileRes.text().catch(() => "");
-    console.error(`auth/callback: profile fetch failed ${profileRes.status}: ${body}`);
-    const detail = profileRes.status === 403 ? "forbidden" : profileRes.status === 401 ? "token_invalid" : "profile_fetch";
-    return NextResponse.redirect(new URL(`/?error=${detail}&spotify_status=${profileRes.status}`, base));
+    const retryAfter = profileRes.headers.get("retry-after") ?? "";
+    console.error(`auth/callback: profile fetch failed ${profileRes.status} retry-after=${retryAfter}: ${body}`);
+    const detail =
+      profileRes.status === 429 ? "rate_limited" :
+      profileRes.status === 403 ? "forbidden" :
+      profileRes.status === 401 ? "token_invalid" :
+      "profile_fetch";
+    const params = new URLSearchParams({ error: detail, spotify_status: String(profileRes.status) });
+    if (retryAfter) params.set("retry_after", retryAfter);
+    return NextResponse.redirect(new URL(`/?${params.toString()}`, base));
   }
 
   const profile = await profileRes.json();

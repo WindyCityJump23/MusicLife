@@ -4,6 +4,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   token_exchange: "Could not exchange the authorization code with Spotify. Check that your Spotify app credentials and redirect URI are correct.",
   token_missing: "Spotify returned a successful response but no access token. Please try again.",
   profile_fetch: "Could not fetch your Spotify profile. This may be a temporary Spotify issue — please try again in a moment.",
+  rate_limited: "Spotify is rate-limiting this app (the per-app quota is exhausted). Wait a minute and try again. If this keeps happening, the app is in Development mode with a small quota and needs Extended Quota access from Spotify.",
   forbidden: "Spotify returned 403 Forbidden. Your app may need re-authorization — try clearing your browser cookies for this site and signing in again.",
   token_invalid: "Spotify access token was rejected. Please clear cookies and try again.",
   user_upsert: "Your account could not be created or updated. Please try again.",
@@ -16,8 +17,13 @@ export default function Home({
 }) {
   const errorKey = typeof searchParams.error === "string" ? searchParams.error : null;
   const spotifyStatus = typeof searchParams.spotify_status === "string" ? searchParams.spotify_status : null;
+  const retryAfter = typeof searchParams.retry_after === "string" ? searchParams.retry_after : null;
   const baseMessage = errorKey ? (ERROR_MESSAGES[errorKey] ?? "An unexpected error occurred. Please try again.") : null;
-  const errorMessage = baseMessage && spotifyStatus ? `${baseMessage} (Spotify status: ${spotifyStatus})` : baseMessage;
+  const suffix = [
+    spotifyStatus ? `Spotify status: ${spotifyStatus}` : null,
+    retryAfter ? `retry after ${retryAfter}s` : null,
+  ].filter(Boolean).join(", ");
+  const errorMessage = baseMessage && suffix ? `${baseMessage} (${suffix})` : baseMessage;
 
   return (
     <main
