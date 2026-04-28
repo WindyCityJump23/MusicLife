@@ -4,6 +4,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   token_exchange: "Could not exchange the authorization code with Spotify. Check that your Spotify app credentials and redirect URI are correct.",
   token_missing: "Spotify returned a successful response but no access token. Please try again.",
   profile_fetch: "Could not fetch your Spotify profile. This may be a temporary Spotify issue — please try again in a moment.",
+  forbidden: "Spotify returned 403 Forbidden. Your app may need re-authorization — try clearing your browser cookies for this site and signing in again.",
+  token_invalid: "Spotify access token was rejected. Please clear cookies and try again.",
   user_upsert: "Your account could not be created or updated. Please try again.",
 };
 

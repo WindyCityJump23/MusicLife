@@ -79,7 +79,9 @@ export async function GET(req: NextRequest) {
   if (!profileRes.ok) {
     const body = await profileRes.text().catch(() => "");
     console.error(`auth/callback: profile fetch failed ${profileRes.status}: ${body}`);
-    return NextResponse.redirect(new URL("/?error=profile_fetch", base));
+    // Surface the actual Spotify error to help debug
+    const detail = profileRes.status === 403 ? "forbidden" : profileRes.status === 401 ? "token_invalid" : "profile_fetch";
+    return NextResponse.redirect(new URL(`/?error=${detail}&spotify_status=${profileRes.status}`, base));
   }
 
   const profile = await profileRes.json();
