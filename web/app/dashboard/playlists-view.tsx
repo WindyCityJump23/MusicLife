@@ -198,8 +198,15 @@ function PlaylistCard({ playlist }: { playlist: Playlist }) {
 /* ═══════════════════════════════════════════════════════════════ */
 
 function TrackRow({ track, index }: { track: Track; index: number }) {
-  const { playArtist } = usePlayer();
+  const { playArtist, playTrack } = usePlayer();
   const [playing, setPlaying] = useState(false);
+  const [favorited, setFavorited] = useState(false);
+  const [favLoading, setFavLoading] = useState(false);
+
+  // Extract spotify track ID from URI (spotify:track:XXXX → XXXX)
+  const spotifyTrackId = track.uri?.startsWith("spotify:track:")
+    ? track.uri.replace("spotify:track:", "")
+    : null;
 
   const minutes = Math.floor(track.duration_ms / 60000);
   const seconds = Math.floor((track.duration_ms % 60000) / 1000);
@@ -207,9 +214,32 @@ function TrackRow({ track, index }: { track: Track; index: number }) {
 
   async function handlePlay() {
     setPlaying(true);
-    // Use the artist name to trigger playback through existing flow
-    await playArtist(track.artist.split(",")[0].trim());
+    if (spotifyTrackId) {
+      await playTrack(spotifyTrackId);
+    } else {
+      await playArtist(track.artist.split(",")[0].trim());
+    }
     setPlaying(false);
+  }
+
+  async function handleFavorite() {
+    if (favLoading || !spotifyTrackId) return;
+    setFavLoading(true);
+    try {
+      const method = favorited ? "DELETE" : "POST";
+      const res = await fetch("/api/favorite", {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          spotify_track_id: spotifyTrackId,
+          track_name: track.name,
+          artist_name: track.artist,
+          source: "playlists",
+        }),
+      });
+      if (res.ok) setFavorited(!favorited);
+    } catch {}
+    setFavLoading(false);
   }
 
   return (
@@ -275,6 +305,28 @@ function TrackRow({ track, index }: { track: Track; index: number }) {
         ) : (
           <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
             <path d="M8 5v14l11-7z" />
+          </svg>
+        )}
+      </button>
+
+      {/* Favorite heart — always visible on touch, hover on desktop */}
+      <button
+        onClick={handleFavorite}
+        disabled={favLoading || !spotifyTrackId}
+        title={favorited ? "Remove from Liked Songs" : "Save to Liked Songs"}
+        className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 disabled:opacity-30 ${
+          favorited
+            ? "text-rose-500 hover:text-rose-400"
+            : "text-neutral-300 hover:text-rose-500"
+        }`}
+      >
+        {favorited ? (
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+          </svg>
+        ) : (
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         )}
       </button>
