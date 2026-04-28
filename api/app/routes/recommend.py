@@ -52,6 +52,31 @@ class RecommendResponse(BaseModel):
     results: list[dict]
 
 
+class RecommendSongsRequest(BaseModel):
+    user_id: str
+    prompt: str | None = None
+    weights: dict[str, float] = Field(
+        default_factory=lambda: {"affinity": 0.4, "context": 0.4, "editorial": 0.2}
+    )
+    exclude_library: bool = True
+    limit: int = Field(default=30, ge=1, le=100)
+
+    @field_validator("weights")
+    @classmethod
+    def validate_song_weights(cls, weights: dict[str, float]) -> dict[str, float]:
+        required = {"affinity", "context", "editorial"}
+        if set(weights) != required:
+            missing = required - set(weights)
+            extra = set(weights) - required
+            raise ValueError(f"weights must contain exactly {required}; missing={missing}, extra={extra}")
+        total = sum(weights.values())
+        if total <= 0:
+            raise ValueError("weights must sum to a positive number")
+        if any(value < 0 for value in weights.values()):
+            raise ValueError("weights cannot be negative")
+        return {k: v / total for k, v in weights.items()}
+
+
 @router.post("", response_model=RecommendResponse)
 def recommend(
     req: RecommendRequest,
@@ -77,6 +102,37 @@ def recommend(
     from app.services.ranking import rank_candidates
 
     results = rank_candidates(
+        client=user_client,
+        user_id=req.user_id,
+        taste_vector=taste_vector,
+        prompt_vector=prompt_vec,
+        weights=req.weights,
+        exclude_library=req.exclude_library,
+        limit=req.limit,
+    )
+    return RecommendResponse(results=results)
+
+
+@router.post("/songs", response_model=RecommendResponse)
+def recommend_songs(
+    req: RecommendSongsRequest,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Song-level recommendations: returns individual tracks ranked by match strength."""
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+    user_client = get_user_scoped_supabase(token)
+
+    taste_vector = _build_taste_vector(user_client, req.user_id)
+
+    prompt_vec = None
+    if req.prompt:
+        embedded = embedder.embed([req.prompt], input_type="query")
+        prompt_vec = embedded[0] if embedded else None
+
+    from app.services.song_ranking import recommend_songs as _recommend_songs
+
+    results = _recommend_songs(
         client=user_client,
         user_id=req.user_id,
         taste_vector=taste_vector,
