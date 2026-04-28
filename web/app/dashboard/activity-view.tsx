@@ -83,7 +83,7 @@ export default function ActivityView() {
       {plays.map((p) => (
         <li
           key={p.id}
-          className="flex items-center justify-between px-3 py-2 text-sm hover:bg-neutral-50"
+          className="flex items-center justify-between px-3 py-2.5 text-sm hover:bg-neutral-50"
         >
           <div className="min-w-0 flex-1 pr-3">
             <div className="truncate text-neutral-900">{p.trackName}</div>

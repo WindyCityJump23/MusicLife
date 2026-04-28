@@ -65,19 +65,21 @@ export default function DiscoverView({ onNavigate }: { onNavigate?: (view: strin
     <div className="max-w-2xl space-y-5">
       {/* Search */}
       <div className="space-y-2">
-        <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row gap-2">
           <input
             type="text"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-            placeholder="What are you in the mood for? (e.g. chill lo-fi, energetic hip-hop, 90s rock…)"
-            className="flex-1 px-4 py-2.5 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 placeholder:text-neutral-400"
+            placeholder="What are you in the mood for? (e.g. chill lo-fi, 90s rock…)"
+            inputMode="text"
+            enterKeyHint="search"
+            className="flex-1 px-4 py-3 sm:py-2.5 border border-neutral-200 rounded-lg text-base sm:text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 placeholder:text-neutral-400"
           />
           <button
             onClick={handleSubmit}
             disabled={loading}
-            className="px-5 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+            className="px-5 py-3 sm:py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
           >
             {loading ? "Finding…" : "Discover"}
           </button>
@@ -92,7 +94,7 @@ export default function DiscoverView({ onNavigate }: { onNavigate?: (view: strin
         </button>
         {showAdvanced && (
           <div className="space-y-3 pt-1 pb-2">
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
               <WeightSlider label="Taste" hint="How close to your listening DNA" value={weights.affinity} onChange={(v) => setWeights({ ...weights, affinity: v })} />
               <WeightSlider label="Mood" hint="Vibe match from editorial context" value={weights.context} onChange={(v) => setWeights({ ...weights, context: v })} />
               <WeightSlider label="Buzz" hint="Currently talked about in press" value={weights.editorial} onChange={(v) => setWeights({ ...weights, editorial: v })} />
@@ -178,9 +180,9 @@ export default function DiscoverView({ onNavigate }: { onNavigate?: (view: strin
 
           {/* Playlist success banner */}
           {playlistState === "done" && playlistUrl && (
-            <div className="border border-emerald-200 bg-emerald-50 rounded-lg p-3 flex items-center gap-3">
-              <span className="text-lg">🎉</span>
-              <div className="flex-1 min-w-0">
+            <div className="border border-emerald-200 bg-emerald-50 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+              <div className="flex items-start gap-2 flex-1 min-w-0">
+                <span className="text-lg">🎉</span>
                 <p className="text-sm font-medium text-emerald-800">
                   Playlist created!
                   {playlistStats && (
@@ -193,7 +195,7 @@ export default function DiscoverView({ onNavigate }: { onNavigate?: (view: strin
                   )}
                 </p>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 shrink-0 flex-wrap">
                 {onNavigate && (
                   <button
                     onClick={() => onNavigate("playlists")}
@@ -266,9 +268,9 @@ function ArtistRow({ rec, rank }: { rec: Recommendation; rank: number }) {
 
   return (
     <div className="group">
-      <div className="flex items-center gap-3 px-3 py-2.5 hover:bg-neutral-50 transition-colors">
+      <div className="flex items-center gap-2 sm:gap-3 px-2.5 sm:px-3 py-2.5 hover:bg-neutral-50 transition-colors">
         {/* Rank */}
-        <span className="w-6 text-right text-xs tabular-nums text-neutral-300 font-medium shrink-0">
+        <span className="w-5 sm:w-6 text-right text-xs tabular-nums text-neutral-300 font-medium shrink-0">
           {rank}
         </span>
 
@@ -284,6 +286,12 @@ function ArtistRow({ rec, rank }: { rec: Recommendation; rank: number }) {
               </span>
             )}
           </div>
+          {/* Genres on mobile (since they're hidden in the title row) */}
+          {rec.genres && rec.genres.length > 0 && (
+            <p className="sm:hidden text-[10px] text-neutral-400 truncate mt-0.5">
+              {rec.genres.slice(0, 2).join(" · ")}
+            </p>
+          )}
           {/* Reason line */}
           {rec.reasons.length > 0 && (
             <p className="text-[11px] text-neutral-400 truncate mt-0.5">
@@ -294,7 +302,7 @@ function ArtistRow({ rec, rank }: { rec: Recommendation; rank: number }) {
 
         {/* Match score badge */}
         <div
-          className="shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-xs font-bold"
+          className="shrink-0 w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-xs font-bold"
           style={{
             background: matchPct > 70
               ? "linear-gradient(135deg, #059669, #10b981)"
@@ -312,8 +320,9 @@ function ArtistRow({ rec, rank }: { rec: Recommendation; rank: number }) {
         <button
           onClick={handlePlay}
           disabled={playState === "loading"}
+          aria-label={`Play ${rec.artist_name}`}
           title={`Play ${rec.artist_name}`}
-          className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-neutral-900 text-white hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-40"
+          className="shrink-0 w-9 h-9 sm:w-8 sm:h-8 rounded-full flex items-center justify-center bg-neutral-900 text-white hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-40"
         >
           {playState === "loading" ? (
             <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -332,8 +341,9 @@ function ArtistRow({ rec, rank }: { rec: Recommendation; rank: number }) {
           href={spotifyUrl}
           target="_blank"
           rel="noopener noreferrer"
+          aria-label="Open in Spotify"
           title="Open in Spotify"
-          className="shrink-0 text-neutral-300 hover:text-[#1DB954] transition-colors"
+          className="hidden sm:inline-flex shrink-0 text-neutral-300 hover:text-[#1DB954] transition-colors"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z" />
@@ -344,7 +354,8 @@ function ArtistRow({ rec, rank }: { rec: Recommendation; rank: number }) {
         {(rec.top_mention || rec.reasons.length > 1) && (
           <button
             onClick={() => setExpanded(!expanded)}
-            className="shrink-0 text-neutral-300 hover:text-neutral-500 transition-colors text-xs"
+            className="shrink-0 w-7 h-7 flex items-center justify-center text-neutral-300 hover:text-neutral-500 transition-colors text-xs"
+            aria-label={expanded ? "Collapse details" : "Expand details"}
             title="More info"
           >
             {expanded ? "▾" : "▸"}
@@ -354,7 +365,7 @@ function ArtistRow({ rec, rank }: { rec: Recommendation; rank: number }) {
 
       {/* Expanded details */}
       {expanded && (
-        <div className="px-3 pb-3 pl-12 space-y-2">
+        <div className="px-3 pb-3 pl-9 sm:pl-12 space-y-2">
           {/* All reasons */}
           {rec.reasons.length > 1 && (
             <div className="flex flex-wrap gap-1.5">

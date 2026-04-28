@@ -2,6 +2,29 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Base ───────────────────────────────────────────────────────── */
+
+html, body {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button, a, [role="button"] {
+  touch-action: manipulation;
+}
+
+/* Prevent iOS zoom-on-focus by ensuring inputs are at least 16px */
+@media (max-width: 640px) {
+  input, textarea, select {
+    font-size: 16px;
+  }
+}
+
+/* Safe-area aware utility (notched phones) */
+.pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+.pt-safe { padding-top: env(safe-area-inset-top); }
+
 /* ── Jukebox animations ─────────────────────────────────────────── */
 
 @keyframes spin-vinyl {
@@ -32,6 +55,21 @@
   50%       { transform: rotate(4deg); }
 }
 
+@keyframes slide-up {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+@keyframes slide-in-left {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(0); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
 .vinyl-spin {
   animation: spin-vinyl 8s linear infinite;
 }
@@ -51,4 +89,16 @@
 
 .idle-rotate {
   animation: idle-rotate 4s ease-in-out infinite;
+}
+
+.animate-slide-up    { animation: slide-up    240ms ease-out; }
+.animate-slide-in-left { animation: slide-in-left 220ms ease-out; }
+.animate-fade-in     { animation: fade-in    200ms ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .vinyl-spin, .vinyl-spin-paused, .glow-playing,
+  .idle-float, .idle-rotate,
+  .animate-slide-up, .animate-slide-in-left, .animate-fade-in {
+    animation: none !important;
+  }
 }

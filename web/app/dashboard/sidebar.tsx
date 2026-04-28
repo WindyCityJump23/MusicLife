@@ -26,9 +26,11 @@ const STEP_META = [
 export default function Sidebar({
   active,
   onChange,
+  onClose,
 }: {
   active: View;
   onChange: (v: View) => void;
+  onClose?: () => void;
 }) {
   const [displayName,    setDisplayName]    = useState<string | null>(null);
   const [completedSteps, setCompletedSteps] = useState<Set<number>>(new Set());
@@ -72,12 +74,25 @@ export default function Sidebar({
   }
 
   return (
-    <aside className="flex flex-col h-full border-r border-neutral-200 bg-neutral-50/40 overflow-y-auto">
+    <div className="flex flex-col h-full lg:h-screen border-r border-neutral-200 bg-neutral-50/40 overflow-y-auto pt-safe">
       {/* ── Brand header ────────────────────────────────────── */}
-      <div className="px-4 py-5 border-b border-neutral-200">
-        <h1 className="text-sm font-semibold tracking-tight">🎶 MusicLife</h1>
-        {displayName && (
-          <p className="text-xs text-neutral-500 mt-0.5 truncate">{displayName}</p>
+      <div className="flex items-start justify-between gap-2 px-4 py-4 lg:py-5 border-b border-neutral-200">
+        <div className="min-w-0">
+          <h1 className="text-sm font-semibold tracking-tight">🎶 MusicLife</h1>
+          {displayName && (
+            <p className="text-xs text-neutral-500 mt-0.5 truncate">{displayName}</p>
+          )}
+        </div>
+        {onClose && (
+          <button
+            onClick={onClose}
+            aria-label="Close menu"
+            className="lg:hidden w-9 h-9 -mr-2 -mt-1 rounded-lg flex items-center justify-center text-neutral-500 hover:bg-neutral-100 active:bg-neutral-200 transition-colors"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M6 6l12 12M6 18L18 6" />
+            </svg>
+          </button>
         )}
       </div>
 
@@ -90,10 +105,10 @@ export default function Sidebar({
               key={item.id}
               onClick={() => onChange(item.id)}
               className={[
-                "w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2.5",
+                "w-full text-left px-3 py-2.5 lg:py-2 rounded-lg text-sm transition-colors flex items-center gap-2.5 min-h-[44px] lg:min-h-0",
                 isActive
                   ? "bg-emerald-50 text-emerald-700 font-medium"
-                  : "text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900",
+                  : "text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 active:bg-neutral-200",
               ].join(" ")}
             >
               <span className="text-base leading-none w-5 text-center">{item.icon}</span>
@@ -150,15 +165,15 @@ export default function Sidebar({
       </div>
 
       {/* ── Sign out ─────────────────────────────────────────── */}
-      <div className="px-3 pb-4 border-t border-neutral-200 pt-3">
+      <div className="px-3 pb-4 pb-safe border-t border-neutral-200 pt-3">
         <button
           onClick={handleLogout}
-          className="w-full px-2.5 py-1.5 rounded-lg border border-neutral-200 bg-white text-xs text-neutral-500 hover:bg-neutral-50 hover:border-neutral-300 text-left"
+          className="w-full px-2.5 py-2 rounded-lg border border-neutral-200 bg-white text-xs text-neutral-500 hover:bg-neutral-50 hover:border-neutral-300 active:bg-neutral-100 text-left"
         >
           ↩ Sign out
         </button>
       </div>
-    </aside>
+    </div>
   );
 }
 

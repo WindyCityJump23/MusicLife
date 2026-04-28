@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
     "https://api.spotify.com/v1/me/playlists?limit=50";
 
   while (nextUrl && allPlaylists.length < 200) {
-    const res = await fetch(nextUrl, { headers });
+    const res: Response = await fetch(nextUrl, { headers });
     if (!res.ok) break;
     const data = await res.json();
     const items: SpotifyPlaylist[] = data.items ?? [];

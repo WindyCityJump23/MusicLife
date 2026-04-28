@@ -251,11 +251,12 @@ function TrackRow({ track, index }: { track: Track; index: number }) {
         {duration}
       </span>
 
-      {/* Play button — visible on hover */}
+      {/* Play button — always visible on touch, hover-revealed on desktop */}
       <button
         onClick={handlePlay}
         disabled={playing}
-        className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center bg-neutral-900 text-white opacity-0 group-hover:opacity-100 hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-40"
+        aria-label={`Play ${track.name}`}
+        className="shrink-0 w-8 h-8 sm:w-7 sm:h-7 rounded-full flex items-center justify-center bg-neutral-900 text-white opacity-100 sm:opacity-0 sm:group-hover:opacity-100 hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-40"
         title={`Play ${track.name}`}
       >
         {playing ? (
@@ -278,13 +279,13 @@ function TrackRow({ track, index }: { track: Track; index: number }) {
         )}
       </button>
 
-      {/* Spotify link */}
+      {/* Spotify link — desktop hover only */}
       {track.spotify_url && (
         <a
           href={track.spotify_url}
           target="_blank"
           rel="noopener noreferrer"
-          className="shrink-0 text-neutral-200 hover:text-[#1DB954] transition-colors opacity-0 group-hover:opacity-100"
+          className="hidden sm:inline-flex shrink-0 text-neutral-200 hover:text-[#1DB954] transition-colors opacity-0 group-hover:opacity-100"
           title="Open in Spotify"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">

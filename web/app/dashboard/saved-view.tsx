@@ -137,7 +137,7 @@ export default function SavedView() {
             <li
               key={v.id}
               className={[
-                "px-3 py-2 cursor-pointer hover:bg-neutral-50",
+                "px-3 py-3 md:py-2 cursor-pointer hover:bg-neutral-50 active:bg-neutral-100",
                 isActive ? "bg-emerald-50/60" : "",
               ].join(" ")}
               onClick={() => openView(v.id)}
