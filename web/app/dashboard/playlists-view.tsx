@@ -219,7 +219,7 @@ function PlaylistCard({ playlist }: { playlist: Playlist }) {
 /* ═══════════════════════════════════════════════════════════════ */
 
 function TrackRow({ track, index, initialFavorited = false }: { track: Track; index: number; initialFavorited?: boolean }) {
-  const { playArtist, playTrack } = usePlayer();
+  const { playSingle } = usePlayer();
   const [playing, setPlaying] = useState(false);
   const [favorited, setFavorited] = useState(initialFavorited);
   const [favLoading, setFavLoading] = useState(false);
@@ -233,13 +233,14 @@ function TrackRow({ track, index, initialFavorited = false }: { track: Track; in
   const seconds = Math.floor((track.duration_ms % 60000) / 1000);
   const duration = `${minutes}:${seconds.toString().padStart(2, "0")}`;
 
-  async function handlePlay() {
+  function handlePlay() {
+    if (!spotifyTrackId) return;
     setPlaying(true);
-    if (spotifyTrackId) {
-      await playTrack(spotifyTrackId);
-    } else {
-      await playArtist(track.artist.split(",")[0].trim());
-    }
+    playSingle({
+      spotifyTrackId,
+      trackName: track.name,
+      artistName: track.artist,
+    });
     setPlaying(false);
   }
 

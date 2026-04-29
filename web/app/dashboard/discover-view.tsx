@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { usePlayer } from "./player-context";
+import { usePlayer, type QueueTrack } from "./player-context";
 
 type SignalBreakdown = {
   affinity: number;
@@ -33,6 +33,7 @@ export default function DiscoverView({
 }: {
   onNavigate?: (view: string) => void;
 }) {
+  const { setQueue } = usePlayer();
   const [prompt, setPrompt] = useState("");
   const [weights, setWeights] = useState({
     affinity: 40,
@@ -215,6 +216,16 @@ export default function DiscoverView({
       }
 
       setResults(deduped);
+
+      // Set the player queue so songs auto-advance
+      const queueTracks: QueueTrack[] = deduped
+        .filter((s) => s.spotify_track_id)
+        .map((s) => ({
+          spotifyTrackId: s.spotify_track_id,
+          trackName: s.track_name,
+          artistName: s.artist_name,
+        }));
+      setQueue(queueTracks);
 
       // Fetch initial favorite state
       const trackIds = deduped.map((s) => s.spotify_track_id).filter(Boolean);
@@ -497,7 +508,7 @@ function SongRow({
   rank: number;
   initialFavorited?: boolean;
 }) {
-  const { playTrack, playArtist, setEmbedTrackId } = usePlayer();
+  const { playSingle, playFromQueue, queue } = usePlayer();
   const [playState, setPlayState] = useState<"idle" | "loading">("idle");
   const [favorited, setFavorited] = useState(initialFavorited);
   const [favLoading, setFavLoading] = useState(false);
@@ -517,24 +528,24 @@ function SongRow({
         `${song.track_name} ${song.artist_name}`
       )}`;
 
-  async function handlePlay() {
+  function handlePlay() {
+    if (!song.spotify_track_id) return;
     setPlayState("loading");
 
-    // Always open in the embed player first (works without Premium)
-    if (song.spotify_track_id) {
-      setEmbedTrackId(song.spotify_track_id);
-    }
-
-    // Also try SDK playback for Premium users (full song)
-    let result: { ok: boolean; error?: string };
-    if (song.spotify_track_id) {
-      result = await playTrack(song.spotify_track_id);
+    // Find this track in the queue and play from there (enables auto-advance)
+    const queueIdx = queue.findIndex(t => t.spotifyTrackId === song.spotify_track_id);
+    if (queueIdx >= 0) {
+      playFromQueue(queueIdx);
     } else {
-      result = await playArtist(song.artist_name);
+      // Not in queue (shouldn't happen, but fallback)
+      playSingle({
+        spotifyTrackId: song.spotify_track_id,
+        trackName: song.track_name,
+        artistName: song.artist_name,
+      });
     }
 
     setPlayState("idle");
-    // SDK playback failed — embed player is already showing, no need to open new tab
   }
 
   return (
