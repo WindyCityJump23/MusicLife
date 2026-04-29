@@ -1,19 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { usePlayer } from "./player-context";
 
 /**
  * Spotify Embed Player with queue controls and auto-advance.
  *
- * Uses Spotify's oEmbed iframe which:
- * - Auto-plays when loaded (via autoplay param)
- * - Works without Spotify Premium (30s previews for free users)
- * - Full playback for Premium users logged into Spotify
+ * Uses Spotify's IFrame API for:
+ * - Programmatic play/pause/loadUri control
+ * - playback_update events to detect track end → auto-advance
  *
- * Auto-advance: The Spotify embed API fires a "playback_update" message
- * when playback state changes. We listen for it to detect track end
- * and automatically play the next track in the queue.
+ * The controller is created once on mount. Track changes use loadUri()
+ * which triggers playback more reliably than creating a new controller
+ * each time (avoids losing the user-gesture context).
  */
 export default function Player() {
   const {
@@ -32,28 +31,81 @@ export default function Player() {
   const hasNext = currentIndex < queue.length - 1;
   const hasPrev = currentIndex > 0;
 
-  // ── Auto-advance via Spotify Embed API messages ──────────────
-  const [embedController, setEmbedController] = useState<any>(null);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  // Refs for IFrame API
+  const controllerRef = useRef<any>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const apiReadyRef = useRef(false);
   const playNextRef = useRef(playNext);
+  const pendingTrackRef = useRef<string | null>(null);
   playNextRef.current = playNext;
 
-  // Load Spotify IFrame API
+  // ── Load Spotify IFrame API once ─────────────────────────────
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const script = document.createElement("script");
-    script.src = "https://open.spotify.com/embed/iframe-api/v1";
-    script.async = true;
+    function onApiReady(IFrameAPI: any) {
+      apiReadyRef.current = true;
 
-    // The API calls window.onSpotifyIframeApiReady when loaded
-    (window as any).onSpotifyIframeApiReady = (IFrameAPI: any) => {
-      setEmbedController(IFrameAPI);
-    };
+      // Create controller immediately (with current track or placeholder)
+      const container = containerRef.current;
+      if (!container) return;
 
-    // Only add if not already present
-    if (!document.querySelector('script[src*="embed/iframe-api"]')) {
-      document.body.appendChild(script);
+      const trackId = pendingTrackRef.current || "4cOdK2wGLETKBW3PvgPWqT"; // placeholder
+      const uri = `spotify:track:${trackId}`;
+
+      IFrameAPI.createController(
+        container,
+        {
+          uri,
+          width: "100%",
+          height: 152,
+          theme: "0",
+        },
+        (ctrl: any) => {
+          controllerRef.current = ctrl;
+
+          // Auto-advance listener
+          ctrl.addListener("playback_update", (e: any) => {
+            const data = e?.data;
+            if (!data) return;
+            const { isPaused, isBuffering, duration, position } = data;
+
+            if (
+              isPaused &&
+              !isBuffering &&
+              duration > 0 &&
+              position > 0 &&
+              duration - position < 2000
+            ) {
+              setTimeout(() => playNextRef.current(), 600);
+            }
+          });
+
+          // If we had a pending track, play it now
+          if (pendingTrackRef.current) {
+            ctrl.loadUri(`spotify:track:${pendingTrackRef.current}`);
+            ctrl.play();
+            pendingTrackRef.current = null;
+          }
+        }
+      );
+    }
+
+    // Check if API is already loaded
+    if ((window as any).SpotifyIframeApi) {
+      onApiReady((window as any).SpotifyIframeApi);
+    } else {
+      (window as any).onSpotifyIframeApiReady = (IFrameAPI: any) => {
+        (window as any).SpotifyIframeApi = IFrameAPI;
+        onApiReady(IFrameAPI);
+      };
+
+      if (!document.querySelector('script[src*="embed/iframe-api"]')) {
+        const script = document.createElement("script");
+        script.src = "https://open.spotify.com/embed/iframe-api/v1";
+        script.async = true;
+        document.body.appendChild(script);
+      }
     }
 
     return () => {
@@ -61,60 +113,20 @@ export default function Player() {
     };
   }, []);
 
-  // Create/update embed when track changes
-  const controllerRef = useRef<any>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-
+  // ── When embedTrackId changes, load it into the existing controller ──
   useEffect(() => {
-    if (!embedTrackId || !embedController || !containerRef.current) return;
-
-    const uri = `spotify:track:${embedTrackId}`;
+    if (!embedTrackId) return;
 
     if (controllerRef.current) {
-      // Update existing controller with new track
-      controllerRef.current.loadUri(uri);
-      controllerRef.current.play();
+      controllerRef.current.loadUri(`spotify:track:${embedTrackId}`);
+      // play() after loadUri — works because controller already exists
+      // and user has previously interacted with the page
+      setTimeout(() => controllerRef.current?.play(), 300);
     } else {
-      // Create new controller
-      const container = containerRef.current;
-      container.innerHTML = ""; // Clear any existing content
-
-      embedController.createController(
-        container,
-        {
-          uri,
-          width: "100%",
-          height: 152,
-          theme: "0", // Dark theme
-        },
-        (ctrl: any) => {
-          controllerRef.current = ctrl;
-
-          // Listen for playback state changes to detect track end
-          ctrl.addListener("playback_update", (e: any) => {
-            const { isPaused, isBuffering, duration, position } = e?.data ?? {};
-
-            // Track ended: position is at/near end and paused (not buffering)
-            if (
-              isPaused &&
-              !isBuffering &&
-              duration > 0 &&
-              position > 0 &&
-              duration - position < 1500 // Within 1.5s of end
-            ) {
-              // Small delay to avoid race conditions
-              setTimeout(() => {
-                playNextRef.current();
-              }, 500);
-            }
-          });
-
-          // Start playing immediately
-          ctrl.play();
-        }
-      );
+      // Controller not ready yet — store pending track
+      pendingTrackRef.current = embedTrackId;
     }
-  }, [embedTrackId, embedController]);
+  }, [embedTrackId]);
 
   // ── Render ───────────────────────────────────────────────────
   return (
@@ -122,17 +134,14 @@ export default function Player() {
       className="rounded-2xl flex flex-col gap-4 p-5 min-h-full"
       style={{ background: "linear-gradient(160deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%)" }}
     >
-      {/* ── Header ─────────────────────────────────────────── */}
+      {/* Header */}
       <div className="text-center">
-        <p
-          className="text-[10px] font-bold tracking-[0.25em] uppercase"
-          style={{ color: "#e94560" }}
-        >
+        <p className="text-[10px] font-bold tracking-[0.25em] uppercase" style={{ color: "#e94560" }}>
           ♫ Now Playing
         </p>
       </div>
 
-      {/* ── Current track info ──────────────────────────────── */}
+      {/* Current track info */}
       {currentTrack ? (
         <div className="text-center px-2">
           <p className="text-white font-semibold text-sm leading-snug truncate">
@@ -151,14 +160,14 @@ export default function Player() {
         </div>
       )}
 
-      {/* ── Spotify Embed ──────────────────────────────────── */}
+      {/* Spotify Embed container — always mounted so controller persists */}
       <div
         ref={containerRef}
         className="rounded-xl overflow-hidden"
-        style={{ minHeight: embedTrackId ? 152 : 0 }}
+        style={{ minHeight: 152 }}
       />
 
-      {/* ── Queue controls (prev / next) ───────────────────── */}
+      {/* Queue controls */}
       {queue.length > 1 && (
         <div className="flex items-center justify-center gap-4">
           <button
@@ -199,7 +208,7 @@ export default function Player() {
         </div>
       )}
 
-      {/* ── Up Next preview ────────────────────────────────── */}
+      {/* Up Next preview */}
       {hasNext && queue[currentIndex + 1] && (
         <div
           className="rounded-lg px-3 py-2 cursor-pointer hover:opacity-80 transition-opacity"
@@ -209,16 +218,14 @@ export default function Player() {
           <p className="text-[10px] uppercase tracking-wider mb-0.5" style={{ color: "rgba(255,255,255,0.3)" }}>
             Up Next
           </p>
-          <p className="text-xs text-white truncate">
-            {queue[currentIndex + 1].trackName}
-          </p>
+          <p className="text-xs text-white truncate">{queue[currentIndex + 1].trackName}</p>
           <p className="text-[11px] truncate" style={{ color: "rgba(255,255,255,0.45)" }}>
             {queue[currentIndex + 1].artistName}
           </p>
         </div>
       )}
 
-      {/* ── Queue list (scrollable, compact) ──────────────── */}
+      {/* Queue list */}
       {queue.length > 2 && (
         <div className="space-y-1">
           <p className="text-[10px] uppercase tracking-wider px-1" style={{ color: "rgba(255,255,255,0.3)" }}>
