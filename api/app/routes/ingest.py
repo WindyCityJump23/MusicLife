@@ -145,9 +145,10 @@ def _run_source_ingest(job_id: str):
 
     update_job(job_id, JobStatus.RUNNING, "Crawling editorial sources...")
     try:
-        run_source_ingest()
-        update_job(job_id, JobStatus.SUCCESS, "Sources ingested")
-        print("source_ingest: completed")
+        result = run_source_ingest() or {}
+        message = (result.get("summary") or "Sources ingested")[:500]
+        update_job(job_id, JobStatus.SUCCESS, message)
+        print(f"source_ingest: completed — {message}")
     except Exception as exc:
         update_job(job_id, JobStatus.FAILED, str(exc)[:500])
         print(f"source_ingest: FAILED: {exc}")
