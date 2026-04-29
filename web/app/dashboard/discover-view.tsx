@@ -91,7 +91,11 @@ export default function DiscoverView({
         editorial: weights.editorial / 100,
       };
 
-      // Step 1: Get artist-level recommendations from our backend
+      // Step 1: Get artist-level recommendations from our backend.
+      // exclude_library=false lets library artists appear in results — we
+      // filter their already-saved songs out at the song level below, so
+      // Discover surfaces both new artists and unheard songs from familiar
+      // artists.
       setLoadingStage("Getting recommendations…");
       const artistRes = await fetch(`/api/recommend`, {
         method: "POST",
@@ -99,6 +103,7 @@ export default function DiscoverView({
         body: JSON.stringify({
           prompt: prompt || null,
           weights: normalized,
+          exclude_library: false,
         }),
       });
       const artistData = await artistRes.json().catch(() => ({}));
@@ -183,11 +188,28 @@ export default function DiscoverView({
       const allSongs = songArrays.flat();
       allSongs.sort((a, b) => b.score - a.score);
 
+      // Step 4a: Drop songs already in the user's library. Library *artists*
+      // are allowed to appear (we want familiar names re-surfaced), but a
+      // song the user has already saved should never be recommended back.
+      // Failures here are non-fatal — better to show possibly-owned songs
+      // than to break the flow.
+      let librarySpotifyIds: Set<string> = new Set();
+      try {
+        const libRes = await fetch("/api/library/track-ids");
+        if (libRes.ok) {
+          const libData = await libRes.json().catch(() => ({}));
+          librarySpotifyIds = new Set(libData.spotify_track_ids ?? []);
+        }
+      } catch {}
+
       const seen = new Set<string>();
       const deduped: SongRecommendation[] = [];
       const artistCounts: Record<string, number> = {};
 
       for (const song of allSongs) {
+        if (song.spotify_track_id && librarySpotifyIds.has(song.spotify_track_id)) {
+          continue;
+        }
         const key = `${song.track_name.toLowerCase()}|${song.artist_name.toLowerCase()}`;
         if (seen.has(key)) continue;
         const ak = song.artist_name.toLowerCase();
