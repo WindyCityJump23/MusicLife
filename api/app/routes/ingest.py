@@ -186,6 +186,44 @@ def _run_genre_backfill(job_id: str):
         print(f"genre_backfill: FAILED: {exc}")
 
 
+@router.post("/expand-catalog")
+def expand_catalog(
+    bg: BackgroundTasks,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Expand the artist catalog via Last.fm similar artists.
+
+    For each existing artist, fetches similar artists and adds them to the DB.
+    Run enrichment + embedding + populate-tracks afterward to complete the pipeline.
+    """
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+    job_id = str(uuid.uuid4())
+    create_job(job_id, "expand-catalog")
+    bg.add_task(_run_expand_catalog, job_id)
+    return {"status": "queued", "job_id": job_id}
+
+
+def _run_expand_catalog(job_id: str):
+    from app.services.catalog_expansion import run_catalog_expansion
+
+    update_job(job_id, JobStatus.RUNNING, "Expanding catalog via Last.fm similar artists...")
+    try:
+        summary = run_catalog_expansion()
+        new = summary.get("inserted", 0)
+        found = summary.get("new_artists_found", 0)
+        seeds = summary.get("seeds", 0)
+        msg = f"Found {found} new artists from {seeds} seeds, inserted {new}"
+        errs = summary.get("errors", 0)
+        if errs:
+            msg += f" ({errs} errors)"
+        update_job(job_id, JobStatus.SUCCESS, msg[:500])
+        print(f"expand_catalog: completed \u2014 {msg}")
+    except Exception as exc:
+        update_job(job_id, JobStatus.FAILED, str(exc)[:500])
+        print(f"expand_catalog: FAILED: {exc}")
+
+
 class PopulateTracksRequest(BaseModel):
     spotify_access_token: str
 

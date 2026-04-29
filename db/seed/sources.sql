@@ -6,5 +6,17 @@ insert into public.sources (name, kind, url, trust_weight) values
   ('Bandcamp Daily', 'rss', 'https://daily.bandcamp.com/feed', 0.860),
   ('Reddit r/indieheads', 'reddit', 'https://www.reddit.com/r/indieheads/.rss', 0.650),
   ('Reddit r/electronicmusic', 'reddit', 'https://www.reddit.com/r/electronicmusic/.rss', 0.630),
-  ('Reddit r/hiphopheads', 'reddit', 'https://www.reddit.com/r/hiphopheads/.rss', 0.640)
+  ('Reddit r/hiphopheads', 'reddit', 'https://www.reddit.com/r/hiphopheads/.rss', 0.640),
+  ('Reddit r/listentothis', 'reddit', 'https://www.reddit.com/r/listentothis/.rss', 0.700),
+  ('Reddit r/popheads', 'reddit', 'https://www.reddit.com/r/popheads/.rss', 0.620),
+  ('Reddit r/rnb', 'reddit', 'https://www.reddit.com/r/rnb/.rss', 0.610),
+  ('Reddit r/Music', 'reddit', 'https://www.reddit.com/r/Music/.rss', 0.550),
+  ('Consequence of Sound', 'rss', 'https://consequence.net/feed/', 0.780),
+  ('NME', 'rss', 'https://www.nme.com/feed', 0.750),
+  ('FADER', 'rss', 'https://www.thefader.com/rss', 0.800),
+  ('Brooklyn Vegan', 'rss', 'https://www.brooklynvegan.com/feed/', 0.740),
+  ('Line of Best Fit', 'rss', 'https://www.thelineofbestfit.com/feed', 0.760),
+  ('Reddit r/jazz', 'reddit', 'https://www.reddit.com/r/jazz/.rss', 0.600),
+  ('Reddit r/metal', 'reddit', 'https://www.reddit.com/r/metal/.rss', 0.600),
+  ('Reddit r/classicalmusic', 'reddit', 'https://www.reddit.com/r/classicalmusic/.rss', 0.580)
 on conflict (name) do nothing;
