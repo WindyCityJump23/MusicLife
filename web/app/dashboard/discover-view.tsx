@@ -125,6 +125,7 @@ export default function DiscoverView({
           body: JSON.stringify({
             prompt: prompt || null,
             weights: normalized,
+            limit: 25,  // Request extra to allow diversity filtering
           }),
         });
         const artistData = await artistRes.json().catch(() => ({}));

@@ -153,6 +153,39 @@ def _run_source_ingest(job_id: str):
         print(f"source_ingest: FAILED: {exc}")
 
 
+@router.post("/backfill-genres")
+def backfill_genres(
+    bg: BackgroundTasks,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Fetch Last.fm tags as genres for all artists with empty genres."""
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+    job_id = str(uuid.uuid4())
+    create_job(job_id, "backfill-genres")
+    bg.add_task(_run_genre_backfill, job_id)
+    return {"status": "queued", "job_id": job_id}
+
+
+def _run_genre_backfill(job_id: str):
+    from app.services.genre_backfill import run_genre_backfill
+
+    update_job(job_id, JobStatus.RUNNING, "Fetching genres from Last.fm...")
+    try:
+        summary = run_genre_backfill()
+        updated = summary.get("updated", 0)
+        total = summary.get("total", 0)
+        msg = f"Updated genres for {updated}/{total} artists"
+        errs = summary.get("errors", 0)
+        if errs:
+            msg += f" ({errs} errors)"
+        update_job(job_id, JobStatus.SUCCESS, msg[:500])
+        print(f"genre_backfill: completed \u2014 {msg}")
+    except Exception as exc:
+        update_job(job_id, JobStatus.FAILED, str(exc)[:500])
+        print(f"genre_backfill: FAILED: {exc}")
+
+
 class PopulateTracksRequest(BaseModel):
     spotify_access_token: str
 

@@ -80,9 +80,13 @@ def _enrich_one(client: httpx.Client, artist: dict) -> None:
         if lastfm:
             if lastfm.get("url"):
                 update["lastfm_url"] = lastfm["url"]
+            # Store Last.fm tags as genres (critical for diversity re-ranking)
+            tags = lastfm.get("tags", [])
+            if tags:
+                update["genres"] = tags[:10]  # Cap at 10 genre tags
             embedding_source = _build_embedding_source(
                 bio=lastfm.get("bio", ""),
-                tags=lastfm.get("tags", []),
+                tags=tags,
                 similar=lastfm.get("similar", []),
             )
             if embedding_source:

@@ -223,24 +223,32 @@ def build_taste_vector(client: Client, user_id: str) -> list[float]:
 
 # ── Diversity re-ranking ─────────────────────────────────────────
 
-def _diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
-    """Re-rank to ensure genre diversity in the top results.
+def _diversity_rerank(
+    scored: list[dict],
+    limit: int,
+    library_artist_ids: set[int] | None = None,
+) -> list[dict]:
+    """Re-rank to ensure genre diversity and limit library artists.
 
     Greedy selection: pick the best remaining candidate, but penalize
     artists whose primary genre is already well-represented in the
-    selected set. This prevents the top 10 from all being the same genre.
+    selected set. Also caps library artists so Discover stays fresh.
     """
     if len(scored) <= limit:
         return scored
 
+    lib_ids = library_artist_ids or set()
+
     # Work with a larger pool so we have room to diversify.
-    pool = scored[: limit * 3]
+    pool = scored[: limit * 4]
     selected: list[dict] = []
     genre_counts: Counter[str] = Counter()
     used_ids: set[str] = set()
+    library_count = 0
 
-    # Maximum fraction of results from a single genre before penalty kicks in.
+    # Caps
     MAX_GENRE_FRACTION = 0.3
+    MAX_LIBRARY_ARTISTS = max(limit // 5, 2)  # At most 20% from library
 
     while len(selected) < limit and pool:
         best_idx = -1
@@ -250,12 +258,17 @@ def _diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
             if candidate["artist_id"] in used_ids:
                 continue
 
+            # Skip if we've hit the library artist cap
+            cand_id = int(candidate["artist_id"]) if candidate["artist_id"] else 0
+            is_library = cand_id in lib_ids
+            if is_library and library_count >= MAX_LIBRARY_ARTISTS:
+                continue
+
             base_score = candidate["score"]
             genres = candidate.get("genres") or []
             primary_genre = genres[0].lower() if genres else "__none__"
 
-            # Penalty: if this genre already fills >MAX_GENRE_FRACTION of
-            # selected slots, scale down the score.
+            # Genre diversity penalty
             genre_share = genre_counts.get(primary_genre, 0) / max(len(selected), 1)
             penalty = 1.0
             if genre_share >= MAX_GENRE_FRACTION:
@@ -272,6 +285,10 @@ def _diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
         pick = pool[best_idx]
         selected.append(pick)
         used_ids.add(pick["artist_id"])
+
+        pick_id = int(pick["artist_id"]) if pick["artist_id"] else 0
+        if pick_id in lib_ids:
+            library_count += 1
 
         genres = pick.get("genres") or []
         primary_genre = genres[0].lower() if genres else "__none__"
@@ -450,18 +467,17 @@ def rank_candidates(
         )
 
         # ── "From your library" penalty ──────────────────────────
-        # Artists already in the user's listening library get a soft
-        # reduction so familiar names don't dominate Discover. Applied
-        # BEFORE the previously_recommended penalty so the two compose
-        # multiplicatively for artists that fall into both buckets.
+        # Artists already in the user's listening library get a strong
+        # reduction so familiar names don't dominate Discover. The whole
+        # point of Discover is finding NEW music you haven't heard.
         if artist_id in library_artist_ids:
-            final_score *= 0.85  # 15% penalty
+            final_score *= 0.55  # 45% penalty (strong — discover = new artists)
 
         # ── "Already seen" penalty ───────────────────────────────
         # Artists already in user's playlists get a score reduction.
         # They can still appear, just lower ranked — keeps things fresh.
         if artist_id in previously_recommended:
-            final_score *= 0.65  # 35% penalty
+            final_score *= 0.60  # 40% penalty
 
         # ── Exploration factor ───────────────────────────────────
         # Random nudge so each run produces different ordering,
@@ -509,6 +525,8 @@ def rank_candidates(
 
     # ── Genre diversity re-ranking ───────────────────────────────
     # Greedy selection that penalizes over-represented genres in top N.
-    diverse_results = _diversity_rerank(scored, max(limit, 0))
+    diverse_results = _diversity_rerank(
+        scored, max(limit, 0), library_artist_ids=library_artist_ids
+    )
 
     return diverse_results
