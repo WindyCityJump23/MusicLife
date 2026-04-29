@@ -29,5 +29,15 @@ export async function POST(req: NextRequest) {
   });
 
   const data = await upstream.json().catch(() => ({}));
+  // TEMP DEBUG: trace empty Discover responses. Remove once diagnosed.
+  console.log(
+    "[recommend-debug]",
+    JSON.stringify({
+      status: upstream.status,
+      results_len: Array.isArray(data?.results) ? data.results.length : null,
+      first_artist: data?.results?.[0]?.artist_name ?? null,
+      error: data?.error ?? data?.detail ?? null,
+    })
+  );
   return NextResponse.json(data, { status: upstream.status });
 }
