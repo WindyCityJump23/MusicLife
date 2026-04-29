@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
     // and a cast to check if embedding is non-null without transferring it.
     const { data: rows, error: aErr } = await sb
       .from("artists")
-      .select("id, name, genres, musicbrainz_id, embedding_source, image_url")
+      .select("id, name, genres, musicbrainz_id, embedding_source")
       .in("id", artistIds)
       .order("name", { ascending: true });
     if (aErr) {
@@ -70,7 +70,7 @@ export async function GET(req: NextRequest) {
       genres: r.genres ?? [],
       enriched: Boolean(r.musicbrainz_id),
       embedded: embeddedIds.has(r.id),
-      image_url: r.image_url ?? null,
+      image_url: null,
     }));
   }
 
