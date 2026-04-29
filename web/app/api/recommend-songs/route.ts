@@ -88,31 +88,21 @@ export async function POST(req: NextRequest) {
 
   const spotifyHeaders = { Authorization: `Bearer ${accessToken}` };
 
-  // ── Step 3: Fetch top tracks — ALL artists in parallel ─────
-  // Single parallel batch (no serial batching) to stay within timeout
+  // ── Step 3: Fetch tracks via Search API (not top-tracks) ───
+  // The artists/{id}/top-tracks endpoint returns 403 for Spotify apps
+  // in Development Mode (restricted since Spotify's Nov 2024 API changes).
+  // The Search API still works, so we search for tracks by each artist.
   const songArrays = await Promise.all(
     artists.map(async (artist): Promise<SongResult[]> => {
       try {
-        // Search for artist on Spotify
         const searchRes = await fetch(
-          `https://api.spotify.com/v1/search?q=${encodeURIComponent(artist.artist_name)}&type=artist&limit=1`,
+          `https://api.spotify.com/v1/search?q=${encodeURIComponent(`artist:${artist.artist_name}`)}&type=track&market=US&limit=5`,
           { headers: spotifyHeaders }
         );
         if (!searchRes.ok) return [];
 
         const searchData = await searchRes.json();
-        const spotifyArtist = searchData.artists?.items?.[0];
-        if (!spotifyArtist) return [];
-
-        // Get top tracks
-        const tracksRes = await fetch(
-          `https://api.spotify.com/v1/artists/${spotifyArtist.id}/top-tracks?market=US`,
-          { headers: spotifyHeaders }
-        );
-        if (!tracksRes.ok) return [];
-
-        const tracksData = await tracksRes.json();
-        const tracks: SpotifyTrack[] = (tracksData.tracks ?? []).slice(0, 3);
+        const tracks: SpotifyTrack[] = (searchData.tracks?.items ?? []).slice(0, 3);
 
         return tracks.map((track): SongResult => {
           const trackPop = (track.popularity ?? 50) / 100;
