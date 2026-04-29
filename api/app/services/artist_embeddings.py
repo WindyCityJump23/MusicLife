@@ -31,6 +31,13 @@ def run_artist_embeddings(batch_size: int = BATCH_SIZE) -> dict:
     total_embedded = 0
     total_skipped = 0
     batch_num = 0
+    last_error: str | None = None
+    consecutive_failures = 0
+
+    # If we fail this many batches in a row without embedding anything, bail
+    # out — re-querying the same un-embedded rows just burns API quota and
+    # produces a misleading "N skipped" count.
+    MAX_CONSECUTIVE_FAILURES = 2
 
     while total_embedded + total_skipped < MAX_TOTAL:
         batch_num += 1
@@ -78,18 +85,32 @@ def run_artist_embeddings(batch_size: int = BATCH_SIZE) -> dict:
         try:
             vectors = embedder.embed(texts, input_type="document")
         except Exception as exc:
-            print(f"artist_embeddings: embed API error on batch {batch_num}: {exc}")
+            err = f"embed API error: {type(exc).__name__}: {exc}"
+            print(f"artist_embeddings: batch {batch_num} {err}")
+            last_error = str(exc)
             total_skipped += len(candidates)
-            # Wait a bit before retrying (might be rate limit)
+            consecutive_failures += 1
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                print(
+                    f"artist_embeddings: aborting after {consecutive_failures} consecutive "
+                    f"embed failures — last error: {last_error}"
+                )
+                break
             time.sleep(2)
             continue
 
         if len(vectors) != len(valid_candidates):
-            print(
-                f"artist_embeddings: vector count mismatch on batch {batch_num} "
-                f"(got {len(vectors)}, expected {len(valid_candidates)}) — skipping batch"
+            err = (
+                f"vector count mismatch (got {len(vectors)}, "
+                f"expected {len(valid_candidates)})"
             )
+            print(f"artist_embeddings: batch {batch_num} {err} — skipping batch")
+            last_error = err
             total_skipped += len(valid_candidates)
+            consecutive_failures += 1
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                print(f"artist_embeddings: aborting after {consecutive_failures} consecutive failures")
+                break
             continue
 
         rows = [
@@ -106,10 +127,20 @@ def run_artist_embeddings(batch_size: int = BATCH_SIZE) -> dict:
         try:
             admin_supabase.table("artists").upsert(rows, on_conflict="id").execute()
             total_embedded += len(valid_candidates)
+            consecutive_failures = 0
             print(f"artist_embeddings: batch {batch_num} done — {total_embedded} total so far")
         except Exception as exc:
-            print(f"artist_embeddings: DB write error on batch {batch_num}: {exc}")
+            err = f"DB write error: {type(exc).__name__}: {exc}"
+            print(f"artist_embeddings: batch {batch_num} {err}")
+            last_error = str(exc)
             total_skipped += len(valid_candidates)
+            consecutive_failures += 1
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                print(
+                    f"artist_embeddings: aborting after {consecutive_failures} consecutive "
+                    f"DB write failures — last error: {last_error}"
+                )
+                break
 
         # Small delay between batches to be respectful of API rate limits
         if len(candidates) == batch_size:
@@ -119,6 +150,7 @@ def run_artist_embeddings(batch_size: int = BATCH_SIZE) -> dict:
         "embedded": total_embedded,
         "skipped": total_skipped,
         "batches": batch_num,
+        "last_error": last_error,
     }
     print(f"artist_embeddings: complete — {summary}")
     return summary

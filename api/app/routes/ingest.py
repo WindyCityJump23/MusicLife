@@ -105,11 +105,23 @@ def _run_embed_artists(job_id: str):
         embedded = summary.get("embedded", 0) if isinstance(summary, dict) else 0
         skipped = summary.get("skipped", 0) if isinstance(summary, dict) else 0
         batches = summary.get("batches", 0) if isinstance(summary, dict) else 0
+        last_error = summary.get("last_error") if isinstance(summary, dict) else None
         msg = f"Embedded {embedded} artists in {batches} batches"
         if skipped > 0:
             msg += f" ({skipped} skipped)"
-        update_job(job_id, JobStatus.SUCCESS, msg)
-        print(f"embed_artists: completed — {msg}")
+        # If nothing was embedded but we tried, treat it as a failure so the
+        # dashboard surfaces the underlying problem (usually a missing or
+        # invalid VOYAGE_API_KEY / OPENAI_API_KEY) instead of a green check.
+        if embedded == 0 and skipped > 0:
+            reason = last_error or "no artists were embedded"
+            failure_msg = f"{msg} — embedding failed: {reason}"[:500]
+            update_job(job_id, JobStatus.FAILED, failure_msg)
+            print(f"embed_artists: FAILED — {failure_msg}")
+        else:
+            if last_error:
+                msg += f" — last error: {last_error}"
+            update_job(job_id, JobStatus.SUCCESS, msg[:500])
+            print(f"embed_artists: completed — {msg}")
     except Exception as exc:
         update_job(job_id, JobStatus.FAILED, str(exc)[:500])
         print(f"embed_artists: FAILED: {exc}")
