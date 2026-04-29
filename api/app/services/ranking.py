@@ -83,6 +83,7 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
         client.table("user_tracks")
         .select("track_id,play_count")
         .eq("user_id", user_id)
+        .range(0, 9999)
         .execute()
     )
     user_tracks = tracks_resp.data or []
@@ -95,6 +96,7 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
             client.table("tracks")
             .select("id,artist_id")
             .in_("id", track_ids)
+            .range(0, 9999)
             .execute()
         )
         tracks_map = tracks_map_resp.data or []
@@ -124,6 +126,7 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
             client.table("user_top_artists")
             .select("artist_id,term,rank")
             .eq("user_id", user_id)
+            .range(0, 9999)
             .execute()
         )
         top_rows = top_resp.data or []
@@ -292,10 +295,15 @@ def rank_candidates(
     library_artist_ids = set(artist_weights.keys())
     previously_recommended = _get_previously_recommended_artist_ids(client, user_id)
 
+    # NOTE: Once the embedded-artist catalog grows beyond ~10k rows this
+    # in-process cosine pass needs to move to a server-side RPC backed by
+    # pgvector similarity (e.g. SELECT ... ORDER BY embedding <=> $1 LIMIT N).
+    # The .range bound below is a safety net, not a long-term plan.
     artists_resp = (
         client.table("artists")
         .select("id,name,embedding,popularity,genres,spotify_artist_id")
         .not_.is_("embedding", "null")
+        .range(0, 9999)
         .execute()
     )
     candidates = artists_resp.data or []
@@ -305,7 +313,12 @@ def rank_candidates(
         int(a["id"]) for a in candidates if a.get("id") is not None
     ]
 
-    source_resp = client.table("sources").select("id,name,trust_weight").execute()
+    source_resp = (
+        client.table("sources")
+        .select("id,name,trust_weight")
+        .range(0, 9999)
+        .execute()
+    )
     source_info: dict[int, dict] = {
         int(row["id"]): {
             "trust_weight": float(row.get("trust_weight") or 0.7),
@@ -321,6 +334,7 @@ def rank_candidates(
             client.table("mentions")
             .select("artist_id,source_id,embedding,published_at,sentiment,excerpt")
             .in_("artist_id", candidate_ids)
+            .range(0, 9999)
             .execute()
         )
     else:
