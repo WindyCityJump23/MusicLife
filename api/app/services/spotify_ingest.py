@@ -34,8 +34,12 @@ def run_spotify_library_ingest(user_id: str, access_token: str) -> None:
     with httpx.Client(timeout=30) as client:
         saved_items = _fetch_saved_tracks(client, headers)
         top_artists: list[dict] = []
+        # Keep per-term ordering so we can persist rank for the taste signal.
+        top_artists_by_term: dict[str, list[dict]] = {}
         for term in ("short_term", "medium_term", "long_term"):
-            top_artists.extend(_fetch_top_artists(client, headers, term))
+            term_items = _fetch_top_artists(client, headers, term)
+            top_artists_by_term[term] = term_items
+            top_artists.extend(term_items)
         recent_items = _fetch_recently_played(client, headers)
 
     # Build a deduped artist map keyed by Spotify artist ID.
@@ -74,6 +78,7 @@ def run_spotify_library_ingest(user_id: str, access_token: str) -> None:
     _upsert_user_tracks_saved(user_id, saved_items, track_id_map)
     _upsert_user_tracks_recent(user_id, recent_items, track_id_map)
     _insert_listen_events(user_id, recent_items, track_id_map)
+    _upsert_user_top_artists(user_id, top_artists_by_term, artist_id_map)
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +211,41 @@ def _upsert_user_tracks_recent(
         admin_supabase.table("user_tracks").upsert(
             rows, on_conflict="user_id,track_id"
         ).execute()
+
+
+def _upsert_user_top_artists(
+    user_id: str,
+    top_artists_by_term: dict[str, list[dict]],
+    artist_id_map: dict[str, int],
+) -> None:
+    """Persist Spotify /me/top/artists rankings so they can feed the taste vector.
+
+    Without this, top-artist signal never reaches the centroid for users
+    whose saved tracks don't overlap with their listening (e.g. heavy
+    radio listeners).
+    """
+    rows: list[dict] = []
+    for term, items in top_artists_by_term.items():
+        for rank, artist in enumerate(items, start=1):
+            db_id = artist_id_map.get(artist.get("id") or "")
+            if not db_id:
+                continue
+            rows.append(
+                {
+                    "user_id": user_id,
+                    "artist_id": db_id,
+                    "term": term,
+                    "rank": rank,
+                }
+            )
+    if rows:
+        try:
+            admin_supabase.table("user_top_artists").upsert(
+                rows, on_conflict="user_id,artist_id,term"
+            ).execute()
+        except Exception as e:
+            # Migration 010 may not have been applied yet — degrade gracefully.
+            print(f"spotify_ingest: user_top_artists upsert skipped ({e})")
 
 
 def _insert_listen_events(

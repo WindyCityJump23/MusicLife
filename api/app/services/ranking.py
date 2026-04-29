@@ -86,31 +86,61 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
         .execute()
     )
     user_tracks = tracks_resp.data or []
-    if not user_tracks:
-        return {}
-
-    track_ids = [row.get("track_id") for row in user_tracks if row.get("track_id") is not None]
-    if not track_ids:
-        return {}
-
-    tracks_map_resp = (
-        client.table("tracks")
-        .select("id,artist_id")
-        .in_("id", track_ids)
-        .execute()
-    )
-    tracks_map = tracks_map_resp.data or []
-    track_to_artist = {row["id"]: row.get("artist_id") for row in tracks_map if row.get("id") is not None}
 
     artist_weights: dict[int, float] = defaultdict(float)
-    for row in user_tracks:
-        track_id = row.get("track_id")
-        artist_id = track_to_artist.get(track_id)
+
+    track_ids = [row.get("track_id") for row in user_tracks if row.get("track_id") is not None]
+    if track_ids:
+        tracks_map_resp = (
+            client.table("tracks")
+            .select("id,artist_id")
+            .in_("id", track_ids)
+            .execute()
+        )
+        tracks_map = tracks_map_resp.data or []
+        track_to_artist = {
+            row["id"]: row.get("artist_id")
+            for row in tracks_map
+            if row.get("id") is not None
+        }
+
+        for row in user_tracks:
+            track_id = row.get("track_id")
+            artist_id = track_to_artist.get(track_id)
+            if artist_id is None:
+                continue
+
+            play_count = row.get("play_count") or 0
+            weight = float(play_count if play_count > 0 else 1)
+            artist_weights[int(artist_id)] += weight
+
+    # ── Top-artist signal ────────────────────────────────────────
+    # Spotify /me/top/artists rankings populate user_top_artists during
+    # ingest. They contribute to the centroid even when the user has no
+    # saved tracks for the artist. Calibration: short_term rank 1 ≈ 50,
+    # long_term rank 1 ≈ 20, decaying linearly with rank within each term.
+    try:
+        top_resp = (
+            client.table("user_top_artists")
+            .select("artist_id,term,rank")
+            .eq("user_id", user_id)
+            .execute()
+        )
+        top_rows = top_resp.data or []
+    except Exception:
+        # Table may not exist yet (migration 010 not applied).
+        top_rows = []
+
+    term_max = {"short_term": 50.0, "medium_term": 35.0, "long_term": 20.0}
+    for row in top_rows:
+        artist_id = row.get("artist_id")
         if artist_id is None:
             continue
-
-        play_count = row.get("play_count") or 0
-        weight = float(play_count if play_count > 0 else 1)
+        term = row.get("term") or ""
+        rank = int(row.get("rank") or 1)
+        max_w = term_max.get(term, 20.0)
+        # Rank 1 → max_w, falling to ~0.2*max_w by rank 50.
+        weight = max(max_w * 0.2, max_w * (1.0 - (rank - 1) / 50.0))
         artist_weights[int(artist_id)] += weight
 
     return dict(artist_weights)
