@@ -264,7 +264,7 @@ def rank_candidates(
 
     artists_resp = (
         client.table("artists")
-        .select("id,name,embedding,popularity,genres")
+        .select("id,name,embedding,popularity,genres,spotify_artist_id")
         .not_.is_("embedding", "null")
         .execute()
     )
@@ -447,6 +447,7 @@ def rank_candidates(
             {
                 "artist_id": str(artist_id),
                 "artist_name": artist.get("name") or "Unknown artist",
+                "spotify_artist_id": artist.get("spotify_artist_id"),
                 "score": round(max(0.0, final_score), 4),
                 "signals": {
                     "affinity": round(affinity, 4),
