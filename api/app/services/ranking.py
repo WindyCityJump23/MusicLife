@@ -405,6 +405,14 @@ def rank_candidates(
             + tiebreaker
         )
 
+        # ── "From your library" penalty ──────────────────────────
+        # Artists already in the user's listening library get a soft
+        # reduction so familiar names don't dominate Discover. Applied
+        # BEFORE the previously_recommended penalty so the two compose
+        # multiplicatively for artists that fall into both buckets.
+        if artist_id in library_artist_ids:
+            final_score *= 0.85  # 15% penalty
+
         # ── "Already seen" penalty ───────────────────────────────
         # Artists already in user's playlists get a score reduction.
         # They can still appear, just lower ranked — keeps things fresh.
@@ -428,6 +436,8 @@ def rank_candidates(
         if editorial > 0.45:
             src_name = best_mention["source"] if best_mention and best_mention.get("source") else ""
             reasons.append(f"Featured in {src_name}" if src_name else "In the press")
+        if artist_id in library_artist_ids:
+            reasons.append("From your library")
         if artist_id in previously_recommended:
             reasons.append("Previously saved")
         if not reasons:
