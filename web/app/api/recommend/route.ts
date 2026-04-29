@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 25; // Render backend can take 8-10s; free tier caps at 10s
 
 export async function POST(req: NextRequest) {
   const user = requireUser(req);
