@@ -21,6 +21,10 @@ type PlayerContextValue = {
 
   /** Currently playing indicator for the rec card that triggered playback. */
   playingArtist: string | null;
+
+  /** Spotify track ID to show in the embed player (works without Premium). */
+  embedTrackId: string | null;
+  setEmbedTrackId: (id: string | null) => void;
 };
 
 const PlayerContext = createContext<PlayerContextValue>({
@@ -31,12 +35,15 @@ const PlayerContext = createContext<PlayerContextValue>({
   playArtist: async () => ({ ok: false, error: "no provider" }),
   playTrack: async () => ({ ok: false, error: "no provider" }),
   playingArtist: null,
+  embedTrackId: null,
+  setEmbedTrackId: () => {},
 });
 
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [isReady, setIsReady] = useState(false);
   const [playingArtist, setPlayingArtist] = useState<string | null>(null);
+  const [embedTrackId, setEmbedTrackId] = useState<string | null>(null);
   const deviceIdRef = useRef<string | null>(null);
 
   // Keep ref in sync so the async callback always reads the latest value
@@ -125,6 +132,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         playArtist,
         playTrack,
         playingArtist,
+        embedTrackId,
+        setEmbedTrackId,
       }}
     >
       {children}

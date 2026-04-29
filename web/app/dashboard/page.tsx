@@ -23,8 +23,8 @@ function DashboardInner() {
   const [view, setView] = useState<View>("library");
   const [navOpen, setNavOpen] = useState(false);
   const [playerOpen, setPlayerOpen] = useState(false);
-  const { playingArtist } = usePlayer();
-  const hasTrack = Boolean(playingArtist);
+  const { playingArtist, embedTrackId } = usePlayer();
+  const hasTrack = Boolean(playingArtist) || Boolean(embedTrackId);
 
   // Close drawers on Escape
   useEffect(() => {

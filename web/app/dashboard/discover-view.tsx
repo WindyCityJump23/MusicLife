@@ -496,7 +496,7 @@ function SongRow({
   rank: number;
   initialFavorited?: boolean;
 }) {
-  const { playTrack, playArtist } = usePlayer();
+  const { playTrack, playArtist, setEmbedTrackId } = usePlayer();
   const [playState, setPlayState] = useState<"idle" | "loading">("idle");
   const [favorited, setFavorited] = useState(initialFavorited);
   const [favLoading, setFavLoading] = useState(false);
@@ -518,20 +518,22 @@ function SongRow({
 
   async function handlePlay() {
     setPlayState("loading");
-    let result: { ok: boolean; error?: string };
 
-    // Play the exact song if we have a Spotify track ID
+    // Always open in the embed player first (works without Premium)
+    if (song.spotify_track_id) {
+      setEmbedTrackId(song.spotify_track_id);
+    }
+
+    // Also try SDK playback for Premium users (full song)
+    let result: { ok: boolean; error?: string };
     if (song.spotify_track_id) {
       result = await playTrack(song.spotify_track_id);
     } else {
-      // Fallback: play artist's top tracks
       result = await playArtist(song.artist_name);
     }
 
     setPlayState("idle");
-    if (!result.ok) {
-      window.open(spotifyTrackUrl, "_blank", "noopener");
-    }
+    // SDK playback failed — embed player is already showing, no need to open new tab
   }
 
   return (

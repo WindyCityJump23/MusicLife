@@ -62,6 +62,7 @@ function formatMs(ms: number): string {
 // ── Component ────────────────────────────────────────────────────
 export default function Player() {
   const playerCtx = usePlayer();
+  const { embedTrackId } = playerCtx;
   const [status,      setStatus]      = useState<Status>({ kind: "loading" });
   const [deviceId,    setDeviceId]    = useState<string | null>(null);
   const [track,       setTrack]       = useState<Track | null>(null);
@@ -406,6 +407,21 @@ export default function Player() {
 
       {/* ── Status ─────────────────────────────────────────── */}
       <StatusLine status={status} />
+
+      {/* ── Spotify Embed Player (works without Premium) ──── */}
+      {embedTrackId && (
+        <div className="mt-3 rounded-xl overflow-hidden">
+          <iframe
+            src={`https://open.spotify.com/embed/track/${embedTrackId}?utm_source=generator&theme=0`}
+            width="100%"
+            height="152"
+            frameBorder="0"
+            allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+            loading="lazy"
+            style={{ borderRadius: "12px" }}
+          />
+        </div>
+      )}
     </div>
   );
 }
