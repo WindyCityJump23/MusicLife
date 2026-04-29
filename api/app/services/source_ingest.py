@@ -316,9 +316,11 @@ def _filter_already_stored(candidates: list[dict]) -> list[dict]:
     existing: set[tuple[int, str, int]] = set()
     for source_id, urls in by_source.items():
         url_list = list(urls)
-        # Page through urls in chunks; PostgREST .in_ has practical limits.
-        for start in range(0, len(url_list), 100):
-            chunk = url_list[start : start + 100]
+        # Page through urls in chunks. Reddit URLs run ~200 chars; 50 per
+        # query keeps the encoded `in_` clause well under PostgREST's URI
+        # length limit (~16KB on typical proxies).
+        for start in range(0, len(url_list), 50):
+            chunk = url_list[start : start + 50]
             try:
                 resp = (
                     admin_supabase.table("mentions")
