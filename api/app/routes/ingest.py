@@ -256,12 +256,27 @@ def _run_populate_tracks(job_id: str, spotify_token: str):
         summary = run_track_population(spotify_token)
         added = summary.get("tracks_added", 0)
         processed = summary.get("artists_processed", 0)
+        skipped_wrong = summary.get("tracks_skipped_wrong_artist", 0)
+        http_failures = summary.get("http_failures", 0)
         errors = summary.get("errors", 0)
+        aborted = summary.get("aborted", False)
+
         msg = f"Added {added} tracks for {processed} artists"
+        if skipped_wrong:
+            msg += f" — skipped {skipped_wrong} wrong-artist results"
+        if http_failures:
+            msg += f", {http_failures} HTTP failures"
         if errors:
-            msg += f" ({errors} errors)"
+            msg += f", {errors} errors"
+
+        if aborted:
+            reason = summary.get("abort_reason") or summary.get("last_error") or "unknown"
+            update_job(job_id, JobStatus.FAILED, f"{msg} — aborted: {reason}"[:500])
+            print(f"populate_tracks: aborted — {msg} ({reason})")
+            return
+
         last_err = summary.get("last_error")
-        if last_err:
+        if last_err and (http_failures or errors):
             msg += f" — last error: {last_err}"
         update_job(job_id, JobStatus.SUCCESS, msg[:500])
         print(f"populate_tracks: completed — {msg}")

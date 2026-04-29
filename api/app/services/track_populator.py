@@ -8,7 +8,11 @@ This service:
   1. Finds all artists with a spotify_artist_id
   2. Identifies which ones have fewer than N tracks in the DB
   3. For each, searches Spotify for tracks by that artist
-  4. Upserts the results into the tracks table with popularity + metadata
+  4. Verifies the returned tracks are actually by that artist
+  5. Upserts the results into the tracks table with popularity + metadata
+
+Errors that should stop the run early (auth failure) are surfaced to the
+caller instead of being silently swallowed.
 """
 
 from __future__ import annotations
@@ -21,8 +25,12 @@ import httpx
 from app.services.supabase_client import admin_supabase
 
 
-TRACKS_PER_ARTIST = 5  # How many tracks to fetch per artist
-MIN_EXISTING_TRACKS = 3  # Skip artists that already have this many tracks
+TRACKS_PER_ARTIST = 10  # How many tracks to fetch per artist
+MIN_EXISTING_TRACKS = 5  # Skip artists that already have this many tracks
+
+
+class SpotifyAuthExpired(Exception):
+    """Raised when Spotify returns 401 — token died mid-run."""
 
 
 def run_track_population(access_token: str) -> dict:
@@ -33,19 +41,24 @@ def run_track_population(access_token: str) -> dict:
                       Search API doesn't require special scopes).
 
     Returns:
-        Summary dict with counts.
+        Summary dict with counts and (if applicable) an aborted flag.
     """
     headers = {"Authorization": f"Bearer {access_token}"}
 
-    # 1. Get all artists with Spotify IDs
     all_artists = _fetch_all_artists()
     if not all_artists:
-        return {"artists_total": 0, "artists_processed": 0, "tracks_added": 0}
+        return {
+            "artists_total": 0,
+            "artists_processed": 0,
+            "tracks_added": 0,
+            "tracks_skipped_wrong_artist": 0,
+            "http_failures": 0,
+            "errors": 0,
+            "aborted": False,
+        }
 
-    # 2. Count existing tracks per artist
     existing_counts = _count_tracks_per_artist()
 
-    # 3. Filter to artists needing tracks
     need_tracks = [
         a for a in all_artists
         if existing_counts.get(a["id"], 0) < MIN_EXISTING_TRACKS
@@ -55,43 +68,79 @@ def run_track_population(access_token: str) -> dict:
     print(f"track_populator: {len(all_artists)} total artists, "
           f"{len(need_tracks)} need tracks")
 
-    # 4. Search Spotify for each artist's tracks
     total_added = 0
+    total_skipped_wrong_artist = 0
+    http_failures = 0
     errors = 0
-    last_error = None
+    last_error: str | None = None
+    aborted = False
+    abort_reason: str | None = None
 
     with httpx.Client(timeout=15) as client:
         for i, artist in enumerate(need_tracks):
             try:
-                added = _search_and_upsert_tracks(
+                added, skipped = _search_and_upsert_tracks(
                     client, headers, artist, TRACKS_PER_ARTIST
                 )
                 total_added += added
+                total_skipped_wrong_artist += skipped
 
-                # Rate limit: Spotify allows ~30 req/sec but be conservative
                 if (i + 1) % 5 == 0:
                     time.sleep(0.5)
 
-                # Progress logging every 50 artists
                 if (i + 1) % 50 == 0:
-                    print(f"track_populator: {i+1}/{len(need_tracks)} artists "
-                          f"processed, {total_added} tracks added")
+                    print(
+                        f"track_populator: {i+1}/{len(need_tracks)} processed, "
+                        f"{total_added} added, {total_skipped_wrong_artist} "
+                        f"wrong-artist skipped, {http_failures} HTTP failures"
+                    )
+
+            except SpotifyAuthExpired as exc:
+                # Stop immediately — every subsequent call would also 401.
+                aborted = True
+                abort_reason = str(exc)
+                last_error = str(exc)[:200]
+                print(
+                    f"track_populator: aborting at {i+1}/{len(need_tracks)} — "
+                    f"{abort_reason}"
+                )
+                break
+
+            except _SpotifyHttpError as exc:
+                # 4xx/5xx that isn't auth — count it but keep going. After
+                # 20 consecutive-style failures, give up.
+                http_failures += 1
+                last_error = str(exc)[:200]
+                if http_failures > 20:
+                    aborted = True
+                    abort_reason = (
+                        f"too many HTTP failures ({http_failures}); last: {last_error}"
+                    )
+                    print(f"track_populator: aborting — {abort_reason}")
+                    break
+                time.sleep(1)
 
             except Exception as exc:
                 errors += 1
                 last_error = str(exc)[:200]
-                # Don't abort on individual failures
                 if errors > 20:
-                    print(f"track_populator: too many errors ({errors}), aborting")
+                    aborted = True
+                    abort_reason = f"too many errors ({errors}); last: {last_error}"
+                    print(f"track_populator: aborting — {abort_reason}")
                     break
-                time.sleep(1)  # Back off on errors
+                time.sleep(1)
 
     summary = {
         "artists_total": len(all_artists),
         "artists_processed": len(need_tracks),
         "tracks_added": total_added,
+        "tracks_skipped_wrong_artist": total_skipped_wrong_artist,
+        "http_failures": http_failures,
         "errors": errors,
+        "aborted": aborted,
     }
+    if abort_reason:
+        summary["abort_reason"] = abort_reason
     if last_error:
         summary["last_error"] = last_error
 
@@ -147,57 +196,71 @@ def _count_tracks_per_artist() -> dict[int, int]:
     return dict(counts)
 
 
+class _SpotifyHttpError(Exception):
+    """Non-auth HTTP failure from Spotify (rate-limit-after-retry, 5xx, …)."""
+
+
 def _search_and_upsert_tracks(
     client: httpx.Client,
     headers: dict[str, str],
     artist: dict,
     limit: int,
-) -> int:
+) -> tuple[int, int]:
     """Search Spotify for tracks by this artist and upsert them.
 
-    Returns the number of tracks upserted.
+    Returns `(added, skipped_wrong_artist)`. Raises `SpotifyAuthExpired`
+    on 401 so the caller can stop immediately, or `_SpotifyHttpError`
+    on other non-200 responses so the caller can count and keep going.
     """
     artist_name = artist.get("name") or ""
     artist_db_id = artist["id"]
+    artist_spotify_id = artist.get("spotify_artist_id")
 
     if not artist_name.strip():
-        return 0
+        return 0, 0
 
-    # Search for tracks by this artist
-    query = f"artist:{artist_name}"
+    query = f'artist:"{artist_name}"'
+    params = {"q": query, "type": "track", "market": "US", "limit": limit}
+
     resp = client.get(
-        "https://api.spotify.com/v1/search",
-        params={
-            "q": query,
-            "type": "track",
-            "market": "US",
-            "limit": limit,
-        },
-        headers=headers,
+        "https://api.spotify.com/v1/search", params=params, headers=headers
     )
 
     if resp.status_code == 429:
-        # Rate limited — wait and retry once
         retry_after = int(resp.headers.get("Retry-After", "5"))
-        time.sleep(retry_after)
+        time.sleep(min(retry_after, 30))
         resp = client.get(
-            "https://api.spotify.com/v1/search",
-            params={"q": query, "type": "track", "market": "US", "limit": limit},
-            headers=headers,
+            "https://api.spotify.com/v1/search", params=params, headers=headers
         )
 
+    if resp.status_code == 401:
+        raise SpotifyAuthExpired("Spotify access token expired mid-run")
     if resp.status_code != 200:
-        return 0
+        raise _SpotifyHttpError(f"HTTP {resp.status_code}: {resp.text[:120]}")
 
     data = resp.json()
     items = (data.get("tracks") or {}).get("items") or []
     if not items:
-        return 0
+        return 0, 0
 
-    rows = []
+    name_lower = artist_name.strip().lower()
+    rows: list[dict] = []
+    skipped = 0
+
     for track in items:
         spotify_track_id = track.get("id")
         if not spotify_track_id:
+            continue
+
+        # Verify the track is actually by this artist. Spotify's
+        # `artist:NAME` filter returns near-matches and collabs where the
+        # primary artist may be someone else — writing those rows with
+        # *our* artist_id pollutes the catalog.
+        track_artists = track.get("artists") or []
+        if not _track_belongs_to_artist(
+            track_artists, name_lower, artist_spotify_id
+        ):
+            skipped += 1
             continue
 
         rows.append({
@@ -211,10 +274,30 @@ def _search_and_upsert_tracks(
         })
 
     if not rows:
-        return 0
+        return 0, skipped
 
     admin_supabase.table("tracks").upsert(
         rows, on_conflict="spotify_track_id"
     ).execute()
 
-    return len(rows)
+    return len(rows), skipped
+
+
+def _track_belongs_to_artist(
+    track_artists: list[dict],
+    expected_name_lower: str,
+    expected_spotify_id: str | None,
+) -> bool:
+    """True if the artist appears anywhere in the track's artist list.
+
+    Match by Spotify ID when available (cheap and unambiguous), else by
+    case-insensitive name. Permits collabs as long as the artist we
+    searched for is actually credited.
+    """
+    for ta in track_artists:
+        if expected_spotify_id and ta.get("id") == expected_spotify_id:
+            return True
+        ta_name = (ta.get("name") or "").strip().lower()
+        if ta_name and ta_name == expected_name_lower:
+            return True
+    return False
