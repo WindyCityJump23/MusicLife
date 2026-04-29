@@ -135,7 +135,7 @@ function DashboardInner() {
           role="main"
           className="lg:overflow-y-auto lg:h-screen min-h-[calc(100vh-3.5rem)] lg:min-h-0"
         >
-          <div className="px-4 sm:px-6 lg:px-8 py-4 lg:py-6 max-w-5xl pb-24 lg:pb-6">
+          <div className="px-4 sm:px-6 lg:px-8 py-4 lg:py-6 max-w-5xl pb-24 lg:pb-20">
             <header className="mb-4 lg:mb-6 hidden lg:block">
               <h2 className="text-lg font-semibold tracking-tight">{TITLES[view]}</h2>
             </header>
@@ -187,9 +187,9 @@ function DashboardInner() {
             aria-label="Player"
             className={[
               "hidden lg:flex lg:fixed lg:bottom-0 lg:right-0 lg:left-[240px] lg:h-14 lg:items-center lg:justify-center lg:z-20",
-              "fixed inset-x-0 bottom-0 top-14 z-50 overflow-y-auto lg:overflow-visible",
+              "fixed inset-x-0 bottom-0 z-50 overflow-y-auto lg:overflow-visible",
               "transition-transform duration-200 ease-out lg:transition-none",
-              playerOpen ? "translate-y-0 !flex" : "translate-y-full lg:translate-y-0",
+              playerOpen ? "translate-y-0 !flex top-14" : "translate-y-full lg:translate-y-0",
             ].join(" ")}
             style={{ background: "linear-gradient(90deg, #1a1a2e 0%, #16213e 100%)" }}
           >
