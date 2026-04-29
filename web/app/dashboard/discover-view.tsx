@@ -305,7 +305,7 @@ export default function DiscoverView({
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-            placeholder="What are you in the mood for? (e.g. chill lo-fi, energetic hip-hop, 90s rock\u2026)"
+            placeholder="What are you in the mood for? (e.g. chill lo-fi, energetic hip-hop, 90s rock…)"
             className="flex-1 px-4 py-2.5 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 placeholder:text-neutral-400"
           />
           <button
@@ -428,7 +428,7 @@ export default function DiscoverView({
                   {playlistStats && (
                     <span className="font-normal text-emerald-600">
                       {" "}
-                      \u2014 {playlistStats.added} track
+                      — {playlistStats.added} track
                       {playlistStats.added !== 1 ? "s" : ""} added
                       {playlistStats.failed.length > 0 && (
                         <>, {playlistStats.failed.length} skipped</>
@@ -574,7 +574,7 @@ function SongRow({
             </p>
             {song.album_name && (
               <>
-                <span className="text-neutral-300 text-[10px]">\u00b7</span>
+                <span className="text-neutral-300 text-[10px]">{"\u00b7"}</span>
                 <p className="text-[11px] text-neutral-400 truncate">
                   {song.album_name}
                 </p>
@@ -745,7 +745,7 @@ function SongRow({
               </p>
               {song.top_mention.source && (
                 <p className="text-[10px] text-neutral-400 mt-1">
-                  \u2014 {song.top_mention.source}
+                  — {song.top_mention.source}
                 </p>
               )}
             </div>
@@ -899,7 +899,7 @@ function SavePlaylistButton({
             <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
             <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
           </svg>
-          Creating playlist\u2026
+          Creating playlist…
         </>
       ) : (
         <>
