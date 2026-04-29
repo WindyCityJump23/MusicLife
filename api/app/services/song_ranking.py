@@ -260,14 +260,15 @@ def recommend_songs(
             # Track-level boost: popularity + audio feature match
             track_boost = 0.7 + (0.3 * track_pop)  # 0.7–1.0 range
 
-            # Familiarity: penalize songs already in user's library
-            # (soft penalty, not hard exclusion — we need these for results)
+            # Familiarity: penalize songs the user has already heard,
+            # but welcome NEW songs from familiar artists (deep cuts are
+            # valuable discoveries even from artists you already know).
             in_library = track_id in user_track_map if track_id else False
             is_library_artist = aid in library_artist_ids
             if in_library:
-                track_boost *= 0.55  # Significant penalty for exact tracks user owns
+                track_boost *= 0.45  # Strong penalty — you've already heard this exact song
             elif is_library_artist:
-                track_boost *= 0.75  # Mild penalty for library artist, different track
+                track_boost *= 0.90  # Very mild — new song from a known artist = great find
 
             # Exploration
             exploration = random.uniform(-EXPLORATION_STRENGTH, EXPLORATION_STRENGTH)
@@ -290,7 +291,9 @@ def recommend_songs(
             if track_pop > 0.7:
                 reasons.append("Popular track")
             if in_library:
-                reasons.append("In your library")
+                reasons.append("Already in your library")
+            elif is_library_artist and not in_library:
+                reasons.append("Deep cut from an artist you love")
             if not reasons:
                 reasons.append("Curated pick")
 

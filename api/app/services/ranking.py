@@ -248,7 +248,7 @@ def _diversity_rerank(
 
     # Caps
     MAX_GENRE_FRACTION = 0.3
-    MAX_LIBRARY_ARTISTS = max(limit // 5, 2)  # At most 20% from library
+    MAX_LIBRARY_ARTISTS = max(limit // 3, 3)  # At most ~33% from library (deep cuts are valuable)
 
     while len(selected) < limit and pool:
         best_idx = -1
@@ -466,12 +466,14 @@ def rank_candidates(
             + tiebreaker
         )
 
-        # ── "From your library" penalty ──────────────────────────
-        # Artists already in the user's listening library get a strong
-        # reduction so familiar names don't dominate Discover. The whole
-        # point of Discover is finding NEW music you haven't heard.
+        # ── "From your library" soft penalty ───────────────────
+        # Library artists get a mild reduction so they don't dominate,
+        # but they're still welcome — a deep cut from a familiar artist
+        # can be a great discovery. The real filtering happens at the
+        # song level (song_ranking.py penalizes specific tracks the user
+        # has already heard, not the artist as a whole).
         if artist_id in library_artist_ids:
-            final_score *= 0.55  # 45% penalty (strong — discover = new artists)
+            final_score *= 0.80  # 20% penalty (mild — library artists are still valuable)
 
         # ── "Already seen" penalty ───────────────────────────────
         # Artists already in user's playlists get a score reduction.
