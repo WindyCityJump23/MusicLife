@@ -153,6 +153,51 @@ def _run_source_ingest(job_id: str):
         print(f"source_ingest: FAILED: {exc}")
 
 
+class PopulateTracksRequest(BaseModel):
+    spotify_access_token: str
+
+
+@router.post("/populate-tracks")
+def populate_tracks(
+    req: PopulateTracksRequest,
+    bg: BackgroundTasks,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Populate the tracks table for all artists using Spotify Search API.
+
+    This fetches top tracks for artists that have few/no tracks in the DB,
+    using the Search API (which works in dev mode, unlike top-tracks).
+    """
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+    job_id = str(uuid.uuid4())
+    create_job(job_id, "populate-tracks")
+    bg.add_task(_run_populate_tracks, job_id, req.spotify_access_token)
+    return {"status": "queued", "job_id": job_id}
+
+
+def _run_populate_tracks(job_id: str, spotify_token: str):
+    from app.services.track_populator import run_track_population
+
+    update_job(job_id, JobStatus.RUNNING, "Populating tracks for all artists...")
+    try:
+        summary = run_track_population(spotify_token)
+        added = summary.get("tracks_added", 0)
+        processed = summary.get("artists_processed", 0)
+        errors = summary.get("errors", 0)
+        msg = f"Added {added} tracks for {processed} artists"
+        if errors:
+            msg += f" ({errors} errors)"
+        last_err = summary.get("last_error")
+        if last_err:
+            msg += f" — last error: {last_err}"
+        update_job(job_id, JobStatus.SUCCESS, msg[:500])
+        print(f"populate_tracks: completed — {msg}")
+    except Exception as exc:
+        update_job(job_id, JobStatus.FAILED, str(exc)[:500])
+        print(f"populate_tracks: FAILED: {exc}")
+
+
 @router.get("/status/{job_id}")
 def job_status(
     job_id: str,
@@ -175,7 +220,7 @@ def latest_job_statuses(
     show completion state without needing to track individual job IDs."""
     token = require_bearer_token(credentials)
     ensure_valid_bearer_token(token)
-    kinds = ["spotify-library", "enrich-artists", "embed-artists", "sources"]
+    kinds = ["spotify-library", "enrich-artists", "embed-artists", "sources", "populate-tracks"]
     result = {}
     for kind in kinds:
         job = get_latest_by_kind(kind)

@@ -70,103 +70,147 @@ export default function DiscoverView({
         editorial: weights.editorial / 100,
       };
 
-      // Step 1: Get artist-level recommendations from our backend
-      setLoadingStage("Getting recommendations\u2026");
-      const artistRes = await fetch(`/api/recommend`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: prompt || null,
-          weights: normalized,
-        }),
-      });
-      const artistData = await artistRes.json().catch(() => ({}));
-      if (!artistRes.ok) {
-        setError(artistData.error ?? artistData.detail ?? "Failed to get recommendations");
-        setResults([]);
-        return;
+      // Try DB-based song recommendations first (faster, better ranking)
+      // Falls back to client-side Spotify Search if DB has no tracks
+      setLoadingStage("Finding songs for you\u2026");
+
+      let deduped: SongRecommendation[] = [];
+
+      // Attempt 1: Server-side song recommendations (uses tracks in DB)
+      try {
+        const songRes = await fetch(`/api/recommend-songs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: prompt || null,
+            weights: normalized,
+            limit: 30,
+          }),
+        });
+        if (songRes.ok) {
+          const songData = await songRes.json().catch(() => ({}));
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          deduped = (songData.results ?? []).map((r: any): SongRecommendation => ({
+            track_id: r.track_id ?? null,
+            track_name: r.track_name ?? "",
+            artist_id: r.artist_id ?? "",
+            artist_name: r.artist_name ?? "",
+            album_name: r.album_name ?? "",
+            duration_ms: r.duration_ms ?? 0,
+            explicit: r.explicit ?? false,
+            spotify_track_id: r.spotify_track_id ?? "",
+            score: r.score ?? 0,
+            signals: {
+              affinity: r.signals?.affinity ?? 0,
+              context: r.signals?.context ?? 0,
+              editorial: r.signals?.editorial ?? 0,
+              track_popularity: r.signals?.track_popularity,
+            },
+            genres: r.genres ?? [],
+            reasons: r.reasons ?? [],
+            mention_count: r.mention_count ?? 0,
+            top_mention: r.top_mention ?? null,
+          }));
+        }
+      } catch {
+        // Server-side failed — fall through to client-side
       }
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const artists: any[] = artistData.results ?? [];
-      if (artists.length === 0) {
-        setResults([]);
-        return;
-      }
+      // Attempt 2: Client-side Spotify Search fallback (if DB had no results)
+      if (deduped.length === 0) {
+        setLoadingStage("Getting recommendations\u2026");
+        const artistRes = await fetch(`/api/recommend`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: prompt || null,
+            weights: normalized,
+          }),
+        });
+        const artistData = await artistRes.json().catch(() => ({}));
+        if (!artistRes.ok) {
+          setError(artistData.error ?? artistData.detail ?? "Failed to get recommendations");
+          setResults([]);
+          return;
+        }
 
-      // Step 2: Get Spotify token for track search
-      const tokenRes = await fetch("/api/auth/token");
-      const tokenData = await tokenRes.json().catch(() => ({}));
-      const accessToken = tokenData.access_token;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const artists: any[] = artistData.results ?? [];
+        if (artists.length === 0) {
+          setResults([]);
+          return;
+        }
 
-      if (!accessToken) {
-        setError("Spotify session expired \u2014 please sign out and back in");
-        setResults([]);
-        return;
-      }
+        const tokenRes = await fetch("/api/auth/token");
+        const tokenData = await tokenRes.json().catch(() => ({}));
+        const accessToken = tokenData.access_token;
 
-      // Step 3: Fetch tracks via Search API (not top-tracks, which returns 403 in dev mode)
-      setLoadingStage("Fetching songs from Spotify\u2026");
-      const spotifyHeaders = { Authorization: `Bearer ${accessToken}` };
-      const songArrays = await Promise.all(
-        artists.slice(0, 15).map(async (artist: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
-          try {
-            const searchRes = await fetch(
-              `https://api.spotify.com/v1/search?q=${encodeURIComponent(`artist:${artist.artist_name}`)}&type=track&market=US&limit=5`,
-              { headers: spotifyHeaders }
-            );
-            if (!searchRes.ok) return [];
-            const searchData = await searchRes.json();
-            const tracks = (searchData.tracks?.items ?? []).slice(0, 3);
+        if (!accessToken) {
+          setError("Spotify session expired \u2014 please sign out and back in");
+          setResults([]);
+          return;
+        }
 
-            return tracks.map((track: any): SongRecommendation => { // eslint-disable-line @typescript-eslint/no-explicit-any
-              const trackPop = (track.popularity ?? 50) / 100;
-              const songScore = artist.score * (0.7 + 0.3 * trackPop);
-              return {
-                track_id: null,
-                track_name: track.name,
-                artist_id: artist.artist_id,
-                artist_name: track.artists?.[0]?.name ?? artist.artist_name,
-                album_name: track.album?.name ?? "",
-                duration_ms: track.duration_ms ?? 0,
-                explicit: track.explicit ?? false,
-                spotify_track_id: track.id,
-                score: songScore,
-                signals: {
-                  affinity: artist.signals.affinity,
-                  context: artist.signals.context,
-                  editorial: artist.signals.editorial,
-                  track_popularity: trackPop,
-                },
-                genres: artist.genres ?? [],
-                reasons: [...(artist.reasons ?? [])],
-                mention_count: artist.mention_count ?? 0,
-                top_mention: artist.top_mention ?? null,
-              };
-            });
-          } catch {
-            return [];
-          }
-        })
-      );
+        setLoadingStage("Fetching songs from Spotify\u2026");
+        const spotifyHeaders = { Authorization: `Bearer ${accessToken}` };
+        const songArrays = await Promise.all(
+          artists.slice(0, 15).map(async (artist: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+            try {
+              const searchRes = await fetch(
+                `https://api.spotify.com/v1/search?q=${encodeURIComponent(`artist:${artist.artist_name}`)}&type=track&market=US&limit=5`,
+                { headers: spotifyHeaders }
+              );
+              if (!searchRes.ok) return [];
+              const searchData = await searchRes.json();
+              const tracks = (searchData.tracks?.items ?? []).slice(0, 3);
 
-      // Step 4: Sort, dedupe, cap per artist
-      const allSongs = songArrays.flat();
-      allSongs.sort((a, b) => b.score - a.score);
+              return tracks.map((track: any): SongRecommendation => { // eslint-disable-line @typescript-eslint/no-explicit-any
+                const trackPop = (track.popularity ?? 50) / 100;
+                const songScore = artist.score * (0.7 + 0.3 * trackPop);
+                return {
+                  track_id: null,
+                  track_name: track.name,
+                  artist_id: artist.artist_id,
+                  artist_name: track.artists?.[0]?.name ?? artist.artist_name,
+                  album_name: track.album?.name ?? "",
+                  duration_ms: track.duration_ms ?? 0,
+                  explicit: track.explicit ?? false,
+                  spotify_track_id: track.id,
+                  score: songScore,
+                  signals: {
+                    affinity: artist.signals.affinity,
+                    context: artist.signals.context,
+                    editorial: artist.signals.editorial,
+                    track_popularity: trackPop,
+                  },
+                  genres: artist.genres ?? [],
+                  reasons: [...(artist.reasons ?? [])],
+                  mention_count: artist.mention_count ?? 0,
+                  top_mention: artist.top_mention ?? null,
+                };
+              });
+            } catch {
+              return [];
+            }
+          })
+        );
 
-      const seen = new Set<string>();
-      const deduped: SongRecommendation[] = [];
-      const artistCounts: Record<string, number> = {};
+        const allSongs = songArrays.flat();
+        allSongs.sort((a, b) => b.score - a.score);
 
-      for (const song of allSongs) {
-        const key = `${song.track_name.toLowerCase()}|${song.artist_name.toLowerCase()}`;
-        if (seen.has(key)) continue;
-        const ak = song.artist_name.toLowerCase();
-        if ((artistCounts[ak] ?? 0) >= 2) continue;
-        seen.add(key);
-        artistCounts[ak] = (artistCounts[ak] ?? 0) + 1;
-        deduped.push(song);
-        if (deduped.length >= 30) break;
+        const seen = new Set<string>();
+        const artistCounts: Record<string, number> = {};
+
+        for (const song of allSongs) {
+          const key = `${song.track_name.toLowerCase()}|${song.artist_name.toLowerCase()}`;
+          if (seen.has(key)) continue;
+          const ak = song.artist_name.toLowerCase();
+          if ((artistCounts[ak] ?? 0) >= 2) continue;
+          seen.add(key);
+          artistCounts[ak] = (artistCounts[ak] ?? 0) + 1;
+          deduped.push(song);
+          if (deduped.length >= 30) break;
+        }
       }
 
       setResults(deduped);

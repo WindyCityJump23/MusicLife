@@ -5,6 +5,7 @@ import SyncButton from "./SyncButton";
 import EnrichButton from "./EnrichButton";
 import EmbedButton from "./EmbedButton";
 import SourcesButton from "./SourcesButton";
+import PopulateTracksButton from "./PopulateTracksButton";
 
 export type View = "library" | "discover" | "playlists" | "activity" | "saved";
 
@@ -21,6 +22,7 @@ const STEP_META = [
   { step: 2, title: "Enrich Artists",  desc: "Fetch genres, tags & metadata for each artist" },
   { step: 3, title: "Generate Embeddings", desc: "Build AI taste vectors for smart matching" },
   { step: 4, title: "Sync Sources",    desc: "Add editorial content (blogs, charts, reviews)" },
+  { step: 5, title: "Populate Tracks", desc: "Fetch songs for all artists to power Discover" },
 ];
 
 export default function Sidebar({
@@ -39,7 +41,7 @@ export default function Sidebar({
     discovered: number;
     embedded: number;
   } | null>(null);
-  const allDone = completedSteps.size >= 4;
+  const allDone = completedSteps.size >= 5;
   const [setupOpen,      setSetupOpen]      = useState(!allDone);
 
   // Auto-collapse when all steps complete
@@ -66,6 +68,7 @@ export default function Sidebar({
         if (artists.some((a) => a.enriched))             done.add(2);
         if (artists.some((a) => a.embedded))             done.add(3);
         if ((data.stats?.mentionCount ?? 0) > 0)         done.add(4);
+        if ((data.stats?.catalogTrackCount ?? 0) > artists.length * 2) done.add(5);
         setCompletedSteps(done);
       })
       .catch(() => {});
@@ -231,6 +234,15 @@ export default function Sidebar({
           done={completedSteps.has(4)}
         >
           <SourcesButton onComplete={checkLibraryStatus} />
+        </StepItem>
+
+        <StepItem
+          step={5}
+          title={STEP_META[4].title}
+          desc={STEP_META[4].desc}
+          done={completedSteps.has(5)}
+        >
+          <PopulateTracksButton onComplete={checkLibraryStatus} />
         </StepItem>
         </div>}
       </div>

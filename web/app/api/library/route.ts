@@ -85,10 +85,15 @@ export async function GET(req: NextRequest) {
     .from("mentions")
     .select("id", { count: "exact", head: true });
 
+  const { count: catalogTrackCount } = await sb
+    .from("tracks")
+    .select("id", { count: "exact", head: true });
+
   return NextResponse.json({
     stats: {
       artistCount: artists.length,
       trackCount: userTracks?.length ?? 0,
+      catalogTrackCount: catalogTrackCount ?? 0,
       recentPlayCount: Math.min(recentPlayCount ?? 0, 50),
       mentionCount: mentionCount ?? 0,
     },
