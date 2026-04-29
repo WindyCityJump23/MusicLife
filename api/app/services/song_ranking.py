@@ -44,8 +44,15 @@ def recommend_songs(
     weights: dict[str, float],
     exclude_library: bool,
     limit: int,
+    prompt_text: str | None = None,
 ) -> list[dict]:
-    """Return a ranked list of song-level recommendations."""
+    """Return a ranked list of song-level recommendations.
+
+    If prompt_text looks like a genre (matches known genres in the DB),
+    results are filtered to only include artists with matching genres.
+    This makes searches like 'alternative rock' or 'hip-hop' work as
+    genre filters rather than just embedding similarity.
+    """
 
     artist_weights = _get_user_artist_weights(client, user_id)
     library_artist_ids = set(artist_weights.keys())
@@ -60,6 +67,31 @@ def recommend_songs(
         .execute()
     )
     all_artists = artists_resp.data or []
+
+    # ── Genre filtering: if prompt looks like a genre, filter artists ──
+    genre_filtered = False
+    if prompt_text:
+        prompt_lower = prompt_text.strip().lower()
+        prompt_words = set(prompt_lower.replace("-", " ").split())
+
+        # Check which artists have genres matching the prompt
+        def _artist_matches_genre(artist: dict) -> bool:
+            genres = artist.get("genres") or []
+            for g in genres:
+                gl = g.lower()
+                # Exact match or word overlap
+                if prompt_lower in gl or gl in prompt_lower:
+                    return True
+                genre_words = set(gl.replace("-", " ").split())
+                if prompt_words & genre_words:
+                    return True
+            return False
+
+        matching = [a for a in all_artists if _artist_matches_genre(a)]
+        if len(matching) >= 5:  # Only filter if enough matches
+            all_artists = matching
+            genre_filtered = True
+            print(f"song_ranking: genre filter '{prompt_text}' matched {len(matching)} artists")
 
     # ── Fetch user's track data for familiarity detection ─────
     user_tracks_resp = (
@@ -207,7 +239,7 @@ def recommend_songs(
         artist_scores.keys(),
         key=lambda a: artist_scores[a]["base_score"],
         reverse=True,
-    )[: limit * 5]  # Expand more artists than needed for diversity
+    )[: limit * 8]  # Expand many more artists for diversity
 
     if not top_artist_ids:
         return []
@@ -340,7 +372,7 @@ def _song_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
     used: set[str] = set()
 
     MAX_GENRE_FRACTION = 0.3
-    MAX_ARTIST_SONGS = 2  # At most 2 songs per artist in final results
+    MAX_ARTIST_SONGS = 1  # One song per artist — maximize diversity
 
     while len(selected) < limit and pool:
         best_idx = -1
