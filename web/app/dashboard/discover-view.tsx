@@ -146,7 +146,7 @@ export default function DiscoverView({
             );
             if (!tracksRes.ok) return [];
             const tracksData = await tracksRes.json();
-            const tracks = (tracksData.tracks ?? []).slice(0, 3);
+            const tracks = (tracksData.tracks ?? []).slice(0, 6);
 
             return tracks.map((track: SpotifyTrackResult): SongRecommendation => {
               const trackPop = (track.popularity ?? 50) / 100;
