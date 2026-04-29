@@ -26,7 +26,7 @@ class RecommendRequest(BaseModel):
     weights: dict[str, float] = Field(
         default_factory=lambda: {"affinity": 0.4, "context": 0.4, "editorial": 0.2}
     )
-    exclude_library: bool = True
+    exclude_library: bool = False
     limit: int = Field(default=20, ge=1, le=100)
 
     @field_validator("weights")
@@ -58,7 +58,7 @@ class RecommendSongsRequest(BaseModel):
     weights: dict[str, float] = Field(
         default_factory=lambda: {"affinity": 0.4, "context": 0.4, "editorial": 0.2}
     )
-    exclude_library: bool = True
+    exclude_library: bool = False
     limit: int = Field(default=30, ge=1, le=100)
 
     @field_validator("weights")

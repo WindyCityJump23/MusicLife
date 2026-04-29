@@ -34,6 +34,11 @@ export default function Sidebar({
 }) {
   const [displayName,    setDisplayName]    = useState<string | null>(null);
   const [completedSteps, setCompletedSteps] = useState<Set<number>>(new Set());
+  const [catalogStats,   setCatalogStats]   = useState<{
+    library: number;
+    discovered: number;
+    embedded: number;
+  } | null>(null);
   const allDone = completedSteps.size >= 4;
   const [setupOpen,      setSetupOpen]      = useState(!allDone);
 
@@ -62,6 +67,23 @@ export default function Sidebar({
         if (artists.some((a) => a.embedded))             done.add(3);
         if ((data.stats?.mentionCount ?? 0) > 0)         done.add(4);
         setCompletedSteps(done);
+      })
+      .catch(() => {});
+
+    fetch("/api/catalog/stats")
+      .then((r) => r.json())
+      .then((data) => {
+        if (
+          typeof data?.library === "number" &&
+          typeof data?.discovered === "number" &&
+          typeof data?.embedded === "number"
+        ) {
+          setCatalogStats({
+            library: data.library,
+            discovered: data.discovered,
+            embedded: data.embedded,
+          });
+        }
       })
       .catch(() => {});
   }
@@ -156,6 +178,24 @@ export default function Sidebar({
         </button>
 
         {setupOpen && <div className="space-y-3">
+
+        {catalogStats && (
+          <p
+            className="px-1 -mt-1 text-[10px] text-neutral-500 leading-snug"
+            title="Run Enrich + Embed again to grow the discovered catalog"
+          >
+            Catalog: {catalogStats.library.toLocaleString()} library,{" "}
+            {catalogStats.discovered.toLocaleString()} discovered
+            {catalogStats.embedded > 0 && (
+              <>
+                {" "}
+                <span className="text-neutral-400">
+                  ({catalogStats.embedded.toLocaleString()} embedded)
+                </span>
+              </>
+            )}
+          </p>
+        )}
 
         <StepItem
           step={1}

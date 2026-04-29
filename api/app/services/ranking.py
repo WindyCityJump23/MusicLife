@@ -83,34 +83,67 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
         client.table("user_tracks")
         .select("track_id,play_count")
         .eq("user_id", user_id)
+        .range(0, 9999)
         .execute()
     )
     user_tracks = tracks_resp.data or []
-    if not user_tracks:
-        return {}
-
-    track_ids = [row.get("track_id") for row in user_tracks if row.get("track_id") is not None]
-    if not track_ids:
-        return {}
-
-    tracks_map_resp = (
-        client.table("tracks")
-        .select("id,artist_id")
-        .in_("id", track_ids)
-        .execute()
-    )
-    tracks_map = tracks_map_resp.data or []
-    track_to_artist = {row["id"]: row.get("artist_id") for row in tracks_map if row.get("id") is not None}
 
     artist_weights: dict[int, float] = defaultdict(float)
-    for row in user_tracks:
-        track_id = row.get("track_id")
-        artist_id = track_to_artist.get(track_id)
+
+    track_ids = [row.get("track_id") for row in user_tracks if row.get("track_id") is not None]
+    if track_ids:
+        tracks_map_resp = (
+            client.table("tracks")
+            .select("id,artist_id")
+            .in_("id", track_ids)
+            .range(0, 9999)
+            .execute()
+        )
+        tracks_map = tracks_map_resp.data or []
+        track_to_artist = {
+            row["id"]: row.get("artist_id")
+            for row in tracks_map
+            if row.get("id") is not None
+        }
+
+        for row in user_tracks:
+            track_id = row.get("track_id")
+            artist_id = track_to_artist.get(track_id)
+            if artist_id is None:
+                continue
+
+            play_count = row.get("play_count") or 0
+            weight = float(play_count if play_count > 0 else 1)
+            artist_weights[int(artist_id)] += weight
+
+    # ── Top-artist signal ────────────────────────────────────────
+    # Spotify /me/top/artists rankings populate user_top_artists during
+    # ingest. They contribute to the centroid even when the user has no
+    # saved tracks for the artist. Calibration: short_term rank 1 ≈ 50,
+    # long_term rank 1 ≈ 20, decaying linearly with rank within each term.
+    try:
+        top_resp = (
+            client.table("user_top_artists")
+            .select("artist_id,term,rank")
+            .eq("user_id", user_id)
+            .range(0, 9999)
+            .execute()
+        )
+        top_rows = top_resp.data or []
+    except Exception:
+        # Table may not exist yet (migration 010 not applied).
+        top_rows = []
+
+    term_max = {"short_term": 50.0, "medium_term": 35.0, "long_term": 20.0}
+    for row in top_rows:
+        artist_id = row.get("artist_id")
         if artist_id is None:
             continue
-
-        play_count = row.get("play_count") or 0
-        weight = float(play_count if play_count > 0 else 1)
+        term = row.get("term") or ""
+        rank = int(row.get("rank") or 1)
+        max_w = term_max.get(term, 20.0)
+        # Rank 1 → max_w, falling to ~0.2*max_w by rank 50.
+        weight = max(max_w * 0.2, max_w * (1.0 - (rank - 1) / 50.0))
         artist_weights[int(artist_id)] += weight
 
     return dict(artist_weights)
@@ -262,10 +295,15 @@ def rank_candidates(
     library_artist_ids = set(artist_weights.keys())
     previously_recommended = _get_previously_recommended_artist_ids(client, user_id)
 
+    # NOTE: Once the embedded-artist catalog grows beyond ~10k rows this
+    # in-process cosine pass needs to move to a server-side RPC backed by
+    # pgvector similarity (e.g. SELECT ... ORDER BY embedding <=> $1 LIMIT N).
+    # The .range bound below is a safety net, not a long-term plan.
     artists_resp = (
         client.table("artists")
-        .select("id,name,embedding,popularity,genres")
+        .select("id,name,embedding,popularity,genres,spotify_artist_id")
         .not_.is_("embedding", "null")
+        .range(0, 9999)
         .execute()
     )
     candidates = artists_resp.data or []
@@ -275,7 +313,12 @@ def rank_candidates(
         int(a["id"]) for a in candidates if a.get("id") is not None
     ]
 
-    source_resp = client.table("sources").select("id,name,trust_weight").execute()
+    source_resp = (
+        client.table("sources")
+        .select("id,name,trust_weight")
+        .range(0, 9999)
+        .execute()
+    )
     source_info: dict[int, dict] = {
         int(row["id"]): {
             "trust_weight": float(row.get("trust_weight") or 0.7),
@@ -291,6 +334,7 @@ def rank_candidates(
             client.table("mentions")
             .select("artist_id,source_id,embedding,published_at,sentiment,excerpt")
             .in_("artist_id", candidate_ids)
+            .range(0, 9999)
             .execute()
         )
     else:
@@ -405,6 +449,14 @@ def rank_candidates(
             + tiebreaker
         )
 
+        # ── "From your library" penalty ──────────────────────────
+        # Artists already in the user's listening library get a soft
+        # reduction so familiar names don't dominate Discover. Applied
+        # BEFORE the previously_recommended penalty so the two compose
+        # multiplicatively for artists that fall into both buckets.
+        if artist_id in library_artist_ids:
+            final_score *= 0.85  # 15% penalty
+
         # ── "Already seen" penalty ───────────────────────────────
         # Artists already in user's playlists get a score reduction.
         # They can still appear, just lower ranked — keeps things fresh.
@@ -428,6 +480,8 @@ def rank_candidates(
         if editorial > 0.45:
             src_name = best_mention["source"] if best_mention and best_mention.get("source") else ""
             reasons.append(f"Featured in {src_name}" if src_name else "In the press")
+        if artist_id in library_artist_ids:
+            reasons.append("From your library")
         if artist_id in previously_recommended:
             reasons.append("Previously saved")
         if not reasons:
@@ -437,6 +491,7 @@ def rank_candidates(
             {
                 "artist_id": str(artist_id),
                 "artist_name": artist.get("name") or "Unknown artist",
+                "spotify_artist_id": artist.get("spotify_artist_id"),
                 "score": round(max(0.0, final_score), 4),
                 "signals": {
                     "affinity": round(affinity, 4),

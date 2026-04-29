@@ -56,6 +56,7 @@ def recommend_songs(
         client.table("artists")
         .select("id,name,embedding,popularity,genres,spotify_artist_id")
         .not_.is_("embedding", "null")
+        .range(0, 9999)
         .execute()
     )
     all_artists = artists_resp.data or []
@@ -65,6 +66,7 @@ def recommend_songs(
         client.table("user_tracks")
         .select("track_id,play_count,last_played_at")
         .eq("user_id", user_id)
+        .range(0, 9999)
         .execute()
     )
     user_track_map: dict[int, dict] = {
@@ -76,7 +78,12 @@ def recommend_songs(
     # ── Source/mention data for editorial + context signals ────
     candidate_ids = [int(a["id"]) for a in all_artists if a.get("id")]
 
-    source_resp = client.table("sources").select("id,name,trust_weight").execute()
+    source_resp = (
+        client.table("sources")
+        .select("id,name,trust_weight")
+        .range(0, 9999)
+        .execute()
+    )
     source_info: dict[int, dict] = {
         int(row["id"]): {
             "trust_weight": float(row.get("trust_weight") or 0.7),
@@ -91,6 +98,7 @@ def recommend_songs(
             client.table("mentions")
             .select("artist_id,source_id,embedding,published_at,sentiment,excerpt")
             .in_("artist_id", candidate_ids)
+            .range(0, 9999)
             .execute()
         )
     else:
@@ -209,6 +217,7 @@ def recommend_songs(
         client.table("tracks")
         .select("id,name,artist_id,album_name,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness")
         .in_("artist_id", top_artist_ids)
+        .range(0, 9999)
         .execute()
     )
     all_tracks = tracks_resp.data or []

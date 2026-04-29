@@ -14,6 +14,7 @@ type TopMention = { source: string; excerpt: string; published_at: string };
 type ArtistRec = {
   artist_id: string;
   artist_name: string;
+  spotify_artist_id: string | null;
   score: number;
   signals: { affinity: number; context: number; editorial: number };
   reasons: string[];
@@ -131,22 +132,28 @@ export default function DiscoverView({
       const songArrays = await Promise.all(
         artists.slice(0, 15).map(async (artist: ArtistRec) => {
           try {
-            const searchRes = await fetch(
-              `https://api.spotify.com/v1/search?q=${encodeURIComponent(artist.artist_name)}&type=artist&limit=1`,
-              { headers: spotifyHeaders }
-            );
-            if (!searchRes.ok) return [];
-            const searchData = await searchRes.json();
-            const spotifyArtist = searchData.artists?.items?.[0];
-            if (!spotifyArtist) return [];
+            // Prefer the canonical Spotify ID stored on the artist row.
+            // Fall back to a name search only for catalog-expanded artists
+            // (e.g. Last.fm "similar" results) that lack a Spotify ID.
+            let spotifyArtistId = artist.spotify_artist_id ?? null;
+            if (!spotifyArtistId) {
+              const searchRes = await fetch(
+                `https://api.spotify.com/v1/search?q=${encodeURIComponent(artist.artist_name)}&type=artist&limit=1`,
+                { headers: spotifyHeaders }
+              );
+              if (!searchRes.ok) return [];
+              const searchData = await searchRes.json();
+              spotifyArtistId = searchData.artists?.items?.[0]?.id ?? null;
+              if (!spotifyArtistId) return [];
+            }
 
             const tracksRes = await fetch(
-              `https://api.spotify.com/v1/artists/${spotifyArtist.id}/top-tracks?market=US`,
+              `https://api.spotify.com/v1/artists/${spotifyArtistId}/top-tracks?market=US`,
               { headers: spotifyHeaders }
             );
             if (!tracksRes.ok) return [];
             const tracksData = await tracksRes.json();
-            const tracks = (tracksData.tracks ?? []).slice(0, 3);
+            const tracks = (tracksData.tracks ?? []).slice(0, 6);
 
             return tracks.map((track: SpotifyTrackResult): SongRecommendation => {
               const trackPop = (track.popularity ?? 50) / 100;
