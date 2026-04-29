@@ -69,29 +69,47 @@ def recommend_songs(
     all_artists = artists_resp.data or []
 
     # ── Genre filtering: if prompt looks like a genre, filter artists ──
+    # Matching rules (in order of strictness):
+    #   1. The full normalized prompt is a substring of a genre (e.g. "rock"
+    #      matches "alt rock", "pop dance" matches "pop dance pop").
+    #   2. A genre is a substring of the prompt (e.g. "lo-fi" matches a
+    #      "chill lo-fi" prompt).
+    #   3. EVERY prompt word appears (as a whole word or substring) in a
+    #      single genre string. This requires "pop" AND "dance" to both
+    #      live in the same genre — preventing "pop r&b" from matching
+    #      "pop dance" via a single shared word.
     genre_filtered = False
     if prompt_text:
         prompt_lower = prompt_text.strip().lower()
-        prompt_words = set(prompt_lower.replace("-", " ").split())
+        prompt_norm = prompt_lower.replace("-", " ").strip()
+        prompt_words = [w for w in prompt_norm.split() if w]
 
-        # Check which artists have genres matching the prompt
         def _artist_matches_genre(artist: dict) -> bool:
             genres = artist.get("genres") or []
             for g in genres:
                 gl = g.lower()
-                # Exact match or word overlap
-                if prompt_lower in gl or gl in prompt_lower:
+                gl_norm = gl.replace("-", " ")
+                if prompt_norm and prompt_norm in gl_norm:
                     return True
-                genre_words = set(gl.replace("-", " ").split())
-                if prompt_words & genre_words:
+                if gl_norm and gl_norm in prompt_norm:
+                    return True
+                if prompt_words and all(w in gl_norm for w in prompt_words):
                     return True
             return False
 
         matching = [a for a in all_artists if _artist_matches_genre(a)]
-        if len(matching) >= 5:  # Only filter if enough matches
+        # Only apply the filter if it produces a workable pool. Otherwise
+        # fall back to embedding similarity over the full catalog so the
+        # user always gets *some* recommendations.
+        if len(matching) >= 5:
             all_artists = matching
             genre_filtered = True
             print(f"song_ranking: genre filter '{prompt_text}' matched {len(matching)} artists")
+        else:
+            print(
+                f"song_ranking: genre filter '{prompt_text}' matched only "
+                f"{len(matching)} artists — falling back to full catalog"
+            )
 
     # ── Fetch user's track data for familiarity detection ─────
     user_tracks_resp = (
@@ -171,7 +189,13 @@ def recommend_songs(
     artist_scores: dict[int, dict] = {}
     for idx, (artist, affinity_raw) in enumerate(raw_affinities):
         aid = int(artist["id"])
-        affinity = pct_ranks[idx] if pct_ranks else _normalize_01(affinity_raw)
+        # Blend percentile rank with raw cosine so the lowest-percentile
+        # artist isn't displayed as a literal 0% match. Percentile keeps
+        # the spread; the raw component provides a non-zero floor.
+        if pct_ranks:
+            affinity = 0.7 * pct_ranks[idx] + 0.3 * _normalize_01(affinity_raw)
+        else:
+            affinity = _normalize_01(affinity_raw)
 
         artist_mentions = mentions_by_artist.get(aid, [])
         context_scores: list[float] = []
@@ -274,10 +298,13 @@ def recommend_songs(
         if not tracks:
             continue
 
-        # Sort tracks by popularity descending, take top 5 per artist
-        # (diversity re-ranking later caps at 2 per artist in final output)
+        # Sort tracks by popularity descending, take top 2 per artist.
+        # The diversity re-ranker caps the final output at 1 per artist,
+        # so 2 candidates per artist is plenty and prevents a single
+        # artist from flooding the pre-rerank pool with near-duplicate
+        # versions of the same song (e.g. radio edits, deluxe cuts).
         tracks.sort(key=lambda t: t.get("popularity") or 0, reverse=True)
-        tracks = tracks[:5]
+        tracks = tracks[:2]
 
         for track in tracks:
             track_name = (track.get("name") or "").strip()
@@ -361,11 +388,18 @@ def recommend_songs(
 
 
 def _song_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
-    """Re-rank songs for genre + artist diversity."""
-    if len(scored) <= limit:
-        return scored
+    """Re-rank songs for genre + artist diversity.
 
-    pool = scored[: limit * 3]
+    The artist cap is enforced unconditionally — even when the input pool
+    is smaller than `limit`, we still need to drop near-duplicate songs
+    from the same artist (e.g. multiple radio edits of the same track).
+    """
+    if not scored or limit <= 0:
+        return []
+
+    # Use the full pool when small, otherwise widen it to give the
+    # greedy selector room to diversify.
+    pool = scored if len(scored) <= limit else scored[: limit * 3]
     selected: list[dict] = []
     genre_counts: Counter[str] = Counter()
     artist_counts: Counter[str] = Counter()
@@ -413,6 +447,25 @@ def _song_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
         primary_genre = genres[0].lower() if genres else "__none__"
         genre_counts[primary_genre] += 1
         artist_counts[pick["artist_name"].lower()] += 1
+
+    # ── Top-up pass ──────────────────────────────────────────────
+    # If the strict 1-per-artist cap left us short of the target (sparse
+    # catalog), relax the cap to 2 and fill from remaining candidates.
+    # This is preferable to returning a near-empty result set when the
+    # user's library is small or track population is still in progress.
+    if len(selected) < limit:
+        for candidate in pool:
+            if len(selected) >= limit:
+                break
+            key = f"{candidate['track_name']}|{candidate['artist_name']}".lower()
+            if key in used:
+                continue
+            artist = candidate["artist_name"].lower()
+            if artist_counts.get(artist, 0) >= 2:
+                continue
+            selected.append(candidate)
+            used.add(key)
+            artist_counts[artist] += 1
 
     return selected
 
