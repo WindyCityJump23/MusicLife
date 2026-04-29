@@ -315,19 +315,34 @@ def rank_candidates(
     has_explicit_prompt = prompt_vector is not None
 
     # ── Phase 1: compute raw affinity for all candidates ─────────
-    raw_affinities: list[tuple[dict, float]] = []
-    for artist in candidates:
-        artist_id = artist.get("id")
-        if artist_id is None:
-            continue
-        artist_id = int(artist_id)
-        if exclude_library and artist_id in library_artist_ids:
-            continue
-        candidate_vec = _parse_vector(artist.get("embedding"))
-        if not candidate_vec:
-            continue
-        raw = _cosine_similarity(taste_vector, candidate_vec)
-        raw_affinities.append((artist, raw))
+    # First pass honors `exclude_library`. If that empties the pool — which
+    # happens when the catalog only contains artists the user already listens
+    # to (the common early-stage state, since the artists table is seeded
+    # entirely from the user's Spotify ingest) — we fall back to including
+    # library artists so Discover still returns something useful.
+    def _build_affinities(skip_library: bool) -> list[tuple[dict, float]]:
+        out: list[tuple[dict, float]] = []
+        for artist in candidates:
+            artist_id = artist.get("id")
+            if artist_id is None:
+                continue
+            artist_id = int(artist_id)
+            if skip_library and artist_id in library_artist_ids:
+                continue
+            candidate_vec = _parse_vector(artist.get("embedding"))
+            if not candidate_vec:
+                continue
+            raw = _cosine_similarity(taste_vector, candidate_vec)
+            out.append((artist, raw))
+        return out
+
+    raw_affinities = _build_affinities(exclude_library)
+    if not raw_affinities and exclude_library and candidates:
+        print(
+            f"rank_candidates: all {len(candidates)} embedded artists are in the "
+            f"user's library — falling back to include-library ranking"
+        )
+        raw_affinities = _build_affinities(False)
 
     # Percentile-rank the affinity scores so they spread 0–100% instead
     # of clustering around 86%.
