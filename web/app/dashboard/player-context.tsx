@@ -226,22 +226,47 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         .slice(0, 100); // Spotify cap
       const offset = Math.min(startIndex, uris.length - 1);
 
-      const res = await fetch("/api/play-track", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          uris,
-          offset_position: offset,
-          device_id: deviceIdRef.current ?? undefined,
-        }),
-      });
+      const callPlayTrack = async () =>
+        fetch("/api/play-track", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            uris,
+            offset_position: offset,
+            device_id: deviceIdRef.current ?? undefined,
+          }),
+        });
+
+      let res = await callPlayTrack();
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
+
+        // Seamless-recovery path: if Spotify reports no active device,
+        // refresh devices, try transfer to latest selection, then retry once.
+        if (data?.reason === "NO_ACTIVE_DEVICE") {
+          await refreshDevices();
+          if (deviceIdRef.current) {
+            await fetch("/api/playback", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "transfer",
+                device_id: deviceIdRef.current,
+              }),
+            }).catch(() => null);
+          }
+          res = await callPlayTrack();
+          if (res.ok) return { ok: true };
+          const retryData = await res.json().catch(() => ({}));
+          return { ok: false, error: retryData.error ?? "Playback failed" };
+        }
+
         return { ok: false, error: data.error ?? "Playback failed" };
       }
+
       return { ok: true };
     },
-    []
+    [refreshDevices]
   );
 
   const playFromQueue = useCallback(

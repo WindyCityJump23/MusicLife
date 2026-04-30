@@ -288,7 +288,9 @@ function DevicePicker({
             {d.is_active ? " · active" : ""}
           </option>
         ))}
-        <option value="__embed__">▷ This browser (preview)</option>
+        {devices.length === 0 && (
+          <option value="__embed__">▷ This browser (preview)</option>
+        )}
       </select>
       <button
         onClick={onRefresh}
