@@ -407,6 +407,22 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         if (!cancelled && res.ok) {
           const data = await res.json();
           setIsPlaying(!!data.is_playing);
+          // Keep local queue cursor aligned with actual Spotify playback.
+          // This makes next/previous buttons deterministic even if playback
+          // was started externally (phone app, device UI, etc.).
+          const itemId = typeof data.item?.id === "string" ? data.item.id : null;
+          if (itemId) {
+            const idx = queueRef.current.findIndex((t) => {
+              const id = t.spotifyTrackId.startsWith("spotify:track:")
+                ? t.spotifyTrackId.slice("spotify:track:".length)
+                : t.spotifyTrackId;
+              return id === itemId;
+            });
+            if (idx >= 0 && idx !== indexRef.current) {
+              indexRef.current = idx;
+              setCurrentIndex(idx);
+            }
+          }
           // If the device on Spotify is one of our known devices, sync
           // selection so the dropdown reflects reality.
           if (data.device?.id) {
