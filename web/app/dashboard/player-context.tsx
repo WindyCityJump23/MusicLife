@@ -176,9 +176,31 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const selectDevice = useCallback((id: string | null) => {
+  const selectDevice = useCallback(async (id: string | null) => {
     setSelectedDeviceId(id);
-    if (id) setModeState("connect");
+    setPlaybackError(null);
+    if (!id) return;
+
+    setModeState("connect");
+
+    // Best-effort transfer so the chosen device is guaranteed to become active
+    // before the first play command.
+    try {
+      const res = await fetch("/api/playback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "transfer",
+          device_id: id,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setPlaybackError(data.error ?? "Could not activate selected device");
+      }
+    } catch {
+      setPlaybackError("Could not activate selected device");
+    }
   }, []);
 
   const setMode = useCallback((m: PlayMode) => {
@@ -232,6 +254,16 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       setPlaybackError(null);
 
       if (modeRef.current === "connect" && deviceIdRef.current) {
+        // Ensure Spotify has an active player on the selected device first.
+        await fetch("/api/playback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "transfer",
+            device_id: deviceIdRef.current,
+          }),
+        }).catch(() => null);
+
         const result = await playOnConnect(index);
         if (!result.ok) {
           setPlaybackError(result.error ?? "Playback failed");
