@@ -119,6 +119,7 @@ export default function Player() {
         >
           <span className="flex-1">{playbackError}</span>
           <button
+            type="button"
             onClick={clearPlaybackError}
             aria-label="Dismiss error"
             className="opacity-60 hover:opacity-100"
@@ -195,6 +196,7 @@ export default function Player() {
           >
             {queue.map((t, i) => (
               <button
+                type="button"
                 key={`${t.spotifyTrackId}-${i}`}
                 onClick={() => playFromQueue(i)}
                 className={[
@@ -288,9 +290,12 @@ function DevicePicker({
             {d.is_active ? " · active" : ""}
           </option>
         ))}
-        <option value="__embed__">▷ This browser (preview)</option>
+        {devices.length === 0 && (
+          <option value="__embed__">▷ This browser (preview)</option>
+        )}
       </select>
       <button
+        type="button"
         onClick={onRefresh}
         disabled={loading}
         title="Refresh device list"
@@ -360,6 +365,7 @@ function ConnectControls({
     <div className="flex flex-col items-center gap-2 py-3">
       <div className="flex items-center justify-center gap-3">
         <button
+          type="button"
           onClick={onPrev}
           disabled={!hasPrev}
           aria-label="Previous track"
@@ -376,6 +382,7 @@ function ConnectControls({
         </button>
 
         <button
+          type="button"
           onClick={onTogglePause}
           aria-label={isPlaying ? "Pause" : "Play"}
           className="w-14 h-14 rounded-full flex items-center justify-center active:scale-95 transition-all"
@@ -397,6 +404,7 @@ function ConnectControls({
         </button>
 
         <button
+          type="button"
           onClick={onNext}
           disabled={!hasNext}
           aria-label="Next track"
@@ -452,7 +460,7 @@ function EmbedPlayer({
 
       const initialId =
         pendingRef.current || trackId || "4cOdK2wGLETKBW3PvgPWqT";
-      const uri = `spotify:track:${initialId}`;
+      const uri = toSpotifyTrackUri(initialId);
 
       IFrameAPI.createController(
         container,
@@ -491,7 +499,7 @@ function EmbedPlayer({
           });
 
           if (pendingRef.current) {
-            ctrl.loadUri(`spotify:track:${pendingRef.current}`);
+            ctrl.loadUri(toSpotifyTrackUri(pendingRef.current));
             ctrl.play();
             pendingRef.current = null;
           }
@@ -529,7 +537,7 @@ function EmbedPlayer({
     lastPositionRef.current = 0;
 
     if (controllerRef.current) {
-      controllerRef.current.loadUri(`spotify:track:${trackId}`);
+      controllerRef.current.loadUri(toSpotifyTrackUri(trackId));
       setTimeout(() => controllerRef.current?.play(), 300);
     } else {
       pendingRef.current = trackId;
@@ -543,4 +551,10 @@ function EmbedPlayer({
       style={{ minHeight: 152 }}
     />
   );
+}
+
+function toSpotifyTrackUri(trackIdOrUri: string): string {
+  return trackIdOrUri.startsWith("spotify:track:")
+    ? trackIdOrUri
+    : `spotify:track:${trackIdOrUri}`;
 }
