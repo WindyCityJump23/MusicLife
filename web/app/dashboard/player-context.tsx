@@ -1,6 +1,13 @@
 "use client";
 
-import { createContext, useCallback, useContext, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 export type QueueTrack = {
   spotifyTrackId: string;
@@ -8,38 +15,61 @@ export type QueueTrack = {
   artistName: string;
 };
 
-type PlayerContextValue = {
-  /** Current queue of tracks (from Discover results). */
-  queue: QueueTrack[];
+export type ConnectDevice = {
+  id: string;
+  name: string;
+  type: string;
+  is_active: boolean;
+  is_restricted: boolean;
+  volume_percent: number | null;
+};
 
-  /** Index of the currently playing track in the queue. */
+/**
+ * Two playback modes:
+ *  - "connect": send playback to a Spotify Connect device (phone, etc.) so it
+ *    keeps playing through screen lock — the gym scenario. Requires Premium.
+ *  - "embed":   the existing in-page Spotify iframe (30s previews for free
+ *    accounts, full plays for Premium-in-tab). Used as a fallback when no
+ *    Connect device is online.
+ */
+export type PlayMode = "connect" | "embed";
+
+type PlayerContextValue = {
+  queue: QueueTrack[];
   currentIndex: number;
 
-  /** Play a specific track — sets it as current and loads the embed. */
-  playFromQueue: (index: number) => void;
+  /** Spotify Connect devices the user can play to. */
+  devices: ConnectDevice[];
+  selectedDeviceId: string | null;
+  selectDevice: (id: string | null) => void;
+  refreshDevices: () => Promise<void>;
+  devicesLoading: boolean;
 
-  /** Set the full queue (called when Discover results load). */
+  /** Active mode — drives which UI the Player renders. */
+  mode: PlayMode;
+  setMode: (m: PlayMode) => void;
+
+  /** Send the queue to Spotify (Connect mode) or load the embed (embed mode). */
+  playFromQueue: (index: number) => Promise<void>;
   setQueue: (tracks: QueueTrack[]) => void;
+  playSingle: (track: QueueTrack) => Promise<void>;
+  playNext: () => Promise<void>;
+  playPrev: () => Promise<void>;
+  togglePause: () => Promise<void>;
 
-  /** Play a single track by ID (adds to queue if not present). */
-  playSingle: (track: QueueTrack) => void;
+  /** Last known is-playing flag (refreshed by /api/now-playing poll). */
+  isPlaying: boolean;
+  setIsPlaying: (v: boolean) => void;
 
-  /** Advance to the next track in the queue. */
-  playNext: () => void;
-
-  /** Go to previous track. */
-  playPrev: () => void;
-
-  /** The Spotify track ID currently loaded in the embed player. */
+  /** Embed-mode track ID — drives the Spotify iframe when mode === "embed". */
   embedTrackId: string | null;
 
-  /** Whether anything is actively playing. */
-  isPlaying: boolean;
+  /** Last error from a Connect API call (for surfacing in the player UI). */
+  playbackError: string | null;
+  clearPlaybackError: () => void;
 
-  /** Legacy compat — signals that the player panel should open. */
+  /** Legacy-compat surface (kept so other views compile unchanged). */
   playingArtist: string | null;
-
-  /* SDK stubs for backward compat (unused now) */
   deviceId: string | null;
   setDeviceId: (id: string | null) => void;
   isReady: boolean;
@@ -49,118 +79,376 @@ type PlayerContextValue = {
   setEmbedTrackId: (id: string | null) => void;
 };
 
+const noop = () => {};
+const noopAsync = async () => {};
+
 const PlayerContext = createContext<PlayerContextValue>({
   queue: [],
   currentIndex: -1,
-  playFromQueue: () => {},
-  setQueue: () => {},
-  playSingle: () => {},
-  playNext: () => {},
-  playPrev: () => {},
-  embedTrackId: null,
+  devices: [],
+  selectedDeviceId: null,
+  selectDevice: noop,
+  refreshDevices: noopAsync,
+  devicesLoading: false,
+  mode: "embed",
+  setMode: noop,
+  playFromQueue: noopAsync,
+  setQueue: noop,
+  playSingle: noopAsync,
+  playNext: noopAsync,
+  playPrev: noopAsync,
+  togglePause: noopAsync,
   isPlaying: false,
+  setIsPlaying: noop,
+  embedTrackId: null,
+  playbackError: null,
+  clearPlaybackError: noop,
   playingArtist: null,
   deviceId: null,
-  setDeviceId: () => {},
+  setDeviceId: noop,
   isReady: false,
-  setIsReady: () => {},
+  setIsReady: noop,
   playArtist: async () => ({ ok: false }),
   playTrack: async () => ({ ok: false }),
-  setEmbedTrackId: () => {},
+  setEmbedTrackId: noop,
 });
 
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [queue, setQueueState] = useState<QueueTrack[]>([]);
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [embedTrackId, setEmbedTrackIdState] = useState<string | null>(null);
+  const [devices, setDevices] = useState<ConnectDevice[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  const [devicesLoading, setDevicesLoading] = useState(false);
+  const [mode, setModeState] = useState<PlayMode>("embed");
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
 
   const queueRef = useRef<QueueTrack[]>([]);
   const indexRef = useRef(-1);
+  const modeRef = useRef<PlayMode>("embed");
+  const deviceIdRef = useRef<string | null>(null);
+
+  // Keep refs in sync so async handlers see latest values.
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+  useEffect(() => {
+    deviceIdRef.current = selectedDeviceId;
+  }, [selectedDeviceId]);
 
   const setQueue = useCallback((tracks: QueueTrack[]) => {
     queueRef.current = tracks;
     setQueueState(tracks);
   }, []);
 
-  const playFromQueue = useCallback((index: number) => {
-    const q = queueRef.current;
-    if (index < 0 || index >= q.length) return;
-    indexRef.current = index;
-    setCurrentIndex(index);
-    setEmbedTrackIdState(q[index].spotifyTrackId);
-  }, []);
+  const refreshDevices = useCallback(async () => {
+    setDevicesLoading(true);
+    try {
+      const res = await fetch("/api/devices", { cache: "no-store" });
+      if (!res.ok) {
+        setDevices([]);
+        return;
+      }
+      const data = await res.json();
+      const list: ConnectDevice[] = data.devices ?? [];
+      setDevices(list);
 
-  const playSingle = useCallback((track: QueueTrack) => {
-    // Check if it's already in the queue
-    const q = queueRef.current;
-    const existingIdx = q.findIndex(t => t.spotifyTrackId === track.spotifyTrackId);
-    if (existingIdx >= 0) {
-      indexRef.current = existingIdx;
-      setCurrentIndex(existingIdx);
-      setEmbedTrackIdState(track.spotifyTrackId);
-    } else {
-      // Add to end of queue and play
-      const newQueue = [...q, track];
-      queueRef.current = newQueue;
-      setQueueState(newQueue);
-      const newIdx = newQueue.length - 1;
-      indexRef.current = newIdx;
-      setCurrentIndex(newIdx);
-      setEmbedTrackIdState(track.spotifyTrackId);
+      // Auto-pick: keep current selection if it's still online; else prefer
+      // the active device, then a phone, then anything.
+      const current = deviceIdRef.current;
+      const stillOnline = current && list.some((d) => d.id === current);
+      if (!stillOnline) {
+        const active = list.find((d) => d.is_active && !d.is_restricted);
+        const phone = list.find(
+          (d) => d.type.toLowerCase() === "smartphone" && !d.is_restricted
+        );
+        const any = list.find((d) => !d.is_restricted);
+        const picked = (active ?? phone ?? any)?.id ?? null;
+        setSelectedDeviceId(picked);
+        // If any usable Connect device exists, default to connect mode.
+        if (picked) setModeState("connect");
+      }
+    } catch {
+      setDevices([]);
+    } finally {
+      setDevicesLoading(false);
     }
   }, []);
 
-  const playNext = useCallback(() => {
-    const q = queueRef.current;
+  const selectDevice = useCallback((id: string | null) => {
+    setSelectedDeviceId(id);
+    if (id) setModeState("connect");
+  }, []);
+
+  const setMode = useCallback((m: PlayMode) => {
+    setModeState(m);
+  }, []);
+
+  const setEmbedTrackId = useCallback((id: string | null) => {
+    setEmbedTrackIdState(id);
+  }, []);
+
+  // ── Send a slice of the queue to Spotify (Connect mode) ───────
+  const playOnConnect = useCallback(
+    async (startIndex: number): Promise<{ ok: boolean; error?: string }> => {
+      const q = queueRef.current;
+      if (startIndex < 0 || startIndex >= q.length) return { ok: false };
+
+      const uris = q
+        .map((t) =>
+          t.spotifyTrackId.startsWith("spotify:track:")
+            ? t.spotifyTrackId
+            : `spotify:track:${t.spotifyTrackId}`
+        )
+        .slice(0, 100); // Spotify cap
+      const offset = Math.min(startIndex, uris.length - 1);
+
+      const res = await fetch("/api/play-track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uris,
+          offset_position: offset,
+          device_id: deviceIdRef.current ?? undefined,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        return { ok: false, error: data.error ?? "Playback failed" };
+      }
+      return { ok: true };
+    },
+    []
+  );
+
+  const playFromQueue = useCallback(
+    async (index: number) => {
+      const q = queueRef.current;
+      if (index < 0 || index >= q.length) return;
+
+      indexRef.current = index;
+      setCurrentIndex(index);
+      setPlaybackError(null);
+
+      if (modeRef.current === "connect" && deviceIdRef.current) {
+        const result = await playOnConnect(index);
+        if (!result.ok) {
+          setPlaybackError(result.error ?? "Playback failed");
+          // Fallback to embed so the user still hears something.
+          setEmbedTrackIdState(q[index].spotifyTrackId);
+          setModeState("embed");
+          return;
+        }
+        setIsPlaying(true);
+        // Clear any embed track so the iframe stops competing for audio.
+        setEmbedTrackIdState(null);
+      } else {
+        setEmbedTrackIdState(q[index].spotifyTrackId);
+        setIsPlaying(true);
+      }
+    },
+    [playOnConnect]
+  );
+
+  const playSingle = useCallback(
+    async (track: QueueTrack) => {
+      const q = queueRef.current;
+      const existingIdx = q.findIndex(
+        (t) => t.spotifyTrackId === track.spotifyTrackId
+      );
+      let index: number;
+      if (existingIdx >= 0) {
+        index = existingIdx;
+      } else {
+        const newQueue = [...q, track];
+        queueRef.current = newQueue;
+        setQueueState(newQueue);
+        index = newQueue.length - 1;
+      }
+      await playFromQueue(index);
+    },
+    [playFromQueue]
+  );
+
+  const playNext = useCallback(async () => {
+    if (modeRef.current === "connect" && deviceIdRef.current) {
+      // Let Spotify handle next on the device — keeps queue in sync there.
+      const res = await fetch("/api/playback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "next",
+          device_id: deviceIdRef.current,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setPlaybackError(data.error ?? "Skip failed");
+      } else {
+        const nextIdx = indexRef.current + 1;
+        if (nextIdx < queueRef.current.length) {
+          indexRef.current = nextIdx;
+          setCurrentIndex(nextIdx);
+        }
+      }
+      return;
+    }
+
+    // Embed mode: advance our local index and reload the iframe.
     const nextIdx = indexRef.current + 1;
-    if (nextIdx < q.length) {
+    if (nextIdx < queueRef.current.length) {
       indexRef.current = nextIdx;
       setCurrentIndex(nextIdx);
-      setEmbedTrackIdState(q[nextIdx].spotifyTrackId);
+      setEmbedTrackIdState(queueRef.current[nextIdx].spotifyTrackId);
     }
   }, []);
 
-  const playPrev = useCallback(() => {
+  const playPrev = useCallback(async () => {
+    if (modeRef.current === "connect" && deviceIdRef.current) {
+      const res = await fetch("/api/playback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "previous",
+          device_id: deviceIdRef.current,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setPlaybackError(data.error ?? "Previous failed");
+      } else {
+        const prevIdx = indexRef.current - 1;
+        if (prevIdx >= 0) {
+          indexRef.current = prevIdx;
+          setCurrentIndex(prevIdx);
+        }
+      }
+      return;
+    }
+
     const prevIdx = indexRef.current - 1;
     if (prevIdx >= 0) {
-      const q = queueRef.current;
       indexRef.current = prevIdx;
       setCurrentIndex(prevIdx);
-      setEmbedTrackIdState(q[prevIdx].spotifyTrackId);
+      setEmbedTrackIdState(queueRef.current[prevIdx].spotifyTrackId);
     }
   }, []);
 
-  // Legacy compat
-  const playingArtist = embedTrackId ? "playing" : null;
+  const togglePause = useCallback(async () => {
+    if (modeRef.current !== "connect" || !deviceIdRef.current) {
+      // Embed mode pause/resume is handled by the iframe controls — no-op.
+      return;
+    }
+    const action = isPlaying ? "pause" : "resume";
+    const res = await fetch("/api/playback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action,
+        device_id: deviceIdRef.current,
+      }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setPlaybackError(data.error ?? "Pause/resume failed");
+    } else {
+      setIsPlaying(!isPlaying);
+    }
+  }, [isPlaying]);
 
-  // Legacy SDK stubs
-  const [deviceId, setDeviceId] = useState<string | null>(null);
-  const playArtist = useCallback(async () => ({ ok: false as const, error: "Use embed player" }), []);
-  const playTrack = useCallback(async (id: string) => {
-    setEmbedTrackIdState(id);
-    return { ok: true as const };
-  }, []);
+  const clearPlaybackError = useCallback(() => setPlaybackError(null), []);
+
+  // ── Initial device discovery ─────────────────────────────────
+  useEffect(() => {
+    refreshDevices();
+  }, [refreshDevices]);
+
+  // ── Poll now-playing while in connect mode so UI reflects the
+  //    actual device (user may pause/skip from their phone). ────
+  useEffect(() => {
+    if (mode !== "connect" || !selectedDeviceId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      try {
+        const res = await fetch("/api/now-playing", { cache: "no-store" });
+        if (!cancelled && res.ok) {
+          const data = await res.json();
+          setIsPlaying(!!data.is_playing);
+          // If the device on Spotify is one of our known devices, sync
+          // selection so the dropdown reflects reality.
+          if (data.device?.id) {
+            setSelectedDeviceId((curr) =>
+              curr === data.device.id ? curr : data.device.id
+            );
+          }
+        }
+      } catch {
+        /* ignore transient errors */
+      }
+      if (!cancelled) timer = setTimeout(tick, 5000);
+    };
+    tick();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [mode, selectedDeviceId]);
+
+  // ── Legacy-compat shims ──────────────────────────────────────
+  const playingArtist = embedTrackId || (mode === "connect" && currentIndex >= 0)
+    ? "playing"
+    : null;
+  const playArtist = useCallback(
+    async () => ({ ok: false as const, error: "Use playSingle" }),
+    []
+  );
+  const playTrack = useCallback(
+    async (id: string) => {
+      await playSingle({
+        spotifyTrackId: id,
+        trackName: "",
+        artistName: "",
+      });
+      return { ok: true as const };
+    },
+    [playSingle]
+  );
 
   return (
     <PlayerContext.Provider
       value={{
         queue,
         currentIndex,
+        devices,
+        selectedDeviceId,
+        selectDevice,
+        refreshDevices,
+        devicesLoading,
+        mode,
+        setMode,
         playFromQueue,
         setQueue,
         playSingle,
         playNext,
         playPrev,
+        togglePause,
+        isPlaying,
+        setIsPlaying,
         embedTrackId,
-        isPlaying: embedTrackId !== null,
+        playbackError,
+        clearPlaybackError,
         playingArtist,
-        deviceId,
-        setDeviceId,
+        deviceId: selectedDeviceId,
+        setDeviceId: setSelectedDeviceId,
         isReady: false,
-        setIsReady: () => {},
+        setIsReady: noop,
         playArtist,
         playTrack,
-        setEmbedTrackId: setEmbedTrackIdState,
+        setEmbedTrackId,
       }}
     >
       {children}
