@@ -154,7 +154,10 @@ export async function GET(req: NextRequest) {
 
   if (!profileRes || !profileRes.ok) {
     const status = profileRes?.status ?? "network";
-    console.error(`[auth/callback] profile fetch failed: ${status}`);
+    const body = profileRes ? await profileRes.text().catch(() => "") : "";
+    console.error(
+      `[auth/callback] profile fetch failed: ${status} | body=${body}`
+    );
 
     const detail =
       profileRes?.status === 403
