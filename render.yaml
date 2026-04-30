@@ -16,6 +16,8 @@ services:
         sync: false
       - key: VOYAGE_API_KEY
         sync: false
+      - key: TAVILY_API_KEY
+        sync: false
       - key: LASTFM_API_KEY
         sync: false
       - key: MUSICBRAINZ_USER_AGENT
