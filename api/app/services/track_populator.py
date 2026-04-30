@@ -57,8 +57,11 @@ def run_track_population(
     errors = 0
     last_error: str | None = None
 
+    processed = 0
+
     with httpx.Client(timeout=15) as client:
         for i, artist in enumerate(artists):
+            processed = i + 1
             try:
                 added, err = _search_and_upsert_tracks(
                     client, headers, artist, TRACKS_PER_ARTIST
@@ -72,9 +75,9 @@ def run_track_population(
                 if (i + 1) % 5 == 0:
                     time.sleep(0.5)
 
-                # Update progress every 10 artists (in-memory dict, cheap)
-                if progress and (i + 1) % 10 == 0:
-                    progress(f"Populating track catalog ({i + 1}/{total})")
+                # Update progress every artist so UI reflects real movement.
+                if progress:
+                    progress(f"Populating track catalog ({processed}/{total})")
 
                 # Progress logging every 50 artists
                 if (i + 1) % 50 == 0:
@@ -88,6 +91,8 @@ def run_track_population(
             except Exception as exc:
                 errors += 1
                 last_error = str(exc)[:200]
+                if progress:
+                    progress(f"Populating track catalog ({processed}/{total})")
                 time.sleep(1)  # Back off on transient failures
 
             if errors > ABORT_AFTER_ERRORS:
@@ -99,12 +104,15 @@ def run_track_population(
 
     summary = {
         "artists_total": len(artists),
-        "artists_processed": i + 1,
+        "artists_processed": processed,
         "tracks_added": total_added,
         "errors": errors,
     }
     if last_error:
         summary["last_error"] = last_error
+
+    if progress:
+        progress(f"Populating track catalog ({processed}/{total})")
 
     print(f"track_populator: done — {summary}", flush=True)
     return summary
