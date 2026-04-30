@@ -37,6 +37,30 @@ from app.services.ranking import (
 )
 
 
+def _adjust_weights_for_prompt(
+    weights: dict[str, float], has_explicit_prompt: bool
+) -> dict[str, float]:
+    """Tilt the affinity/context/editorial blend when a prompt is set.
+
+    With a prompt, the user has named what they want — context should
+    dominate. We blend the caller's weights 60/40 toward a prompt-tilted
+    profile (0.30 affinity / 0.55 context / 0.15 editorial) rather than
+    overriding outright, so a caller that explicitly wants high
+    affinity (e.g. "more like my library") still gets some of it.
+
+    Without a prompt, return weights unchanged.
+    """
+    if not has_explicit_prompt:
+        return weights
+    target = {"affinity": 0.30, "context": 0.55, "editorial": 0.15}
+    blended = {
+        k: 0.4 * weights.get(k, 0.0) + 0.6 * target[k]
+        for k in target
+    }
+    total = sum(blended.values()) or 1.0
+    return {k: v / total for k, v in blended.items()}
+
+
 def recommend_songs(
     client: Client,
     user_id: str,
@@ -193,7 +217,17 @@ def recommend_songs(
     raw_vals = [r for _, r in raw_affinities]
     pct_ranks = _percentile_rank(raw_vals)
 
-    EXPLORATION_STRENGTH = 0.06
+    # Lower exploration noise: ±2% instead of ±6%. The percentile-rank
+    # step + diversity re-rank already produce variety; adding 6% noise
+    # on top compresses the top of the distribution and lets weaker
+    # picks leapfrog clearly-better ones too often.
+    EXPLORATION_STRENGTH = 0.02
+
+    # When the user supplies an explicit prompt, shift the weight blend
+    # toward context: their prompt is the strongest expression of
+    # intent. Without a prompt we fall back to the caller's defaults
+    # (the API normalizes affinity/context/editorial inputs to sum to 1).
+    weights = _adjust_weights_for_prompt(weights, has_explicit_prompt)
 
     artist_scores: dict[int, dict] = {}
     for idx, (artist, affinity_raw) in enumerate(raw_affinities):
