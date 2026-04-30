@@ -330,24 +330,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const playNext = useCallback(async () => {
     if (modeRef.current === "connect" && deviceIdRef.current) {
-      // Let Spotify handle next on the device — keeps queue in sync there.
-      const res = await fetch("/api/playback", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "next",
-          device_id: deviceIdRef.current,
-        }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setPlaybackError(data.error ?? "Skip failed");
-      } else {
-        const nextIdx = indexRef.current + 1;
-        if (nextIdx < queueRef.current.length) {
-          indexRef.current = nextIdx;
-          setCurrentIndex(nextIdx);
-        }
+      // Deterministic skip: jump to the next queue index and start playback
+      // from that exact position, instead of relying on /next state.
+      const nextIdx = indexRef.current + 1;
+      if (nextIdx < queueRef.current.length) {
+        await playFromQueue(nextIdx);
       }
       return;
     }
@@ -359,27 +346,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       setCurrentIndex(nextIdx);
       setEmbedTrackIdState(queueRef.current[nextIdx].spotifyTrackId);
     }
-  }, []);
+  }, [playFromQueue]);
 
   const playPrev = useCallback(async () => {
     if (modeRef.current === "connect" && deviceIdRef.current) {
-      const res = await fetch("/api/playback", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "previous",
-          device_id: deviceIdRef.current,
-        }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setPlaybackError(data.error ?? "Previous failed");
-      } else {
-        const prevIdx = indexRef.current - 1;
-        if (prevIdx >= 0) {
-          indexRef.current = prevIdx;
-          setCurrentIndex(prevIdx);
-        }
+      const prevIdx = indexRef.current - 1;
+      if (prevIdx >= 0) {
+        await playFromQueue(prevIdx);
       }
       return;
     }
@@ -390,7 +363,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       setCurrentIndex(prevIdx);
       setEmbedTrackIdState(queueRef.current[prevIdx].spotifyTrackId);
     }
-  }, []);
+  }, [playFromQueue]);
 
   const togglePause = useCallback(async () => {
     if (modeRef.current !== "connect" || !deviceIdRef.current) {
