@@ -16,13 +16,6 @@ const TAB_ID_KEY = "musiclife.setupAll.tabId";
 const POLL_INTERVAL_MS = 2500;
 const LEADER_STALE_MS = 8000;
 
-function getOrCreateTabId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
 function parseStep(message: string): { step: number; totalSteps: number; label: string; processed?: number; total?: number } | null {
   const match = message.match(/^Step\s+(\d+)\/(\d+):\s*(.+)$/i);
   if (!match) return null;
@@ -42,10 +35,7 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
   const [message, setMessage] = useState("");
   const [step, setStep]       = useState(0);
   const [itemProgress, setItemProgress] = useState<{ processed: number; total: number } | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const inFlightRef = useRef(false);
-  const tabIdRef = useRef("");
-  const hasLeaderRef = useRef(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastMessageRef = useRef("");
 
   const cleanup = useCallback(() => {
