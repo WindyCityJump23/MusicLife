@@ -268,6 +268,48 @@ def recommend_songs(
     if not top_artist_ids:
         return []
 
+    # ── BM25 lookup: literal phrase match on track text ────────────
+    # Vector cosine handles semantic prompts ("rainy night" → moody
+    # ballads), but it can wash out literal queries ("Bohemian
+    # Rhapsody", "songs about rain"). We query the tsvector index so
+    # matches on title/album/tags get an explicit score that we blend
+    # into the per-track context. Only meaningful with an explicit
+    # prompt — without one, the "query" would be the user's own taste
+    # vector, which has no text form.
+    bm25_by_track: dict[int, float] = {}
+    bm25_max = 0.0
+    if has_explicit_prompt and prompt_text and prompt_text.strip():
+        try:
+            rpc_resp = client.rpc(
+                "search_tracks_bm25",
+                {"q": prompt_text.strip(), "artist_ids": top_artist_ids},
+            ).execute()
+            for row in (rpc_resp.data or []):
+                tid = row.get("track_id")
+                rank = row.get("rank")
+                if tid is None or rank is None:
+                    continue
+                rank_f = float(rank)
+                if rank_f <= 0:
+                    continue
+                bm25_by_track[int(tid)] = rank_f
+                if rank_f > bm25_max:
+                    bm25_max = rank_f
+            if bm25_by_track:
+                print(
+                    f"song_ranking: bm25 matched {len(bm25_by_track)} tracks "
+                    f"(max rank {bm25_max:.4f})"
+                )
+        except Exception as exc:
+            # Older deployments may not have migration 013 yet. Don't
+            # fail the request — just skip the BM25 signal.
+            print(f"song_ranking: bm25 RPC unavailable ({type(exc).__name__}: {exc})")
+
+    def _bm25_norm(track_id: int | None) -> float:
+        if not track_id or bm25_max <= 0:
+            return 0.0
+        return bm25_by_track.get(int(track_id), 0.0) / bm25_max
+
     # Get tracks from DB for these artists. We pull the track embedding
     # so the context signal can be computed track-by-track instead of
     # inheriting the artist-level mention match.
@@ -304,16 +346,21 @@ def recommend_songs(
         # both a prompt vector and track embeddings, rank by a blend of
         # prompt-fit and popularity so a vibe search ("rainy night",
         # "summer driving") doesn't always surface the artist's biggest
-        # hit. Without that, fall back to popularity alone.
+        # hit. BM25 boosts tracks whose title/tags literally match the
+        # query so a search for "Bohemian Rhapsody" doesn't lose to a
+        # semantically-similar but textually-unrelated track.
         def _track_shortlist_score(t: dict) -> float:
             pop = float(t.get("popularity") or 0) / 100.0
             tv = _parse_vector(t.get("embedding"))
+            bm25 = _bm25_norm(t.get("id"))
             if effective_prompt_vector and tv:
                 ctx = _normalize_01(
                     _cosine_similarity(effective_prompt_vector, tv)
                 )
-                return 0.7 * ctx + 0.3 * pop
-            return pop
+                # Hybrid: 55% vector + 25% bm25 + 20% popularity
+                return 0.55 * ctx + 0.25 * bm25 + 0.20 * pop
+            # No vector? Lean on bm25 + popularity instead of pop alone.
+            return 0.6 * bm25 + 0.4 * pop if bm25 else pop
 
         tracks.sort(key=_track_shortlist_score, reverse=True)
         tracks = tracks[:2]
@@ -327,6 +374,7 @@ def recommend_songs(
 
             track_id = track.get("id")
             track_pop = float(track.get("popularity") or 50) / 100.0
+            track_bm25 = _bm25_norm(track_id)
 
             # ── Per-track context score ──────────────────────────
             # Prefer cosine(prompt, track.embedding). This is the core
@@ -334,12 +382,12 @@ def recommend_songs(
             # differently for prompts like "summer driving" or "sad
             # piano", instead of all inheriting the artist's match.
             track_vec = _parse_vector(track.get("embedding"))
-            track_context = a_info["context"]
+            vector_context: float | None = None
             track_affinity = a_info["affinity"]
             used_track_embedding = False
             if track_vec:
                 if effective_prompt_vector:
-                    track_context = _normalize_01(
+                    vector_context = _normalize_01(
                         _cosine_similarity(effective_prompt_vector, track_vec)
                     )
                 # Blend track-level taste similarity with the artist
@@ -351,6 +399,21 @@ def recommend_songs(
                 )
                 track_affinity = 0.7 * a_info["affinity"] + 0.3 * track_affinity_raw
                 used_track_embedding = True
+
+            # Hybrid context: blend vector cosine with BM25. Vector
+            # captures "feel"; BM25 captures literal phrase fit. When
+            # both are available we lean vector-heavy (0.65) so vibe
+            # prompts still work, but a strong BM25 hit alone can lift
+            # a track that the vector missed.
+            if vector_context is None:
+                if track_bm25 > 0:
+                    track_context = 0.65 * a_info["context"] + 0.35 * track_bm25
+                else:
+                    track_context = a_info["context"]
+            elif track_bm25 > 0:
+                track_context = 0.65 * vector_context + 0.35 * track_bm25
+            else:
+                track_context = vector_context
 
             # Recompute the base score per track using the (possibly)
             # track-specific affinity and context. Editorial stays at
@@ -397,6 +460,10 @@ def recommend_songs(
                 reasons.append(f"Featured in {src_name}" if src_name else "In the press")
             if track_pop > 0.7:
                 reasons.append("Popular track")
+            if has_explicit_prompt and track_bm25 >= 0.5:
+                # Strong literal phrase match — title, album, or a tag
+                # contained the user's query terms.
+                reasons.append("Title/tag match")
             track_tags = [t for t in (track.get("tags") or []) if t]
             if track_tags and has_explicit_prompt and track_context > 0.55:
                 # Only surface tags as a reason when they likely drove
@@ -426,6 +493,7 @@ def recommend_songs(
                     "editorial": round(a_info["editorial"], 4),
                     "track_popularity": round(track_pop, 4),
                     "track_embedding": used_track_embedding,
+                    "bm25": round(track_bm25, 4),
                 },
                 "genres": a_info["genres"],
                 "tags": track_tags,
