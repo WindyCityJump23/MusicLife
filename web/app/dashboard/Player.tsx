@@ -452,7 +452,7 @@ function EmbedPlayer({
 
       const initialId =
         pendingRef.current || trackId || "4cOdK2wGLETKBW3PvgPWqT";
-      const uri = `spotify:track:${initialId}`;
+      const uri = toSpotifyTrackUri(initialId);
 
       IFrameAPI.createController(
         container,
@@ -491,7 +491,7 @@ function EmbedPlayer({
           });
 
           if (pendingRef.current) {
-            ctrl.loadUri(`spotify:track:${pendingRef.current}`);
+            ctrl.loadUri(toSpotifyTrackUri(pendingRef.current));
             ctrl.play();
             pendingRef.current = null;
           }
@@ -529,7 +529,7 @@ function EmbedPlayer({
     lastPositionRef.current = 0;
 
     if (controllerRef.current) {
-      controllerRef.current.loadUri(`spotify:track:${trackId}`);
+      controllerRef.current.loadUri(toSpotifyTrackUri(trackId));
       setTimeout(() => controllerRef.current?.play(), 300);
     } else {
       pendingRef.current = trackId;
@@ -543,4 +543,10 @@ function EmbedPlayer({
       style={{ minHeight: 152 }}
     />
   );
+}
+
+function toSpotifyTrackUri(trackIdOrUri: string): string {
+  return trackIdOrUri.startsWith("spotify:track:")
+    ? trackIdOrUri
+    : `spotify:track:${trackIdOrUri}`;
 }
