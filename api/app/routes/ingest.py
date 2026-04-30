@@ -323,6 +323,73 @@ def _run_populate_tracks(job_id: str, spotify_token: str):
         print(f"populate_tracks: FAILED: {exc}")
 
 
+class SetupAllRequest(BaseModel):
+    user_id: str
+    spotify_access_token: str
+
+
+@router.post("/setup-all")
+def setup_all(
+    req: SetupAllRequest,
+    bg: BackgroundTasks,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Run the full library setup pipeline as one orchestrated job.
+
+    Sequentially runs sync → enrich → embed → sources → populate-tracks
+    server-side, reporting unified progress via the standard /status/{job_id}
+    endpoint. The chain survives page close / sleep because it lives in the
+    API process, not the browser.
+    """
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+    job_id = str(uuid.uuid4())
+    create_job(job_id, "setup-all")
+    bg.add_task(_run_setup_all, job_id, req.user_id, req.spotify_access_token)
+    return {"status": "queued", "job_id": job_id}
+
+
+def _run_setup_all(job_id: str, user_id: str, spotify_token: str):
+    from app.services.artist_embeddings import run_artist_embeddings
+    from app.services.artist_enrichment import run_artist_enrichment
+    from app.services.source_ingest import run_source_ingest
+    from app.services.spotify_ingest import run_spotify_library_ingest
+    from app.services.track_populator import run_track_population
+
+    total = 5
+
+    def progress(step: int, label: str):
+        update_job(job_id, JobStatus.RUNNING, f"Step {step}/{total}: {label}")
+
+    try:
+        progress(1, "Syncing Spotify library…")
+        run_spotify_library_ingest(user_id, spotify_token)
+
+        progress(2, "Enriching artists…")
+        run_artist_enrichment()
+
+        progress(3, "Generating embeddings…")
+        embed_summary = run_artist_embeddings()
+        if isinstance(embed_summary, dict):
+            embedded = embed_summary.get("embedded", 0)
+            skipped = embed_summary.get("skipped", 0)
+            if embedded == 0 and skipped > 0:
+                reason = embed_summary.get("last_error") or "no artists were embedded"
+                raise RuntimeError(f"embedding failed: {reason}")
+
+        progress(4, "Fetching editorial sources…")
+        run_source_ingest()
+
+        progress(5, "Populating track catalog…")
+        run_track_population(spotify_token)
+
+        update_job(job_id, JobStatus.SUCCESS, "Library is ready")
+        print(f"setup_all: completed for user {user_id}")
+    except Exception as exc:
+        update_job(job_id, JobStatus.FAILED, str(exc)[:500])
+        print(f"setup_all: FAILED for user {user_id}: {exc}")
+
+
 @router.get("/status/{job_id}")
 def job_status(
     job_id: str,

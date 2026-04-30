@@ -7,87 +7,141 @@ type JobStatusResponse = {
   message: string;
 };
 
-type Stage = { label: string; running: string; endpoint: string };
-
-const STAGES: Stage[] = [
-  { label: "Sync Library",        running: "Syncing Spotify library",  endpoint: "/api/sync" },
-  { label: "Enrich Artists",      running: "Enriching artists",        endpoint: "/api/enrich" },
-  { label: "Generate Embeddings", running: "Generating embeddings",    endpoint: "/api/embed" },
-  { label: "Sync Sources",        running: "Fetching editorial sources", endpoint: "/api/sources" },
-  { label: "Populate Tracks",     running: "Populating track catalog", endpoint: "/api/populate-tracks" },
-];
-
 type RunState = "idle" | "running" | "success" | "error";
 
+const TOTAL_STEPS = 5;
+const STORAGE_KEY = "musiclife.setupAll.jobId";
+const POLL_INTERVAL_MS = 2500;
+
+function parseStep(message: string): { step: number; label: string } | null {
+  const match = message.match(/^Step\s+(\d+)\/(\d+):\s*(.+)$/i);
+  if (!match) return null;
+  return { step: parseInt(match[1], 10), label: match[3].trim() };
+}
+
 export default function SetupAllButton({ onProgress }: { onProgress?: () => void }) {
-  const [state, setState]       = useState<RunState>("idle");
-  const [stageIdx, setStageIdx] = useState(0);
-  const [message, setMessage]   = useState("");
-  const cancelRef = useRef(false);
+  const [state, setState]     = useState<RunState>("idle");
+  const [message, setMessage] = useState("");
+  const [step, setStep]       = useState(0);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastMessageRef = useRef("");
 
-  useEffect(() => () => { cancelRef.current = true; }, []);
-
-  const runStage = useCallback(async (stage: Stage): Promise<void> => {
-    const startRes = await fetch(stage.endpoint, { method: "POST" });
-    const startData = await startRes.json().catch(() => ({}));
-    if (!startRes.ok) {
-      throw new Error(startData.error ?? startData.detail ?? `Failed (HTTP ${startRes.status})`);
+  const cleanup = useCallback(() => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
     }
+  }, []);
 
-    const jobId: string | undefined = startData.job_id;
-    if (!jobId) return; // legacy API: fire-and-forget
+  useEffect(() => () => cleanup(), [cleanup]);
 
-    return new Promise<void>((resolve, reject) => {
+  const handleStatus = useCallback(
+    (data: JobStatusResponse) => {
+      if (data.status === "queued" || data.status === "running") {
+        setState("running");
+        setMessage(data.message || "Working…");
+        const parsed = parseStep(data.message || "");
+        if (parsed) setStep(parsed.step);
+        if (data.message && data.message !== lastMessageRef.current) {
+          lastMessageRef.current = data.message;
+          onProgress?.();
+        }
+        return false;
+      }
+      if (data.status === "success") {
+        cleanup();
+        try { localStorage.removeItem(STORAGE_KEY); } catch {}
+        setState("success");
+        setStep(TOTAL_STEPS);
+        setMessage(data.message || "Library is ready");
+        onProgress?.();
+        return true;
+      }
+      if (data.status === "failed") {
+        cleanup();
+        try { localStorage.removeItem(STORAGE_KEY); } catch {}
+        setState("error");
+        setMessage(data.message || "Setup failed");
+        return true;
+      }
+      // unknown — job expired or never existed
+      cleanup();
+      try { localStorage.removeItem(STORAGE_KEY); } catch {}
+      setState("idle");
+      setMessage("");
+      setStep(0);
+      return true;
+    },
+    [cleanup, onProgress]
+  );
+
+  const startPolling = useCallback(
+    (jobId: string) => {
+      cleanup();
       const tick = async () => {
-        if (cancelRef.current) return reject(new Error("cancelled"));
         try {
           const res = await fetch(`/api/job-status?id=${encodeURIComponent(jobId)}`, { cache: "no-store" });
-          if (!res.ok) return; // keep polling on transient failures
+          if (!res.ok) return;
           const data: JobStatusResponse = await res.json();
-          if (data.status === "running" || data.status === "queued") {
-            setMessage(data.message || stage.running);
-            return;
-          }
-          clearInterval(handle);
-          if (data.status === "success") {
-            onProgress?.();
-            return resolve();
-          }
-          reject(new Error(data.message || `${stage.label} failed`));
+          handleStatus(data);
         } catch {
-          // transient error — keep polling
+          // transient — keep polling
         }
       };
-      const handle = setInterval(tick, 2500);
+      intervalRef.current = setInterval(tick, POLL_INTERVAL_MS);
       tick();
-    });
-  }, [onProgress]);
+    },
+    [cleanup, handleStatus]
+  );
+
+  // Resume any in-flight setup on mount.
+  useEffect(() => {
+    let stored: string | null = null;
+    try { stored = localStorage.getItem(STORAGE_KEY); } catch {}
+    if (!stored) return;
+    setState("running");
+    setMessage("Reconnecting…");
+    startPolling(stored);
+  }, [startPolling]);
 
   const trigger = useCallback(async () => {
-    cancelRef.current = false;
+    cleanup();
     setState("running");
-    setStageIdx(0);
+    setStep(0);
     setMessage("Starting…");
 
     try {
-      for (let i = 0; i < STAGES.length; i++) {
-        setStageIdx(i);
-        setMessage(STAGES[i].running + "…");
-        await runStage(STAGES[i]);
-        onProgress?.();
+      const res = await fetch("/api/setup-all", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setState("error");
+        setMessage(data.error ?? data.detail ?? `Failed (HTTP ${res.status})`);
+        return;
       }
-      setState("success");
-      setMessage("Library is ready");
+      const jobId: string | undefined = data.job_id;
+      if (!jobId) {
+        setState("success");
+        setMessage("Queued — running in background");
+        return;
+      }
+      try { localStorage.setItem(STORAGE_KEY, jobId); } catch {}
+      setMessage("Queued…");
+      startPolling(jobId);
     } catch (err) {
       setState("error");
-      setMessage(err instanceof Error ? err.message : "Setup failed");
+      setMessage(err instanceof Error ? err.message : "Network error");
     }
-  }, [runStage, onProgress]);
+  }, [cleanup, startPolling]);
 
   const buttonLabel =
-    state === "running" ? `Step ${stageIdx + 1} of ${STAGES.length}: ${STAGES[stageIdx].label}…`
+    state === "running" ? (step > 0 ? `Setting up… (${step}/${TOTAL_STEPS})` : "Starting…")
     : state === "success" ? "Re-run setup"
     : "Set up my library";
+
+  const progressPct =
+    state === "success" ? 100
+    : state === "running" && step > 0 ? ((step - 0.5) / TOTAL_STEPS) * 100
+    : 0;
 
   return (
     <div className="space-y-1.5">
@@ -104,10 +158,13 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
           <div className="w-full h-2 bg-neutral-100 rounded-full overflow-hidden">
             <div
               className="h-full bg-emerald-500 rounded-full transition-all duration-500"
-              style={{ width: `${((stageIdx + 0.5) / STAGES.length) * 100}%` }}
+              style={{ width: `${progressPct}%` }}
             />
           </div>
-          <p className="text-[10px] text-neutral-500">{message}</p>
+          <p className="text-[10px] text-neutral-600 leading-snug">{message}</p>
+          <p className="text-[10px] text-neutral-400 leading-snug">
+            Runs on our servers — safe to close this tab. Steps will keep ticking off when you return.
+          </p>
         </div>
       )}
 
