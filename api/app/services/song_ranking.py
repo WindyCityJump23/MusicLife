@@ -268,10 +268,12 @@ def recommend_songs(
     if not top_artist_ids:
         return []
 
-    # Get tracks from DB for these artists (include audio features)
+    # Get tracks from DB for these artists. We pull the track embedding
+    # so the context signal can be computed track-by-track instead of
+    # inheriting the artist-level mention match.
     tracks_resp = (
         client.table("tracks")
-        .select("id,name,artist_id,album_name,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness")
+        .select("id,name,artist_id,album_name,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
         .in_("artist_id", top_artist_ids)
         .range(0, 9999)
         .execute()
@@ -298,12 +300,22 @@ def recommend_songs(
         if not tracks:
             continue
 
-        # Sort tracks by popularity descending, take top 2 per artist.
-        # The diversity re-ranker caps the final output at 1 per artist,
-        # so 2 candidates per artist is plenty and prevents a single
-        # artist from flooding the pre-rerank pool with near-duplicate
-        # versions of the same song (e.g. radio edits, deluxe cuts).
-        tracks.sort(key=lambda t: t.get("popularity") or 0, reverse=True)
+        # Choose the top 2 candidate tracks per artist. When we have
+        # both a prompt vector and track embeddings, rank by a blend of
+        # prompt-fit and popularity so a vibe search ("rainy night",
+        # "summer driving") doesn't always surface the artist's biggest
+        # hit. Without that, fall back to popularity alone.
+        def _track_shortlist_score(t: dict) -> float:
+            pop = float(t.get("popularity") or 0) / 100.0
+            tv = _parse_vector(t.get("embedding"))
+            if effective_prompt_vector and tv:
+                ctx = _normalize_01(
+                    _cosine_similarity(effective_prompt_vector, tv)
+                )
+                return 0.7 * ctx + 0.3 * pop
+            return pop
+
+        tracks.sort(key=_track_shortlist_score, reverse=True)
         tracks = tracks[:2]
 
         for track in tracks:
@@ -316,7 +328,43 @@ def recommend_songs(
             track_id = track.get("id")
             track_pop = float(track.get("popularity") or 50) / 100.0
 
-            # Track-level boost: popularity + audio feature match
+            # ── Per-track context score ──────────────────────────
+            # Prefer cosine(prompt, track.embedding). This is the core
+            # quality lift: tracks within the same artist now score
+            # differently for prompts like "summer driving" or "sad
+            # piano", instead of all inheriting the artist's match.
+            track_vec = _parse_vector(track.get("embedding"))
+            track_context = a_info["context"]
+            track_affinity = a_info["affinity"]
+            used_track_embedding = False
+            if track_vec:
+                if effective_prompt_vector:
+                    track_context = _normalize_01(
+                        _cosine_similarity(effective_prompt_vector, track_vec)
+                    )
+                # Blend track-level taste similarity with the artist
+                # affinity so that, within an artist's catalog, tracks
+                # whose description aligns with the user's taste vector
+                # rank above generic ones.
+                track_affinity_raw = _normalize_01(
+                    _cosine_similarity(taste_vector, track_vec)
+                )
+                track_affinity = 0.7 * a_info["affinity"] + 0.3 * track_affinity_raw
+                used_track_embedding = True
+
+            # Recompute the base score per track using the (possibly)
+            # track-specific affinity and context. Editorial stays at
+            # the artist level — mentions are about the artist, not
+            # any one song.
+            track_base = (
+                weights["affinity"] * track_affinity
+                + weights["context"] * track_context
+                + weights["editorial"] * a_info["editorial"]
+            )
+            if aid in previously_recommended:
+                track_base *= 0.65
+
+            # Track-level boost: popularity + familiarity adjustments
             track_boost = 0.7 + (0.3 * track_pop)  # 0.7–1.0 range
 
             # Familiarity: penalize songs the user has already heard,
@@ -332,13 +380,13 @@ def recommend_songs(
             # Exploration
             exploration = random.uniform(-EXPLORATION_STRENGTH, EXPLORATION_STRENGTH)
 
-            final_score = a_info["base_score"] * track_boost + exploration
+            final_score = track_base * track_boost + exploration
 
             # Build reasons
             reasons = []
-            if a_info["affinity"] > 0.55:
+            if track_affinity > 0.55:
                 reasons.append("Matches your taste")
-            if a_info["context"] > 0.55:
+            if track_context > 0.55:
                 reasons.append("Matches your search" if has_explicit_prompt else "Fits your vibe")
             if a_info["editorial"] > 0.45:
                 src_name = (
@@ -367,10 +415,11 @@ def recommend_songs(
                 "spotify_track_id": track.get("spotify_track_id") or "",
                 "score": round(max(0.0, final_score), 4),
                 "signals": {
-                    "affinity": round(a_info["affinity"], 4),
-                    "context": round(a_info["context"], 4),
+                    "affinity": round(track_affinity, 4),
+                    "context": round(track_context, 4),
                     "editorial": round(a_info["editorial"], 4),
                     "track_popularity": round(track_pop, 4),
+                    "track_embedding": used_track_embedding,
                 },
                 "genres": a_info["genres"],
                 "reasons": reasons,
