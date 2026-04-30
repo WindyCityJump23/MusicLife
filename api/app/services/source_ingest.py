@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from typing import Callable
 
 import feedparser
 import httpx
@@ -44,7 +45,9 @@ EXCERPT_MAX_CHARS = 800
 # ---------------------------------------------------------------------------
 
 
-def run_source_ingest() -> None:
+def run_source_ingest(
+    progress: Callable[[str], None] | None = None,
+) -> None:
     sources = _load_active_sources()
     if not sources:
         print("source_ingest: no active sources")
@@ -56,25 +59,34 @@ def run_source_ingest() -> None:
         return
 
     pattern = _build_artist_pattern(artist_index)
-    print(f"source_ingest: scanning {len(sources)} sources against {len(artist_index)} artists")
+    total = len(sources)
+    print(f"source_ingest: scanning {total} sources against {len(artist_index)} artists")
+    if progress:
+        progress(f"Fetching editorial sources (0/{total})")
 
     candidates: list[dict] = []
     with httpx.Client(timeout=20, follow_redirects=True) as client:
-        for source in sources:
+        for i, source in enumerate(sources):
             try:
                 entries = _fetch_feed(client, source["url"])
             except Exception as exc:
                 print(f"source_ingest: fetch failed for {source['name']!r}: {exc}")
+                if progress:
+                    progress(f"Fetching editorial sources ({i + 1}/{total})")
                 continue
 
             matched = _extract_mentions(entries, source, pattern, artist_index)
             print(f"source_ingest: {source['name']} — {len(entries)} entries, {len(matched)} mentions")
             candidates.extend(matched)
+            if progress:
+                progress(f"Fetching editorial sources ({i + 1}/{total})")
 
     if not candidates:
         print("source_ingest: no mentions found")
         return
 
+    if progress:
+        progress(f"Fetching editorial sources (embedding {len(candidates)} mentions)")
     _embed_and_upsert(candidates)
     print(f"source_ingest: done — wrote {len(candidates)} mention candidates")
 

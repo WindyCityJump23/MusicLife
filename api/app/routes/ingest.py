@@ -358,18 +358,20 @@ def _run_setup_all(job_id: str, user_id: str, spotify_token: str):
 
     total = 5
 
-    def progress(step: int, label: str):
-        update_job(job_id, JobStatus.RUNNING, f"Step {step}/{total}: {label}")
+    def progress_for(step: int):
+        def cb(msg: str):
+            update_job(job_id, JobStatus.RUNNING, f"Step {step}/{total}: {msg}")
+        return cb
 
     try:
-        progress(1, "Syncing Spotify library…")
+        progress_for(1)("Syncing Spotify library…")
         run_spotify_library_ingest(user_id, spotify_token)
 
-        progress(2, "Enriching artists…")
-        run_artist_enrichment()
+        progress_for(2)("Enriching artists…")
+        run_artist_enrichment(progress=progress_for(2))
 
-        progress(3, "Generating embeddings…")
-        embed_summary = run_artist_embeddings()
+        progress_for(3)("Generating embeddings…")
+        embed_summary = run_artist_embeddings(progress=progress_for(3))
         if isinstance(embed_summary, dict):
             embedded = embed_summary.get("embedded", 0)
             skipped = embed_summary.get("skipped", 0)
@@ -377,11 +379,11 @@ def _run_setup_all(job_id: str, user_id: str, spotify_token: str):
                 reason = embed_summary.get("last_error") or "no artists were embedded"
                 raise RuntimeError(f"embedding failed: {reason}")
 
-        progress(4, "Fetching editorial sources…")
-        run_source_ingest()
+        progress_for(4)("Fetching editorial sources…")
+        run_source_ingest(progress=progress_for(4))
 
-        progress(5, "Populating track catalog…")
-        run_track_population(spotify_token)
+        progress_for(5)("Populating track catalog…")
+        run_track_population(spotify_token, progress=progress_for(5))
 
         update_job(job_id, JobStatus.SUCCESS, "Library is ready")
         print(f"setup_all: completed for user {user_id}")

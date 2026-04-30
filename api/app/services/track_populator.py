@@ -14,6 +14,7 @@ This service:
 from __future__ import annotations
 
 import time
+from typing import Callable
 
 import httpx
 
@@ -24,7 +25,10 @@ TRACKS_PER_ARTIST = 5  # How many tracks to fetch per artist
 ABORT_AFTER_ERRORS = 20
 
 
-def run_track_population(access_token: str) -> dict:
+def run_track_population(
+    access_token: str,
+    progress: Callable[[str], None] | None = None,
+) -> dict:
     """Populate tracks for all artists with a spotify_artist_id.
 
     The tracks table has a unique constraint on spotify_track_id, so the
@@ -42,9 +46,12 @@ def run_track_population(access_token: str) -> dict:
     headers = {"Authorization": f"Bearer {access_token}"}
 
     artists = _fetch_all_artists()
-    print(f"track_populator: {len(artists)} artists to process", flush=True)
+    total = len(artists)
+    print(f"track_populator: {total} artists to process", flush=True)
     if not artists:
         return {"artists_total": 0, "artists_processed": 0, "tracks_added": 0}
+    if progress:
+        progress(f"Populating track catalog (0/{total})")
 
     total_added = 0
     errors = 0
@@ -65,10 +72,14 @@ def run_track_population(access_token: str) -> dict:
                 if (i + 1) % 5 == 0:
                     time.sleep(0.5)
 
+                # Update progress every 10 artists (in-memory dict, cheap)
+                if progress and (i + 1) % 10 == 0:
+                    progress(f"Populating track catalog ({i + 1}/{total})")
+
                 # Progress logging every 50 artists
                 if (i + 1) % 50 == 0:
                     print(
-                        f"track_populator: {i+1}/{len(artists)} artists "
+                        f"track_populator: {i+1}/{total} artists "
                         f"processed, {total_added} tracks added, "
                         f"{errors} errors",
                         flush=True,
