@@ -307,6 +307,7 @@ def rank_candidates(
     weights: dict[str, float],
     exclude_library: bool,
     limit: int,
+    prompt_text: str | None = None,
 ) -> list[dict]:
     artist_weights = _get_user_artist_weights(client, user_id)
     library_artist_ids = set(artist_weights.keys())
@@ -364,6 +365,16 @@ def rank_candidates(
         if artist_id is None:
             continue
         mentions_by_artist[int(artist_id)].append(m)
+
+    # Live web augmentation (Tavily). Fail-soft: a no-op when disabled.
+    web_artists_boosted: set[int] = set()
+    if prompt_text:
+        web_artists_boosted = _augment_with_web_search(
+            prompt_text=prompt_text,
+            all_artists=candidates,
+            mentions_by_artist=mentions_by_artist,
+            source_info=source_info,
+        )
 
     now = datetime.now(timezone.utc)
     recent_window_days = 45
@@ -498,6 +509,8 @@ def rank_candidates(
         if editorial > 0.45:
             src_name = best_mention["source"] if best_mention and best_mention.get("source") else ""
             reasons.append(f"Featured in {src_name}" if src_name else "In the press")
+        if artist_id in web_artists_boosted:
+            reasons.append("Trending in live results")
         if artist_id in library_artist_ids:
             reasons.append("From your library")
         if artist_id in previously_recommended:
@@ -532,3 +545,98 @@ def rank_candidates(
     )
 
     return diverse_results
+
+
+def _augment_with_web_search(
+    prompt_text: str,
+    all_artists: list[dict],
+    mentions_by_artist: dict[int, list[dict]],
+    source_info: dict[int, dict],
+) -> set[int]:
+    """Pull live web results, embed them, inject as synthetic mentions.
+
+    Returns the set of artist_ids that were boosted by web results so the
+    caller can surface a "Trending in live results" reason.
+
+    Fail-soft: any failure (Tavily disabled / down / timeout / Voyage
+    error) returns an empty set and leaves `mentions_by_artist` unchanged.
+    """
+    from app.services import web_search
+    from app.services.embedding import embedder
+
+    if not web_search.is_enabled():
+        return set()
+
+    try:
+        results = web_search.search(prompt_text, limit=5)
+    except Exception as exc:
+        print(f"ranking: web search call failed: {exc}")
+        return set()
+    if not results:
+        return set()
+
+    artist_index: dict[str, int] = {}
+    for a in all_artists:
+        name = (a.get("name") or "").strip().lower()
+        aid = a.get("id")
+        if not name or aid is None:
+            continue
+        artist_index.setdefault(name, int(aid))
+
+    matched = web_search.extract_artist_mentions(results, artist_index)
+    if not matched:
+        return set()
+
+    unique_texts: list[str] = []
+    text_to_idx: dict[str, int] = {}
+    flat: list[tuple[int, dict]] = []
+    for aid, ments in matched.items():
+        for m in ments:
+            txt = m.get("_excerpt_text") or ""
+            if not txt.strip():
+                continue
+            if txt not in text_to_idx:
+                text_to_idx[txt] = len(unique_texts)
+                unique_texts.append(txt)
+            flat.append((aid, m))
+
+    if not unique_texts:
+        return set()
+
+    try:
+        vectors = embedder.embed(unique_texts, input_type="document")
+    except Exception as exc:
+        print(f"ranking: web snippet embed failed: {exc}")
+        return set()
+
+    if len(vectors) != len(unique_texts):
+        print(
+            f"ranking: web embed returned {len(vectors)} vectors for "
+            f"{len(unique_texts)} snippets — skipping augmentation"
+        )
+        return set()
+
+    source_info[web_search.WEB_SOURCE_ID] = {
+        "trust_weight": web_search.WEB_TRUST_WEIGHT,
+        "name": web_search.WEB_SOURCE_NAME,
+    }
+
+    boosted: set[int] = set()
+    for aid, m in flat:
+        idx = text_to_idx[m.get("_excerpt_text") or ""]
+        injected = {
+            "artist_id": aid,
+            "source_id": web_search.WEB_SOURCE_ID,
+            "embedding": vectors[idx],
+            "published_at": m.get("published_at"),
+            "sentiment": m.get("sentiment"),
+            "excerpt": m.get("excerpt"),
+        }
+        mentions_by_artist[aid].append(injected)
+        boosted.add(aid)
+
+    print(
+        f"ranking: web search augmented {len(boosted)} artists "
+        f"with {len(flat)} synthetic mentions"
+    )
+    return boosted

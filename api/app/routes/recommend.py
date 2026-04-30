@@ -109,6 +109,7 @@ def recommend(
         weights=req.weights,
         exclude_library=req.exclude_library,
         limit=req.limit,
+        prompt_text=req.prompt,
     )
     return RecommendResponse(results=results)
 

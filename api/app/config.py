@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     lastfm_api_key: str
     musicbrainz_user_agent: str
 
+    # Optional: live web search to augment editorial signal at Discover time.
+    # Without a key the augmentation is a no-op and Discover behaves exactly
+    # as it did before — pre-indexed semantic search only.
+    tavily_api_key: str = ""
+
     cors_origins: str = "http://localhost:3000"
 
     @property

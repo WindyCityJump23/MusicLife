@@ -159,6 +159,20 @@ def recommend_songs(
         if aid is not None:
             mentions_by_artist[int(aid)].append(m)
 
+    # ── Live web search augmentation (Tavily) ─────────────────
+    # Fail-soft: if disabled, slow, or rate-limited, this is a no-op
+    # and Discover proceeds with DB-only editorial coverage. When it
+    # works, it adds fresh hits to the same `mentions_by_artist` map
+    # the scoring loop already consumes — no math changes.
+    web_artists_boosted: set[int] = set()
+    if prompt_text:
+        web_artists_boosted = _augment_with_web_search(
+            prompt_text=prompt_text,
+            all_artists=all_artists,
+            mentions_by_artist=mentions_by_artist,
+            source_info=source_info,
+        )
+
     now = datetime.now(timezone.utc)
     recent_window_days = 45
 
@@ -347,6 +361,8 @@ def recommend_songs(
                     else ""
                 )
                 reasons.append(f"Featured in {src_name}" if src_name else "In the press")
+            if aid in web_artists_boosted:
+                reasons.append("Trending in live results")
             if track_pop > 0.7:
                 reasons.append("Popular track")
             if in_library:
@@ -468,4 +484,103 @@ def _song_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
             artist_counts[artist] += 1
 
     return selected
+
+
+def _augment_with_web_search(
+    prompt_text: str,
+    all_artists: list[dict],
+    mentions_by_artist: dict[int, list[dict]],
+    source_info: dict[int, dict],
+) -> set[int]:
+    """Pull live web results, embed them, inject as synthetic mentions.
+
+    Returns the set of artist_ids that were boosted by web results — used
+    by the caller to surface a "Trending in live results" reason.
+
+    Fail-soft: any failure (Tavily disabled / down / timeout / Voyage
+    error) returns an empty set and leaves `mentions_by_artist` unchanged.
+    """
+    from app.services import web_search
+    from app.services.embedding import embedder
+
+    if not web_search.is_enabled():
+        return set()
+
+    try:
+        results = web_search.search(prompt_text, limit=5)
+    except Exception as exc:
+        print(f"song_ranking: web search call failed: {exc}")
+        return set()
+    if not results:
+        return set()
+
+    artist_index: dict[str, int] = {}
+    for a in all_artists:
+        name = (a.get("name") or "").strip().lower()
+        aid = a.get("id")
+        if not name or aid is None:
+            continue
+        artist_index.setdefault(name, int(aid))
+
+    matched = web_search.extract_artist_mentions(results, artist_index)
+    if not matched:
+        return set()
+
+    # Embed each unique snippet once, then duplicate the vector across
+    # any synthetic mentions that share that snippet.
+    unique_texts: list[str] = []
+    text_to_idx: dict[str, int] = {}
+    flat: list[tuple[int, dict]] = []  # (artist_id, mention_dict)
+    for aid, ments in matched.items():
+        for m in ments:
+            txt = m.get("_excerpt_text") or ""
+            if not txt.strip():
+                continue
+            if txt not in text_to_idx:
+                text_to_idx[txt] = len(unique_texts)
+                unique_texts.append(txt)
+            flat.append((aid, m))
+
+    if not unique_texts:
+        return set()
+
+    try:
+        vectors = embedder.embed(unique_texts, input_type="document")
+    except Exception as exc:
+        print(f"song_ranking: web snippet embed failed: {exc}")
+        return set()
+
+    if len(vectors) != len(unique_texts):
+        print(
+            f"song_ranking: web embed returned {len(vectors)} vectors for "
+            f"{len(unique_texts)} snippets — skipping augmentation"
+        )
+        return set()
+
+    # Register the virtual source so the existing scoring loop can resolve
+    # trust_weight + display name without special-casing.
+    source_info[web_search.WEB_SOURCE_ID] = {
+        "trust_weight": web_search.WEB_TRUST_WEIGHT,
+        "name": web_search.WEB_SOURCE_NAME,
+    }
+
+    boosted: set[int] = set()
+    for aid, m in flat:
+        idx = text_to_idx[m.get("_excerpt_text") or ""]
+        injected = {
+            "artist_id": aid,
+            "source_id": web_search.WEB_SOURCE_ID,
+            "embedding": vectors[idx],
+            "published_at": m.get("published_at"),
+            "sentiment": m.get("sentiment"),
+            "excerpt": m.get("excerpt"),
+        }
+        mentions_by_artist[aid].append(injected)
+        boosted.add(aid)
+
+    print(
+        f"song_ranking: web search augmented {len(boosted)} artists "
+        f"with {len(flat)} synthetic mentions"
+    )
+    return boosted
 
