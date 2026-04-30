@@ -119,6 +119,7 @@ export default function Player() {
         >
           <span className="flex-1">{playbackError}</span>
           <button
+            type="button"
             onClick={clearPlaybackError}
             aria-label="Dismiss error"
             className="opacity-60 hover:opacity-100"
@@ -195,6 +196,7 @@ export default function Player() {
           >
             {queue.map((t, i) => (
               <button
+                type="button"
                 key={`${t.spotifyTrackId}-${i}`}
                 onClick={() => playFromQueue(i)}
                 className={[
@@ -293,6 +295,7 @@ function DevicePicker({
         )}
       </select>
       <button
+        type="button"
         onClick={onRefresh}
         disabled={loading}
         title="Refresh device list"
@@ -362,6 +365,7 @@ function ConnectControls({
     <div className="flex flex-col items-center gap-2 py-3">
       <div className="flex items-center justify-center gap-3">
         <button
+          type="button"
           onClick={onPrev}
           disabled={!hasPrev}
           aria-label="Previous track"
@@ -378,6 +382,7 @@ function ConnectControls({
         </button>
 
         <button
+          type="button"
           onClick={onTogglePause}
           aria-label={isPlaying ? "Pause" : "Play"}
           className="w-14 h-14 rounded-full flex items-center justify-center active:scale-95 transition-all"
@@ -399,6 +404,7 @@ function ConnectControls({
         </button>
 
         <button
+          type="button"
           onClick={onNext}
           disabled={!hasNext}
           aria-label="Next track"
