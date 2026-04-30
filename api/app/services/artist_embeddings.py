@@ -14,6 +14,7 @@ Uses admin_supabase (service role) to bypass RLS — this is a trusted backend j
 from __future__ import annotations
 
 import time
+from typing import Callable
 
 from app.services.embedding import embedder
 from app.services.supabase_client import admin_supabase
@@ -26,13 +27,18 @@ BATCH_SIZE = 64
 MAX_TOTAL = 2000
 
 
-def run_artist_embeddings(batch_size: int = BATCH_SIZE) -> dict:
+def run_artist_embeddings(
+    batch_size: int = BATCH_SIZE,
+    progress: Callable[[str], None] | None = None,
+) -> dict:
     """Process all un-embedded artists in batches. Returns summary stats."""
     total_embedded = 0
     total_skipped = 0
     batch_num = 0
     last_error: str | None = None
     consecutive_failures = 0
+    if progress:
+        progress("Generating embeddings (starting)")
 
     # If we fail this many batches in a row without embedding anything, bail
     # out — re-querying the same un-embedded rows just burns API quota and
@@ -129,6 +135,8 @@ def run_artist_embeddings(batch_size: int = BATCH_SIZE) -> dict:
             total_embedded += len(valid_candidates)
             consecutive_failures = 0
             print(f"artist_embeddings: batch {batch_num} done — {total_embedded} total so far")
+            if progress:
+                progress(f"Generating embeddings ({total_embedded} embedded)")
         except Exception as exc:
             err = f"DB write error: {type(exc).__name__}: {exc}"
             print(f"artist_embeddings: batch {batch_num} {err}")

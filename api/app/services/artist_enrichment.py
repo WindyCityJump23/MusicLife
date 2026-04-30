@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 import time
 import urllib.parse
+from typing import Callable
 
 import httpx
 
@@ -28,7 +29,9 @@ from app.services.supabase_client import admin_supabase
 # ---------------------------------------------------------------------------
 
 
-def run_artist_enrichment() -> None:
+def run_artist_enrichment(
+    progress: Callable[[str], None] | None = None,
+) -> None:
     result = (
         admin_supabase.table("artists")
         .select("id, name, spotify_artist_id")
@@ -41,9 +44,14 @@ def run_artist_enrichment() -> None:
     candidates = result.data or []
     if not candidates:
         print("artist_enrichment: no candidates found")
+        if progress:
+            progress("Enriching artists (nothing to do)")
         return
 
-    print(f"artist_enrichment: enriching {len(candidates)} artists")
+    total = len(candidates)
+    print(f"artist_enrichment: enriching {total} artists")
+    if progress:
+        progress(f"Enriching artists (0/{total})")
 
     with httpx.Client(timeout=10) as client:
         for i, artist in enumerate(candidates):
@@ -53,6 +61,8 @@ def run_artist_enrichment() -> None:
                 _enrich_one(client, artist)
             except Exception as exc:
                 print(f"artist_enrichment: failed for {artist['name']!r}: {exc}")
+            if progress:
+                progress(f"Enriching artists ({i + 1}/{total})")
 
     print("artist_enrichment: done")
 
