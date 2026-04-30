@@ -37,6 +37,10 @@ export default function Player() {
   const apiReadyRef = useRef(false);
   const playNextRef = useRef(playNext);
   const pendingTrackRef = useRef<string | null>(null);
+  // Guard so we only auto-advance once per track end, reset on track change.
+  const advancedRef = useRef(false);
+  const wasPlayingRef = useRef(false);
+  const lastPositionRef = useRef(0);
   playNextRef.current = playNext;
 
   // ── Load Spotify IFrame API once ─────────────────────────────
@@ -70,14 +74,30 @@ export default function Player() {
             if (!data) return;
             const { isPaused, isBuffering, duration, position } = data;
 
+            // A large drop in position means a new track was loaded — reset guard.
             if (
-              isPaused &&
-              !isBuffering &&
-              duration > 0 &&
-              position > 0 &&
-              duration - position < 2000
+              position + 5000 < lastPositionRef.current ||
+              (position < 1500 && lastPositionRef.current > 5000)
             ) {
-              setTimeout(() => playNextRef.current(), 600);
+              advancedRef.current = false;
+            }
+            lastPositionRef.current = position;
+
+            const wasPlaying = wasPlayingRef.current;
+            wasPlayingRef.current = !isPaused && !isBuffering;
+
+            if (advancedRef.current) return;
+
+            // Detect end-of-track: paused near the end after having been playing,
+            // OR position reached/exceeded duration.
+            const nearEnd =
+              duration > 0 && position > 0 && duration - position < 3000;
+            const reachedEnd = duration > 0 && position >= duration;
+            const justEnded = wasPlaying && isPaused && !isBuffering && nearEnd;
+
+            if ((justEnded || reachedEnd) && !isBuffering) {
+              advancedRef.current = true;
+              setTimeout(() => playNextRef.current(), 300);
             }
           });
 
@@ -116,6 +136,11 @@ export default function Player() {
   // ── When embedTrackId changes, load it into the existing controller ──
   useEffect(() => {
     if (!embedTrackId) return;
+
+    // New track loading — clear auto-advance guard and reset position tracking.
+    advancedRef.current = false;
+    wasPlayingRef.current = false;
+    lastPositionRef.current = 0;
 
     if (controllerRef.current) {
       controllerRef.current.loadUri(`spotify:track:${embedTrackId}`);
