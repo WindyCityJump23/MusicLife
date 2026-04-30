@@ -1,11 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import SyncButton from "./SyncButton";
-import EnrichButton from "./EnrichButton";
-import EmbedButton from "./EmbedButton";
-import SourcesButton from "./SourcesButton";
-import PopulateTracksButton from "./PopulateTracksButton";
+import SetupAllButton from "./SetupAllButton";
 
 export type View = "library" | "discover" | "playlists" | "activity" | "saved";
 
@@ -200,50 +196,19 @@ export default function Sidebar({
           </p>
         )}
 
-        <StepItem
-          step={1}
-          title={STEP_META[0].title}
-          desc={STEP_META[0].desc}
-          done={completedSteps.has(1)}
-        >
-          <SyncButton onComplete={checkLibraryStatus} />
-        </StepItem>
+        <SetupAllButton onProgress={checkLibraryStatus} />
 
-        <StepItem
-          step={2}
-          title={STEP_META[1].title}
-          desc={STEP_META[1].desc}
-          done={completedSteps.has(2)}
-        >
-          <EnrichButton onComplete={checkLibraryStatus} />
-        </StepItem>
-
-        <StepItem
-          step={3}
-          title={STEP_META[2].title}
-          desc={STEP_META[2].desc}
-          done={completedSteps.has(3)}
-        >
-          <EmbedButton onComplete={checkLibraryStatus} />
-        </StepItem>
-
-        <StepItem
-          step={4}
-          title={STEP_META[3].title}
-          desc={STEP_META[3].desc}
-          done={completedSteps.has(4)}
-        >
-          <SourcesButton onComplete={checkLibraryStatus} />
-        </StepItem>
-
-        <StepItem
-          step={5}
-          title={STEP_META[4].title}
-          desc={STEP_META[4].desc}
-          done={completedSteps.has(5)}
-        >
-          <PopulateTracksButton onComplete={checkLibraryStatus} />
-        </StepItem>
+        <div className="space-y-2 pt-1">
+          {STEP_META.map((s) => (
+            <StepItem
+              key={s.step}
+              step={s.step}
+              title={s.title}
+              desc={s.desc}
+              done={completedSteps.has(s.step)}
+            />
+          ))}
+        </div>
         </div>}
       </div>
 
@@ -267,35 +232,28 @@ function StepItem({
   title,
   desc,
   done,
-  children,
 }: {
   step: number;
   title: string;
   desc: string;
   done: boolean;
-  children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-1.5">
-      {/* Step label row */}
-      <div className="flex items-start gap-2">
-        <div
-          className={[
-            "flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold mt-0.5 transition-colors",
-            done
-              ? "bg-emerald-500 text-white"
-              : "bg-neutral-200 text-neutral-500",
-          ].join(" ")}
-        >
-          {done ? "✓" : step}
-        </div>
-        <div>
-          <div className="text-xs font-medium text-neutral-800 leading-tight">{title}</div>
-          <div className="text-[10px] text-neutral-400 leading-snug mt-0.5">{desc}</div>
-        </div>
+    <div className="flex items-start gap-2">
+      <div
+        className={[
+          "flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold mt-0.5 transition-colors",
+          done
+            ? "bg-emerald-500 text-white"
+            : "bg-neutral-200 text-neutral-500",
+        ].join(" ")}
+      >
+        {done ? "✓" : step}
       </div>
-      {/* Button */}
-      <div className="pl-7">{children}</div>
+      <div>
+        <div className="text-xs font-medium text-neutral-800 leading-tight">{title}</div>
+        <div className="text-[10px] text-neutral-400 leading-snug mt-0.5">{desc}</div>
+      </div>
     </div>
   );
 }
