@@ -13,16 +13,25 @@ const TOTAL_STEPS = 5;
 const STORAGE_KEY = "musiclife.setupAll.jobId";
 const POLL_INTERVAL_MS = 2500;
 
-function parseStep(message: string): { step: number; label: string } | null {
+function parseStep(message: string): { step: number; totalSteps: number; label: string; processed?: number; total?: number } | null {
   const match = message.match(/^Step\s+(\d+)\/(\d+):\s*(.+)$/i);
   if (!match) return null;
-  return { step: parseInt(match[1], 10), label: match[3].trim() };
+  const label = match[3].trim();
+  const progressMatch = label.match(/\((\d+)\/(\d+)\)/);
+  return {
+    step: parseInt(match[1], 10),
+    totalSteps: parseInt(match[2], 10),
+    label,
+    processed: progressMatch ? parseInt(progressMatch[1], 10) : undefined,
+    total: progressMatch ? parseInt(progressMatch[2], 10) : undefined,
+  };
 }
 
 export default function SetupAllButton({ onProgress }: { onProgress?: () => void }) {
   const [state, setState]     = useState<RunState>("idle");
   const [message, setMessage] = useState("");
   const [step, setStep]       = useState(0);
+  const [itemProgress, setItemProgress] = useState<{ processed: number; total: number } | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastMessageRef = useRef("");
 
@@ -41,7 +50,12 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
         setState("running");
         setMessage(data.message || "Working…");
         const parsed = parseStep(data.message || "");
-        if (parsed) setStep(parsed.step);
+        if (parsed) {
+          setStep(parsed.step);
+          if (parsed.processed !== undefined && parsed.total !== undefined && parsed.total > 0) {
+            setItemProgress({ processed: parsed.processed, total: parsed.total });
+          }
+        }
         if (data.message && data.message !== lastMessageRef.current) {
           lastMessageRef.current = data.message;
           onProgress?.();
@@ -54,6 +68,7 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
         setState("success");
         setStep(TOTAL_STEPS);
         setMessage(data.message || "Library is ready");
+        setItemProgress(null);
         onProgress?.();
         return true;
       }
@@ -62,6 +77,7 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
         try { localStorage.removeItem(STORAGE_KEY); } catch {}
         setState("error");
         setMessage(data.message || "Setup failed");
+        setItemProgress(null);
         return true;
       }
       // unknown — job expired or never existed
@@ -70,6 +86,7 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
       setState("idle");
       setMessage("");
       setStep(0);
+      setItemProgress(null);
       return true;
     },
     [cleanup, onProgress]
@@ -109,6 +126,7 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
     setState("running");
     setStep(0);
     setMessage("Starting…");
+    setItemProgress(null);
 
     try {
       const res = await fetch("/api/setup-all", { method: "POST" });
@@ -140,6 +158,8 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
 
   const progressPct =
     state === "success" ? 100
+    : state === "running" && itemProgress && step === TOTAL_STEPS
+      ? (((step - 1) + (itemProgress.processed / itemProgress.total)) / TOTAL_STEPS) * 100
     : state === "running" && step > 0 ? ((step - 0.5) / TOTAL_STEPS) * 100
     : 0;
 
