@@ -181,6 +181,52 @@ def _run_embed_tracks(job_id: str):
         print(f"embed_tracks: FAILED: {exc}")
 
 
+@router.post("/backfill-track-tags")
+def backfill_track_tags(
+    bg: BackgroundTasks,
+    refresh: bool = False,
+    limit: int | None = None,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Fetch Last.fm tags for tracks and refresh their embedding source.
+
+    Resets ``tracks.embedding`` to NULL on success so the next
+    ``/ingest/embed-tracks`` run picks them up with the new mood-aware
+    source.
+    """
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+    job_id = str(uuid.uuid4())
+    create_job(job_id, "backfill-track-tags")
+    bg.add_task(_run_backfill_track_tags, job_id, refresh, limit)
+    return {"status": "queued", "job_id": job_id}
+
+
+def _run_backfill_track_tags(job_id: str, refresh: bool, limit: int | None):
+    from app.services.track_tag_backfill import run_track_tag_backfill
+
+    update_job(job_id, JobStatus.RUNNING, "Fetching Last.fm track tags...")
+    try:
+        summary = run_track_tag_backfill(refresh=refresh, limit=limit)
+        total = summary.get("total", 0)
+        updated = summary.get("updated", 0)
+        no_tags = summary.get("no_tags", 0)
+        errors = summary.get("errors", 0)
+        msg = f"Tagged {updated}/{total} tracks"
+        if no_tags:
+            msg += f" ({no_tags} no tags found)"
+        if errors:
+            msg += f" ({errors} errors)"
+        last_err = summary.get("last_error")
+        if last_err:
+            msg += f" — last error: {last_err}"
+        update_job(job_id, JobStatus.SUCCESS, msg[:500])
+        print(f"backfill_track_tags: completed — {msg}")
+    except Exception as exc:
+        update_job(job_id, JobStatus.FAILED, str(exc)[:500])
+        print(f"backfill_track_tags: FAILED: {exc}")
+
+
 @router.post("/sources")
 def ingest_sources(
     bg: BackgroundTasks,
@@ -352,6 +398,7 @@ def latest_job_statuses(
         "sources",
         "populate-tracks",
         "embed-tracks",
+        "backfill-track-tags",
     ]
     result = {}
     for kind in kinds:

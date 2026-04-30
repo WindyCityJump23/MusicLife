@@ -273,7 +273,7 @@ def recommend_songs(
     # inheriting the artist-level mention match.
     tracks_resp = (
         client.table("tracks")
-        .select("id,name,artist_id,album_name,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
+        .select("id,name,artist_id,album_name,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding,tags")
         .in_("artist_id", top_artist_ids)
         .range(0, 9999)
         .execute()
@@ -397,6 +397,12 @@ def recommend_songs(
                 reasons.append(f"Featured in {src_name}" if src_name else "In the press")
             if track_pop > 0.7:
                 reasons.append("Popular track")
+            track_tags = [t for t in (track.get("tags") or []) if t]
+            if track_tags and has_explicit_prompt and track_context > 0.55:
+                # Only surface tags as a reason when they likely drove
+                # the match — a strong context score with a prompt.
+                preview = ", ".join(track_tags[:3])
+                reasons.append(f"Tagged: {preview}")
             if in_library:
                 reasons.append("Already in your library")
             elif is_library_artist and not in_library:
@@ -422,6 +428,7 @@ def recommend_songs(
                     "track_embedding": used_track_embedding,
                 },
                 "genres": a_info["genres"],
+                "tags": track_tags,
                 "reasons": reasons,
                 "mention_count": a_info["mention_count"],
                 "top_mention": a_info["best_mention"],

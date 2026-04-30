@@ -155,7 +155,7 @@ def backfill_embedding_source() -> dict:
     while True:
         resp = (
             admin_supabase.table("tracks")
-            .select("id, name, album_name, artist_id")
+            .select("id, name, album_name, artist_id, tags")
             .is_("embedding_source", "null")
             .range(offset, offset + page_size - 1)
             .execute()
@@ -181,6 +181,7 @@ def backfill_embedding_source() -> dict:
                 artist_name=artist_names.get(int(r["artist_id"])) if r.get("artist_id") else None,
                 track_name=r.get("name"),
                 album_name=r.get("album_name"),
+                tags=r.get("tags") or [],
             )
             if not source:
                 continue
@@ -201,12 +202,14 @@ def _build_embedding_source(
     artist_name: str | None,
     track_name: str | None,
     album_name: str | None,
+    tags: list[str] | None = None,
 ) -> str:
     """Compose the text we embed for a track.
 
-    Format: ``"{artist} – {title} – {album}"``. The artist name is the
-    biggest single signal for genre/mood without a lyric corpus; the
-    album name often carries era/style context.
+    Format: ``"{artist} – {title} – {album} | tags: t1, t2, t3"``. The
+    artist name is the biggest single signal for genre/mood without a
+    lyric corpus; the album name carries era/style context; the tags
+    (Last.fm track-level descriptors) carry the song's specific mood.
     """
     parts = [
         (artist_name or "").strip(),
@@ -214,4 +217,8 @@ def _build_embedding_source(
         (album_name or "").strip(),
     ]
     parts = [p for p in parts if p]
-    return " – ".join(parts)
+    base = " – ".join(parts)
+    cleaned_tags = [t for t in (tags or []) if t]
+    if cleaned_tags:
+        base = f"{base} | tags: {', '.join(cleaned_tags)}"
+    return base
