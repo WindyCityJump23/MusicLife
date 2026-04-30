@@ -301,34 +301,32 @@ def recommend_songs(
         }
 
     # ── Phase 2: Fetch tracks for top artists ────────────────────
-    # Only expand songs for the top N artists to keep API calls manageable.
-    top_artist_ids = sorted(
-        artist_scores.keys(),
-        key=lambda a: artist_scores[a]["base_score"],
-        reverse=True,
-    )[: limit * 8]  # Expand many more artists for diversity
+    # Wider fan-out (limit*12) gives the diversity re-ranker more
+    # material to work with; the cap is still bounded so the per-track
+    # scoring loop stays cheap.
+    FAN_OUT = max(limit * 12, 50)
 
-    if not top_artist_ids:
-        return []
-
-    # ── BM25 lookup: literal phrase match on track text ────────────
-    # Vector cosine handles semantic prompts ("rainy night" → moody
-    # ballads), but it can wash out literal queries ("Bohemian
-    # Rhapsody", "songs about rain"). We query the tsvector index so
-    # matches on title/album/tags get an explicit score that we blend
-    # into the per-track context. Only meaningful with an explicit
-    # prompt — without one, the "query" would be the user's own taste
-    # vector, which has no text form.
+    # ── BM25 cross-artist expansion ──────────────────────────────
+    # Run an unrestricted BM25 lookup first so artists the vector
+    # missed but who have textually-strong matching tracks still get
+    # considered. Their matches are also stored in bm25_by_track and
+    # used for the per-track context blend below.
     bm25_by_track: dict[int, float] = {}
     bm25_max = 0.0
+    bm25_artist_ids: set[int] = set()
     if has_explicit_prompt and prompt_text and prompt_text.strip():
         try:
             rpc_resp = client.rpc(
                 "search_tracks_bm25",
-                {"q": prompt_text.strip(), "artist_ids": top_artist_ids},
+                {
+                    "q": prompt_text.strip(),
+                    "artist_ids": None,
+                    "max_results": max(FAN_OUT * 4, 200),
+                },
             ).execute()
             for row in (rpc_resp.data or []):
                 tid = row.get("track_id")
+                aid_row = row.get("artist_id")
                 rank = row.get("rank")
                 if tid is None or rank is None:
                     continue
@@ -336,6 +334,8 @@ def recommend_songs(
                 if rank_f <= 0:
                     continue
                 bm25_by_track[int(tid)] = rank_f
+                if aid_row is not None:
+                    bm25_artist_ids.add(int(aid_row))
                 if rank_f > bm25_max:
                     bm25_max = rank_f
             if bm25_by_track:
@@ -352,6 +352,33 @@ def recommend_songs(
         if not track_id or bm25_max <= 0:
             return 0.0
         return bm25_by_track.get(int(track_id), 0.0) / bm25_max
+
+    # Build the candidate pool. Start with the top FAN_OUT artists by
+    # base_score, then union in artists pulled in by BM25 — these are
+    # artists whose tracks textually matched the prompt even though
+    # the artist's vector didn't make the cut.
+    top_artist_ids = sorted(
+        artist_scores.keys(),
+        key=lambda a: artist_scores[a]["base_score"],
+        reverse=True,
+    )[:FAN_OUT]
+    if bm25_artist_ids:
+        # Cap how many BM25-only artists we admit so a noisy text
+        # match doesn't crowd out the taste-driven pool.
+        bm25_only = [
+            aid for aid in bm25_artist_ids
+            if aid in artist_scores and aid not in top_artist_ids
+        ]
+        if bm25_only:
+            keep = bm25_only[: max(FAN_OUT // 2, 20)]
+            top_artist_ids = list(top_artist_ids) + keep
+            print(
+                f"song_ranking: pool widened by bm25 — "
+                f"+{len(keep)} artists (total {len(top_artist_ids)})"
+            )
+
+    if not top_artist_ids:
+        return []
 
     # Get tracks from DB for these artists. We pull the track embedding
     # so the context signal can be computed track-by-track instead of
