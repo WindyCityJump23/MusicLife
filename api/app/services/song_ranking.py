@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 
 from supabase import Client
 
+from app.services.mood import detect_mood, mood_fit
 from app.services.ranking import (
     _cosine_similarity,
     _diversity_rerank,
@@ -164,6 +165,14 @@ def recommend_songs(
 
     effective_prompt_vector = prompt_vector if prompt_vector else taste_vector
     has_explicit_prompt = prompt_vector is not None
+
+    # Detect a mood category from the prompt ("chill", "energetic",
+    # etc.). When present, we blend a tag-overlap mood-fit score into
+    # each track's context — a tag-based stand-in for the audio
+    # features Spotify deprecated for new apps.
+    active_mood = detect_mood(prompt_text) if has_explicit_prompt else None
+    if active_mood:
+        print(f"song_ranking: active mood = {active_mood!r}")
 
     # ── Phase 1: Score each artist (same as artist-level engine) ─
     # NOTE: We include library artists in scoring (don't skip them)
@@ -375,6 +384,7 @@ def recommend_songs(
             track_id = track.get("id")
             track_pop = float(track.get("popularity") or 50) / 100.0
             track_bm25 = _bm25_norm(track_id)
+            track_mood_fit = mood_fit(active_mood, track.get("tags"))
 
             # ── Per-track context score ──────────────────────────
             # Prefer cosine(prompt, track.embedding). This is the core
@@ -414,6 +424,11 @@ def recommend_songs(
                 track_context = 0.65 * vector_context + 0.35 * track_bm25
             else:
                 track_context = vector_context
+
+            # Mood-fit boost (tag overlap). Additive and capped at +0.15
+            # so it nudges mood-aligned tracks up without dominating.
+            if track_mood_fit > 0:
+                track_context = min(1.0, track_context + 0.15 * track_mood_fit)
 
             # Recompute the base score per track using the (possibly)
             # track-specific affinity and context. Editorial stays at
@@ -464,6 +479,8 @@ def recommend_songs(
                 # Strong literal phrase match — title, album, or a tag
                 # contained the user's query terms.
                 reasons.append("Title/tag match")
+            if active_mood and track_mood_fit >= 0.4:
+                reasons.append(f"Mood: {active_mood}")
             track_tags = [t for t in (track.get("tags") or []) if t]
             if track_tags and has_explicit_prompt and track_context > 0.55:
                 # Only surface tags as a reason when they likely drove
@@ -494,6 +511,8 @@ def recommend_songs(
                     "track_popularity": round(track_pop, 4),
                     "track_embedding": used_track_embedding,
                     "bm25": round(track_bm25, 4),
+                    "mood": active_mood,
+                    "mood_fit": round(track_mood_fit, 4),
                 },
                 "genres": a_info["genres"],
                 "tags": track_tags,
