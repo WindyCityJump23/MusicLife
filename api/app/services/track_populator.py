@@ -122,6 +122,22 @@ def _fetch_all_artists() -> list[dict]:
     return all_rows
 
 
+def _compose_embedding_source(
+    artist_name: str | None,
+    track_name: str | None,
+    album_name: str | None,
+) -> str | None:
+    parts = [
+        (artist_name or "").strip(),
+        (track_name or "").strip(),
+        (album_name or "").strip(),
+    ]
+    parts = [p for p in parts if p]
+    if not parts:
+        return None
+    return " – ".join(parts)
+
+
 def _search_and_upsert_tracks(
     client: httpx.Client,
     headers: dict[str, str],
@@ -177,14 +193,21 @@ def _search_and_upsert_tracks(
         if not spotify_track_id:
             continue
 
+        track_name = track.get("name") or "Unknown"
+        album_name = (track.get("album") or {}).get("name")
+        embedding_source = _compose_embedding_source(
+            artist_name, track_name, album_name
+        )
+
         rows.append({
             "spotify_track_id": spotify_track_id,
             "artist_id": artist_db_id,
-            "name": track.get("name") or "Unknown",
-            "album_name": (track.get("album") or {}).get("name"),
+            "name": track_name,
+            "album_name": album_name,
             "duration_ms": track.get("duration_ms"),
             "explicit": track.get("explicit") or False,
             "popularity": track.get("popularity"),
+            "embedding_source": embedding_source,
         })
 
     if not rows:

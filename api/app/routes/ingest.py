@@ -127,6 +127,60 @@ def _run_embed_artists(job_id: str):
         print(f"embed_artists: FAILED: {exc}")
 
 
+@router.post("/embed-tracks")
+def embed_tracks(
+    bg: BackgroundTasks,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Generate embeddings for tracks (track-level context matching).
+
+    Runs a backfill pass first to fill embedding_source for any rows
+    populated before the column existed, then embeds everything still
+    missing a vector.
+    """
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+    job_id = str(uuid.uuid4())
+    create_job(job_id, "embed-tracks")
+    bg.add_task(_run_embed_tracks, job_id)
+    return {"status": "queued", "job_id": job_id}
+
+
+def _run_embed_tracks(job_id: str):
+    from app.services.track_embeddings import (
+        backfill_embedding_source,
+        run_track_embeddings,
+    )
+
+    update_job(job_id, JobStatus.RUNNING, "Generating track embeddings...")
+    try:
+        backfill = backfill_embedding_source()
+        summary = run_track_embeddings()
+        embedded = summary.get("embedded", 0) if isinstance(summary, dict) else 0
+        skipped = summary.get("skipped", 0) if isinstance(summary, dict) else 0
+        batches = summary.get("batches", 0) if isinstance(summary, dict) else 0
+        backfilled = backfill.get("updated", 0) if isinstance(backfill, dict) else 0
+        last_error = summary.get("last_error") if isinstance(summary, dict) else None
+        msg = f"Embedded {embedded} tracks in {batches} batches"
+        if backfilled:
+            msg += f" (backfilled {backfilled} sources)"
+        if skipped:
+            msg += f" ({skipped} skipped)"
+        if embedded == 0 and skipped > 0:
+            reason = last_error or "no tracks were embedded"
+            failure_msg = f"{msg} — embedding failed: {reason}"[:500]
+            update_job(job_id, JobStatus.FAILED, failure_msg)
+            print(f"embed_tracks: FAILED — {failure_msg}")
+        else:
+            if last_error:
+                msg += f" — last error: {last_error}"
+            update_job(job_id, JobStatus.SUCCESS, msg[:500])
+            print(f"embed_tracks: completed — {msg}")
+    except Exception as exc:
+        update_job(job_id, JobStatus.FAILED, str(exc)[:500])
+        print(f"embed_tracks: FAILED: {exc}")
+
+
 @router.post("/sources")
 def ingest_sources(
     bg: BackgroundTasks,
@@ -291,7 +345,14 @@ def latest_job_statuses(
     show completion state without needing to track individual job IDs."""
     token = require_bearer_token(credentials)
     ensure_valid_bearer_token(token)
-    kinds = ["spotify-library", "enrich-artists", "embed-artists", "sources", "populate-tracks"]
+    kinds = [
+        "spotify-library",
+        "enrich-artists",
+        "embed-artists",
+        "sources",
+        "populate-tracks",
+        "embed-tracks",
+    ]
     result = {}
     for kind in kinds:
         job = get_latest_by_kind(kind)
