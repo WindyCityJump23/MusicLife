@@ -11,7 +11,17 @@ type RunState = "idle" | "running" | "success" | "error";
 
 const TOTAL_STEPS = 5;
 const STORAGE_KEY = "musiclife.setupAll.jobId";
+const LEADER_KEY = "musiclife.setupAll.pollLeader";
+const TAB_ID_KEY = "musiclife.setupAll.tabId";
 const POLL_INTERVAL_MS = 2500;
+const LEADER_STALE_MS = 8000;
+
+function getOrCreateTabId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 function parseStep(message: string): { step: number; totalSteps: number; label: string; processed?: number; total?: number } | null {
   const match = message.match(/^Step\s+(\d+)\/(\d+):\s*(.+)$/i);
@@ -34,6 +44,8 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
   const [itemProgress, setItemProgress] = useState<{ processed: number; total: number } | null>(null);
   const intervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlightRef = useRef(false);
+  const tabIdRef = useRef("");
+  const hasLeaderRef = useRef(false);
   const lastMessageRef = useRef("");
 
   const cleanup = useCallback(() => {
@@ -44,6 +56,72 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
   }, []);
 
   useEffect(() => () => cleanup(), [cleanup]);
+
+  useEffect(() => {
+    try {
+      const existing = localStorage.getItem(TAB_ID_KEY);
+      if (existing) {
+        tabIdRef.current = existing;
+      } else {
+        const created = getOrCreateTabId();
+        tabIdRef.current = created;
+        localStorage.setItem(TAB_ID_KEY, created);
+      }
+    } catch {
+      tabIdRef.current = getOrCreateTabId();
+    }
+  }, []);
+
+  const tryBecomeLeader = useCallback(() => {
+    const now = Date.now();
+    const mine = tabIdRef.current || getOrCreateTabId();
+    tabIdRef.current = mine;
+    try {
+      const raw = localStorage.getItem(LEADER_KEY);
+      const leader = raw ? JSON.parse(raw) as { tabId?: string; ts?: number } : null;
+      const stale = !leader?.ts || (now - leader.ts) > LEADER_STALE_MS;
+      if (!leader?.tabId || leader.tabId === mine || stale) {
+        localStorage.setItem(LEADER_KEY, JSON.stringify({ tabId: mine, ts: now }));
+        hasLeaderRef.current = true;
+        return true;
+      }
+      hasLeaderRef.current = false;
+      return false;
+    } catch {
+      hasLeaderRef.current = true;
+      return true;
+    }
+  }, []);
+
+  const heartbeatLeader = useCallback(() => {
+    if (!hasLeaderRef.current) return;
+    const mine = tabIdRef.current;
+    if (!mine) return;
+    try {
+      localStorage.setItem(LEADER_KEY, JSON.stringify({ tabId: mine, ts: Date.now() }));
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== LEADER_KEY) return;
+      tryBecomeLeader();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [tryBecomeLeader]);
+
+  useEffect(() => () => {
+    if (!hasLeaderRef.current) return;
+    const mine = tabIdRef.current;
+    try {
+      const raw = localStorage.getItem(LEADER_KEY);
+      const leader = raw ? JSON.parse(raw) as { tabId?: string } : null;
+      if (leader?.tabId === mine) {
+        localStorage.removeItem(LEADER_KEY);
+      }
+    } catch {}
+  }, []);
 
   const handleStatus = useCallback(
     (data: JobStatusResponse) => {
@@ -97,6 +175,11 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
     (jobId: string) => {
       cleanup();
       const tick = async () => {
+        if (!tryBecomeLeader()) {
+          intervalRef.current = setTimeout(tick, POLL_INTERVAL_MS);
+          return;
+        }
+        heartbeatLeader();
         if (inFlightRef.current) return;
         inFlightRef.current = true;
         try {
@@ -114,7 +197,7 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
       };
       tick();
     },
-    [cleanup, handleStatus]
+    [cleanup, handleStatus, heartbeatLeader, tryBecomeLeader]
   );
 
   // Resume any in-flight setup on mount.
