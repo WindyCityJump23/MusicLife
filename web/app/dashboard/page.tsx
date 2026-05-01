@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Sidebar, { type View } from "./sidebar";
 import LibraryView from "./library-view";
 import DiscoverView from "./discover-view";
@@ -47,10 +47,14 @@ function DashboardInner() {
     };
   }, [navOpen, playerOpen]);
 
-  function handleNavChange(v: View) {
+  const handleNavChange = useCallback((v: View) => {
     setView(v);
     setNavOpen(false);
-  }
+  }, []);
+
+  const handleSetupComplete = useCallback(() => {
+    handleNavChange("discover");
+  }, [handleNavChange]);
 
   return (
     <>
@@ -113,7 +117,7 @@ function DashboardInner() {
             active={view}
             onChange={handleNavChange}
             onClose={() => setNavOpen(false)}
-            onSetupComplete={() => handleNavChange("discover")}
+            onSetupComplete={handleSetupComplete}
           />
         </aside>
 
@@ -138,7 +142,7 @@ function DashboardInner() {
             </header>
             <div className="view-fade-in" key={view}>
               {view === "library" && (
-                <LibraryView onSetupComplete={() => handleNavChange("discover")} />
+                <LibraryView onSetupComplete={handleSetupComplete} />
               )}
               {view === "discover" && <DiscoverView onNavigate={(v) => setView(v as View)} />}
               {view === "playlists" && <PlaylistsView />}

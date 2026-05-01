@@ -29,9 +29,16 @@ export default function SetupAllButton({
   const [state, setState]     = useState<RunState>("idle");
   const [message, setMessage] = useState("");
   const [step, setStep]       = useState(0);
-  const intervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
+  const intervalRef    = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastMessageRef = useRef("");
-  const completedRef = useRef(false);
+  const completedRef   = useRef(false);
+  // Keep callbacks in refs so handleStatus / startPolling don't need them
+  // in their dependency arrays — avoids re-creating those callbacks (and
+  // re-firing the startPolling useEffect) on every parent render.
+  const onProgressRef = useRef(onProgress);
+  const onCompleteRef = useRef(onComplete);
+  onProgressRef.current = onProgress;
+  onCompleteRef.current = onComplete;
 
   const cleanup = useCallback(() => {
     if (intervalRef.current) {
@@ -51,7 +58,7 @@ export default function SetupAllButton({
         if (parsed) setStep(parsed.step);
         if (data.message && data.message !== lastMessageRef.current) {
           lastMessageRef.current = data.message;
-          onProgress?.();
+          onProgressRef.current?.();
         }
         return false;
       }
@@ -61,10 +68,10 @@ export default function SetupAllButton({
         setState("success");
         setStep(TOTAL_STEPS);
         setMessage(data.message || "Library is ready");
-        onProgress?.();
+        onProgressRef.current?.();
         if (!completedRef.current) {
           completedRef.current = true;
-          onComplete?.();
+          onCompleteRef.current?.();
         }
         return true;
       }
@@ -83,7 +90,7 @@ export default function SetupAllButton({
       setStep(0);
       return true;
     },
-    [cleanup, onProgress, onComplete]
+    [cleanup]
   );
 
   const startPolling = useCallback(
