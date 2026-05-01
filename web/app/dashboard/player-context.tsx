@@ -329,39 +329,16 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   );
 
   const playNext = useCallback(async () => {
-    if (modeRef.current === "connect" && deviceIdRef.current) {
-      // Deterministic skip: jump to the next queue index and start playback
-      // from that exact position, instead of relying on /next state.
-      const nextIdx = indexRef.current + 1;
-      if (nextIdx < queueRef.current.length) {
-        await playFromQueue(nextIdx);
-      }
-      return;
-    }
-
-    // Embed mode: advance our local index and reload the iframe.
     const nextIdx = indexRef.current + 1;
     if (nextIdx < queueRef.current.length) {
-      indexRef.current = nextIdx;
-      setCurrentIndex(nextIdx);
-      setEmbedTrackIdState(queueRef.current[nextIdx].spotifyTrackId);
+      await playFromQueue(nextIdx);
     }
   }, [playFromQueue]);
 
   const playPrev = useCallback(async () => {
-    if (modeRef.current === "connect" && deviceIdRef.current) {
-      const prevIdx = indexRef.current - 1;
-      if (prevIdx >= 0) {
-        await playFromQueue(prevIdx);
-      }
-      return;
-    }
-
     const prevIdx = indexRef.current - 1;
     if (prevIdx >= 0) {
-      indexRef.current = prevIdx;
-      setCurrentIndex(prevIdx);
-      setEmbedTrackIdState(queueRef.current[prevIdx].spotifyTrackId);
+      await playFromQueue(prevIdx);
     }
   }, [playFromQueue]);
 

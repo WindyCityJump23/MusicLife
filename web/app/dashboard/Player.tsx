@@ -570,7 +570,12 @@ const EmbedPlayer = forwardRef<
       const ctrl = controllerRef.current;
       if (!ctrl) return;
       try {
-        if (wasPlayingRef.current) {
+        // Prefer togglePlay() — Spotify's SDK method that handles the
+        // play/pause flip internally, so we don't rely on our own state
+        // tracking (which can lag behind the iframe's actual state).
+        if (typeof ctrl.togglePlay === "function") {
+          ctrl.togglePlay();
+        } else if (wasPlayingRef.current) {
           ctrl.pause();
         } else {
           ctrl.play();
