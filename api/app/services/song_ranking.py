@@ -289,7 +289,7 @@ def recommend_songs(
         artist_scores.keys(),
         key=lambda a: artist_scores[a]["base_score"],
         reverse=True,
-    )[: limit * 8]  # Expand many more artists for diversity
+    )[: limit * 10]  # Expand a broader artist frontier for better song discovery
 
     if not top_artist_ids:
         return []
@@ -305,6 +305,46 @@ def recommend_songs(
         .execute()
     )
     all_tracks = tracks_resp.data or []
+
+
+    # If the result pool is still shallow, widen artist frontier using
+    # genre-neighbor artists related to the current top set. This helps
+    # discover more songs without requiring a separate ingest pass.
+    if len(all_tracks) < max(limit * 6, 30):
+        seed_genres = {
+            g.lower()
+            for aid in top_artist_ids[: max(limit, 10)]
+            for g in (artist_scores.get(aid, {}).get("genres") or [])
+            if g
+        }
+        if seed_genres:
+            extra_artist_ids: list[int] = []
+            for artist in all_artists:
+                aid = artist.get("id")
+                if aid is None:
+                    continue
+                aid_int = int(aid)
+                if aid_int in top_artist_ids:
+                    continue
+                genres = [g.lower() for g in (artist.get("genres") or [])]
+                if not genres:
+                    continue
+                overlap = sum(1 for g in genres if g in seed_genres)
+                if overlap > 0:
+                    extra_artist_ids.append(aid_int)
+                if len(extra_artist_ids) >= limit * 12:
+                    break
+
+            if extra_artist_ids:
+                extra_tracks_resp = (
+                    client.table("tracks")
+                    .select("id,name,artist_id,album_name,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
+                    .in_("artist_id", extra_artist_ids)
+                    .range(0, 9999)
+                    .execute()
+                )
+                extra_tracks = extra_tracks_resp.data or []
+                all_tracks.extend(extra_tracks)
 
     # Group tracks by artist
     tracks_by_artist: dict[int, list[dict]] = defaultdict(list)
@@ -326,7 +366,7 @@ def recommend_songs(
         if not tracks:
             continue
 
-        # Choose the top 2 candidate tracks per artist. When we have
+        # Choose candidate tracks per artist. When we have
         # both a prompt vector and track embeddings, rank by a blend of
         # prompt-fit and popularity so a vibe search ("rainy night",
         # "summer driving") doesn't always surface the artist's biggest
@@ -342,7 +382,8 @@ def recommend_songs(
             return pop
 
         tracks.sort(key=_track_shortlist_score, reverse=True)
-        tracks = tracks[:2]
+        per_artist_cap = 3 if has_explicit_prompt else 2
+        tracks = tracks[:per_artist_cap]
 
         for track in tracks:
             track_name = (track.get("name") or "").strip()
