@@ -434,11 +434,27 @@ def _run_setup_all(
             update_job(job_id, JobStatus.RUNNING, f"Step {step}/{total}: {msg}")
         return cb
 
+    # ── Helper: get a fresh Spotify token (or fall back to current) ────
+    def fresh_token() -> str:
+        """Return a refreshed Spotify access token, or the original if refresh fails."""
+        nonlocal spotify_token
+        if refresh_token and client_id and client_secret:
+            refreshed = _refresh_spotify_token(refresh_token, client_id, client_secret)
+            if refreshed:
+                spotify_token = refreshed  # cache for next call
+                return refreshed
+        return spotify_token
+
     current_stage = "starting"
     try:
+        # Always refresh the token at the start — the original may already
+        # be expired by the time the background job picks up.
+        active_token = fresh_token()
+        print(f"setup_all: using token len={len(active_token)}, had refresh={'yes' if refresh_token else 'no'}", flush=True)
+
         current_stage = "Sync Library"
         progress_for(1)("Syncing Spotify library…")
-        run_spotify_library_ingest(user_id, spotify_token)
+        run_spotify_library_ingest(user_id, active_token)
 
         current_stage = "Enrich Artists"
         progress_for(2)("Enriching artists…")
@@ -460,14 +476,8 @@ def _run_setup_all(
 
         current_stage = "Populate Tracks"
         progress_for(5)("Populating track catalog…")
-        # Refresh the Spotify token before the heaviest step (track population)
-        # since steps 1-4 may have taken 10+ minutes and the original token
-        # could be close to (or past) expiry.
-        active_token = spotify_token
-        if refresh_token and client_id and client_secret:
-            refreshed = _refresh_spotify_token(refresh_token, client_id, client_secret)
-            if refreshed:
-                active_token = refreshed
+        # Refresh again — steps 1-4 may have taken 10+ minutes
+        active_token = fresh_token()
         track_summary = run_track_population(active_token, progress=progress_for(5))
         track_error = track_summary.get("error") if isinstance(track_summary, dict) else None
         if track_error:
