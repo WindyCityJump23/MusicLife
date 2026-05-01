@@ -184,6 +184,32 @@ def recommend_songs(
     effective_prompt_vector = prompt_vector if prompt_vector else taste_vector
     has_explicit_prompt = prompt_vector is not None
 
+    # ── Build per-user genre preference weights ───────────────
+    # The user's library artists have genres. Weight each genre by
+    # how much the user listens to it. This lets genre overlap between
+    # a candidate and the user's taste break ties that embedding
+    # similarity alone can't distinguish.
+    user_genre_weights: dict[str, float] = {}
+    if library_artist_ids:
+        lib_artists_resp = (
+            client.table("artists")
+            .select("id,genres")
+            .in_("id", list(library_artist_ids)[:500])
+            .not_.is_("genres", "null")
+            .range(0, 9999)
+            .execute()
+        )
+        genre_totals: dict[str, float] = defaultdict(float)
+        for a in (lib_artists_resp.data or []):
+            w = artist_weights.get(int(a["id"]), 1.0)
+            for g in (a.get("genres") or []):
+                genre_totals[g.lower()] += w
+        if genre_totals:
+            max_w = max(genre_totals.values())
+            user_genre_weights = {
+                g: v / max_w for g, v in genre_totals.items()
+            }
+
     # ── Phase 1: Score each artist (same as artist-level engine) ─
     # NOTE: We include library artists in scoring (don't skip them)
     # because tracks in the DB mostly belong to library artists.
@@ -203,7 +229,10 @@ def recommend_songs(
     raw_vals = [r for _, r in raw_affinities]
     pct_ranks = _percentile_rank(raw_vals)
 
-    EXPLORATION_STRENGTH = 0.06
+    # Use stronger exploration for non-prompted queries so browsing feels
+    # fresh and different between users.  With a prompt the user has a
+    # specific intent and results should be more deterministic.
+    EXPLORATION_STRENGTH = 0.04 if has_explicit_prompt else 0.10
 
     artist_scores: dict[int, dict] = {}
     for idx, (artist, affinity_raw) in enumerate(raw_affinities):
@@ -215,6 +244,19 @@ def recommend_songs(
             affinity = 0.7 * pct_ranks[idx] + 0.3 * _normalize_01(affinity_raw)
         else:
             affinity = _normalize_01(affinity_raw)
+
+        # ── Genre affinity boost ────────────────────────────────
+        # Embedding similarity alone can miss important user-specific
+        # genre preferences. If the user's library is heavily weighted
+        # towards specific genres, boost artists in those genres.
+        artist_genres = set((g.lower() for g in (artist.get("genres") or [])))
+        if user_genre_weights and artist_genres:
+            genre_boost = sum(
+                user_genre_weights.get(g, 0.0)
+                for g in artist_genres
+            ) / max(len(artist_genres), 1)
+            # Scale: 0 for no overlap, up to ~0.15 boost for strong match
+            affinity = min(1.0, affinity + genre_boost * 0.15)
 
         artist_mentions = mentions_by_artist.get(aid, [])
         context_scores: list[float] = []
@@ -284,12 +326,15 @@ def recommend_songs(
         }
 
     # ── Phase 2: Fetch tracks for top artists ────────────────────
-    # Only expand songs for the top N artists to keep API calls manageable.
+    # Expand all scored artists — with a small catalog (500ish artists with
+    # tracks) limiting to top-N misses user-specific deep cuts. We fetch
+    # tracks for ALL scored artists and let the per-track scoring + diversity
+    # reranking do the filtering.
     top_artist_ids = sorted(
         artist_scores.keys(),
         key=lambda a: artist_scores[a]["base_score"],
         reverse=True,
-    )[: limit * 10]  # Expand a broader artist frontier for better song discovery
+    )[: max(limit * 20, 500)]  # Wider frontier than before to pull from more artists
 
     if not top_artist_ids:
         return []
