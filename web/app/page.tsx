@@ -1,3 +1,6 @@
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+
 const ERROR_MESSAGES: Record<string, string> = {
   no_code: "Spotify did not return an authorization code. Please try again.",
   state_mismatch: "Login session expired or request was tampered with. Please try again.",
@@ -15,6 +18,17 @@ export default function Home({
 }: {
   searchParams: { [key: string]: string | string[] | undefined };
 }) {
+  // Auto-redirect logged-in users to dashboard (unless there's an error to show)
+  const hasError = typeof searchParams.error === "string";
+  if (!hasError) {
+    const cookieStore = cookies();
+    const userId = cookieStore.get("app_user_id")?.value;
+    const access = cookieStore.get("sp_access")?.value;
+    if (userId && access) {
+      redirect("/dashboard");
+    }
+  }
+
   const errorKey = typeof searchParams.error === "string" ? searchParams.error : null;
   const spotifyStatus = typeof searchParams.spotify_status === "string" ? searchParams.spotify_status : null;
   const retryAfter = typeof searchParams.retry_after === "string" ? searchParams.retry_after : null;

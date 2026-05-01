@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePlayer, type QueueTrack } from "./player-context";
 
 type SignalBreakdown = {
@@ -57,6 +57,15 @@ export default function DiscoverView({
     added: number;
     failed: string[];
   } | null>(null);
+  const autoLoadedRef = useRef(false);
+
+  // Auto-load recommendations on first mount
+  useEffect(() => {
+    if (autoLoadedRef.current) return;
+    autoLoadedRef.current = true;
+    handleSubmit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleSubmit() {
     setLoading(true);
@@ -318,9 +327,27 @@ export default function DiscoverView({
           <button
             onClick={handleSubmit}
             disabled={loading}
-            className="px-5 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+            className="px-5 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap flex items-center gap-2"
           >
-            {loading ? loadingStage || "Finding\u2026" : "Discover"}
+            {loading ? (
+              <>
+                <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
+                  <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
+                </svg>
+                {loadingStage || "Finding\u2026"}
+              </>
+            ) : results ? (
+              <>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M23 4v6h-6" />
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                </svg>
+                Refresh
+              </>
+            ) : (
+              "Discover"
+            )}
           </button>
         </div>
 
@@ -386,11 +413,11 @@ export default function DiscoverView({
       )}
 
       {/* Results */}
-      {results === null ? (
+      {results === null && !loading ? (
         <EmptyInitial />
-      ) : results.length === 0 && !error ? (
+      ) : results !== null && results.length === 0 && !error ? (
         <EmptyNoResults />
-      ) : results.length > 0 ? (
+      ) : results !== null && results.length > 0 ? (
         (() => {
           // Collect unique genres for filter
           const allGenres = Array.from(new Set(results.flatMap((r) => r.genres.map((g) => g.toLowerCase())))).sort();
@@ -408,7 +435,7 @@ export default function DiscoverView({
                 <select
                   value={genreFilter}
                   onChange={(e) => setGenreFilter(e.target.value)}
-                  className="text-[11px] border border-neutral-200 rounded-md px-2 py-1 bg-white text-neutral-600 focus:outline-none focus:border-emerald-500"
+                  className="text-xs border border-neutral-200 rounded-lg px-3 py-1.5 bg-white text-neutral-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 min-h-[32px]"
                   aria-label="Filter by genre"
                 >
                   <option value="">All genres</option>
@@ -567,7 +594,6 @@ function SongRow({
     setFbLoading(true);
     try {
       if (feedback === value) {
-        // Toggle off — return to neutral
         const res = await fetch("/api/feedback", {
           method: "DELETE",
           headers: { "Content-Type": "application/json" },
@@ -575,7 +601,6 @@ function SongRow({
         });
         if (res.ok) setFeedback(null);
       } else {
-        // Set or switch feedback
         const res = await fetch("/api/feedback", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -597,15 +622,34 @@ function SongRow({
 
   return (
     <div className="group">
-      <div className="flex items-center gap-3 px-3 py-2.5 hover:bg-neutral-50 transition-colors">
-        {/* Rank */}
-        <span className="w-6 text-right text-xs tabular-nums text-neutral-300 font-medium shrink-0">
+      <div className="flex items-center gap-2 sm:gap-3 px-3 py-2.5 hover:bg-neutral-50 transition-colors">
+        {/* Rank — hidden on mobile */}
+        <span className="hidden sm:block w-6 text-right text-xs tabular-nums text-neutral-300 font-medium shrink-0">
           {rank}
         </span>
 
+        {/* Play button — primary action, left side for thumb reach */}
+        <button
+          onClick={handlePlay}
+          disabled={playState === "loading"}
+          title={`Play ${song.track_name}`}
+          className="shrink-0 w-9 h-9 sm:w-8 sm:h-8 rounded-full flex items-center justify-center bg-neutral-900 text-white hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-40"
+        >
+          {playState === "loading" ? (
+            <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
+              <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          )}
+        </button>
+
         {/* Song info */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <span className="text-sm font-medium text-neutral-900 truncate">
               {song.track_name}
             </span>
@@ -615,37 +659,30 @@ function SongRow({
               </span>
             )}
           </div>
-          <div className="flex items-center gap-1.5 mt-0.5">
-            <p className="text-[11px] text-neutral-500 truncate">
-              {song.artist_name}
-            </p>
+          <p className="text-[11px] text-neutral-500 truncate mt-0.5">
+            {song.artist_name}
             {song.album_name && (
-              <>
-                <span className="text-neutral-300 text-[10px]">{"\u00b7"}</span>
-                <p className="text-[11px] text-neutral-400 truncate">
-                  {song.album_name}
-                </p>
-              </>
+              <span className="text-neutral-400 hidden sm:inline"> &middot; {song.album_name}</span>
             )}
-          </div>
-          {/* Reason line */}
+          </p>
+          {/* Reason — desktop only to save mobile space */}
           {song.reasons.length > 0 && (
-            <p className="text-[10px] text-neutral-400 truncate mt-0.5">
+            <p className="text-[10px] text-neutral-400 truncate mt-0.5 hidden sm:block">
               {song.reasons[0]}
             </p>
           )}
         </div>
 
-        {/* Duration */}
+        {/* Duration — desktop only */}
         {duration && (
-          <span className="shrink-0 text-[11px] tabular-nums text-neutral-300 hidden sm:block">
+          <span className="shrink-0 text-[11px] tabular-nums text-neutral-300 hidden md:block">
             {duration}
           </span>
         )}
 
         {/* Match score badge */}
         <div
-          className="shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-xs font-bold"
+          className="shrink-0 w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-[10px] sm:text-xs font-bold"
           style={{
             background:
               matchPct > 70
@@ -660,116 +697,94 @@ function SongRow({
           {matchPct}
         </div>
 
-        {/* Play button */}
-        <button
-          onClick={handlePlay}
-          disabled={playState === "loading"}
-          title={`Play ${song.track_name}`}
-          className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-neutral-900 text-white hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-40"
-        >
-          {playState === "loading" ? (
-            <svg
-              className="animate-spin"
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-            >
-              <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
-              <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
+        {/* Action buttons — compact group */}
+        <div className="flex items-center gap-0 shrink-0">
+          {/* Thumbs up */}
+          <button
+            onClick={() => handleFeedback(1)}
+            disabled={fbLoading || !song.spotify_track_id}
+            title="More like this"
+            className={`w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 disabled:opacity-30 ${
+              feedback === 1
+                ? "text-emerald-500"
+                : "text-neutral-300 hover:text-neutral-500"
+            }`}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill={feedback === 1 ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z" />
+              <path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
             </svg>
-          ) : (
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-          )}
-        </button>
+          </button>
 
-        {/* Thumbs up/down feedback buttons */}
-        <button
-          onClick={() => handleFeedback(1)}
-          disabled={fbLoading || !song.spotify_track_id}
-          title="Thumbs up — recommend more like this"
-          className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 disabled:opacity-30 ${
-            feedback === 1
-              ? "text-emerald-500"
-              : "text-neutral-300 hover:text-neutral-500"
-          }`}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill={feedback === 1 ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z" />
-            <path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
-          </svg>
-        </button>
-        <button
-          onClick={() => handleFeedback(-1)}
-          disabled={fbLoading || !song.spotify_track_id}
-          title="Thumbs down — show less like this"
-          className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 disabled:opacity-30 ${
-            feedback === -1
-              ? "text-red-400"
-              : "text-neutral-300 hover:text-neutral-500"
-          }`}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill={feedback === -1 ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z" />
-            <path d="M17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
-          </svg>
-        </button>
-
-        {/* Favorite (heart) button */}
-        <button
-          onClick={async () => {
-            if (favLoading || !song.spotify_track_id) return;
-            setFavLoading(true);
-            try {
-              const method = favorited ? "DELETE" : "POST";
-              const res = await fetch("/api/favorite", {
-                method,
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  spotify_track_id: song.spotify_track_id,
-                  track_name: song.track_name,
-                  artist_name: song.artist_name,
-                  score: song.score,
-                  source: "discover",
-                }),
-              });
-              if (res.ok) setFavorited(!favorited);
-            } catch {}
-            setFavLoading(false);
-          }}
-          disabled={favLoading || !song.spotify_track_id}
-          title={favorited ? "Remove from Liked Songs" : "Save to Liked Songs"}
-          className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 disabled:opacity-30 ${
-            favorited
-              ? "text-rose-500 hover:text-rose-400"
-              : "text-neutral-300 hover:text-rose-500"
-          }`}
-        >
-          {favorited ? (
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+          {/* Thumbs down */}
+          <button
+            onClick={() => handleFeedback(-1)}
+            disabled={fbLoading || !song.spotify_track_id}
+            title="Less like this"
+            className={`w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 disabled:opacity-30 ${
+              feedback === -1
+                ? "text-red-400"
+                : "text-neutral-300 hover:text-neutral-500"
+            }`}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill={feedback === -1 ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z" />
+              <path d="M17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
             </svg>
-          ) : (
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          )}
-        </button>
+          </button>
 
-        {/* Spotify link */}
-        <a
-          href={spotifyTrackUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          title="Open in Spotify"
-          className="shrink-0 text-neutral-300 hover:text-[#1DB954] transition-colors"
-        >
-          <SpotifyIcon size={16} />
-        </a>
+          {/* Favorite (heart) */}
+          <button
+            onClick={async () => {
+              if (favLoading || !song.spotify_track_id) return;
+              setFavLoading(true);
+              try {
+                const method = favorited ? "DELETE" : "POST";
+                const res = await fetch("/api/favorite", {
+                  method,
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    spotify_track_id: song.spotify_track_id,
+                    track_name: song.track_name,
+                    artist_name: song.artist_name,
+                    score: song.score,
+                    source: "discover",
+                  }),
+                });
+                if (res.ok) setFavorited(!favorited);
+              } catch {}
+              setFavLoading(false);
+            }}
+            disabled={favLoading || !song.spotify_track_id}
+            title={favorited ? "Remove from Liked Songs" : "Save to Liked Songs"}
+            className={`w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 disabled:opacity-30 ${
+              favorited
+                ? "text-rose-500 hover:text-rose-400"
+                : "text-neutral-300 hover:text-rose-500"
+            }`}
+          >
+            {favorited ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            )}
+          </button>
+
+          {/* Spotify link — desktop only */}
+          <a
+            href={spotifyTrackUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open in Spotify"
+            className="hidden sm:flex w-7 h-7 rounded-full items-center justify-center text-neutral-300 hover:text-[#1DB954] transition-colors"
+          >
+            <SpotifyIcon size={14} />
+          </a>
+        </div>
 
         {/* Expand toggle */}
         {(song.top_mention || song.reasons.length > 1 || song.genres.length > 0) && (
@@ -794,8 +809,18 @@ function SongRow({
             {song.signals.track_popularity !== undefined && (
               <SignalPill label="Popularity" value={song.signals.track_popularity} color="purple" />
             )}
-
           </div>
+
+          {/* Spotify link for mobile (hidden on desktop where it's inline) */}
+          <a
+            href={spotifyTrackUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="sm:hidden inline-flex items-center gap-1.5 text-[11px] text-[#1DB954] hover:underline"
+          >
+            <SpotifyIcon size={12} />
+            Open in Spotify
+          </a>
 
           {/* All reasons */}
           {song.reasons.length > 1 && (
@@ -848,10 +873,6 @@ function SongRow({
     </div>
   );
 }
-
-/* \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550 */
-/*  Small components                                              */
-/* \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550 */
 
 function SignalPill({
   label,
