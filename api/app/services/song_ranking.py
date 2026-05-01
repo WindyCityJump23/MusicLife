@@ -445,11 +445,10 @@ def recommend_songs(
         if not tracks:
             continue
 
-        # Choose candidate tracks per artist. When we have
-        # both a prompt vector and track embeddings, rank by a blend of
-        # prompt-fit and popularity so a vibe search ("rainy night",
-        # "summer driving") doesn't always surface the artist's biggest
-        # hit. Without that, fall back to popularity alone.
+        # Shortlist tracks per artist. Blend taste/prompt similarity with a
+        # small popularity signal and randomness so deep cuts get a fair shot
+        # instead of the same hits every time. Without embeddings fall back to
+        # randomness-first so we're not purely sorted by chart position.
         def _track_shortlist_score(t: dict) -> float:
             pop = float(t.get("popularity") or 0) / 100.0
             tv = _parse_vector(t.get("embedding"))
@@ -457,11 +456,12 @@ def recommend_songs(
                 ctx = _normalize_01(
                     _cosine_similarity(effective_prompt_vector, tv)
                 )
-                return 0.7 * ctx + 0.3 * pop
-            return pop
+                return 0.65 * ctx + 0.15 * pop + 0.20 * rng.random()
+            # No embedding: randomness-first so obscure tracks surface, not just hits
+            return 0.35 * pop + 0.65 * rng.random()
 
         tracks.sort(key=_track_shortlist_score, reverse=True)
-        per_artist_cap = 3 if has_explicit_prompt else 2
+        per_artist_cap = 5 if has_explicit_prompt else 4
         tracks = tracks[:per_artist_cap]
 
         for track in tracks:
@@ -517,8 +517,14 @@ def recommend_songs(
             if aid in previously_recommended:
                 track_base *= 0.65
 
-            # Track-level boost: popularity + familiarity adjustments
-            track_boost = 0.7 + (0.3 * track_pop)  # 0.7–1.0 range
+            # Track-level boost: small popularity signal only — discovery is
+            # the goal so we don't want hits to dominate just because they're hits.
+            track_boost = 0.85 + (0.15 * track_pop)  # 0.85–1.0 range
+
+            # Obscurity bonus: reward genuinely unknown tracks. Popularity < 40
+            # and not already in the user's library is a signal worth chasing.
+            if track_pop < 0.40 and not in_library:
+                track_boost *= 1.12
 
             # New-release bonus: up to +15% for tracks released in the last
             # calendar year, decaying linearly to 0 at 365 days old.
@@ -632,8 +638,8 @@ def _song_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
         return []
 
     # Use the full pool when small, otherwise widen it to give the
-    # greedy selector room to diversify.
-    pool = scored if len(scored) <= limit else scored[: limit * 3]
+    # greedy selector room to pull from diverse and obscure candidates.
+    pool = scored if len(scored) <= limit else scored[: limit * 5]
     selected: list[dict] = []
     genre_counts: Counter[str] = Counter()
     artist_counts: Counter[str] = Counter()
