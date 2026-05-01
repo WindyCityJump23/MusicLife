@@ -399,6 +399,116 @@ def eval_diversity_rerank_pool_size() -> EvalResult:
     )
 
 
+def eval_thumbs_down_penalizes_artist() -> EvalResult:
+    """An artist with 4× thumbs-down should rank below a neutral artist with lower editorial.
+
+    Uses editorial-only weights so affinity percentile rank doesn't interfere.
+    Disliked artist: editorial ≈ 0.80 (sentiment=1.0) — naturally ranks higher
+    Neutral artist: editorial ≈ 0.76 (sentiment=0.9) — naturally ranks lower
+    After 4 thumbs-downs: disliked_score × max(0.15, 1-4×0.25) = ×0.15 → 0.12 < 0.76
+    Gap (0.64) far exceeds max exploration swing (0.16), so result is deterministic.
+    """
+    neutral_a = _make_artist(700, "Neutral Artist", ["jazz"], vec_seed=50, popularity=70)
+    disliked_a = _make_artist(701, "Disliked Artist", ["jazz"], vec_seed=51, popularity=70)
+
+    neutral_mention = _make_mention(90, 700, 1, sentiment=0.9, days_ago=5, vec_seed=190)
+    disliked_mention = _make_mention(91, 701, 1, sentiment=1.0, days_ago=5, vec_seed=191)
+
+    scenario = UserScenario(
+        user_id="feedback_down_test",
+        library_artist_ids=[],
+        played_track_ids=[],
+        top_artist_ids=[],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        # 4× thumbs-down → net artist_feedback = -4 → multiplier = max(0.15, 1-4×0.25) = 0.15
+        feedback=[
+            {"artist_id": 701, "spotify_track_id": f"sp_fb_701_{i}", "feedback": -1}
+            for i in range(4)
+        ],
+    )
+    client = build_mock_client(
+        scenario,
+        artists=[neutral_a, disliked_a],
+        tracks=[],
+        mentions=[neutral_mention, disliked_mention],
+    )
+    results = rank_candidates(
+        client=client,
+        user_id=scenario.user_id,
+        taste_vector=JAZZ_TASTE_VECTOR,
+        prompt_vector=None,
+        # Editorial-only: eliminates affinity percentile-rank noise so the
+        # feedback penalty is the deciding factor, not embedding geometry.
+        weights={"affinity": 0.0, "context": 0.0, "editorial": 1.0},
+        exclude_library=False,
+        limit=5,
+    )
+    ids = [int(r["artist_id"]) for r in results]
+    neutral_rank = ids.index(700) if 700 in ids else 999
+    disliked_rank = ids.index(701) if 701 in ids else 999
+    passed = neutral_rank < disliked_rank
+    return EvalResult(
+        name="thumbs_down_penalizes_artist",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"Neutral artist rank {neutral_rank} vs thumbs-down artist rank {disliked_rank} (lower = better)",
+    )
+
+
+def eval_thumbs_up_boosts_artist() -> EvalResult:
+    """An artist with 5× thumbs-up should rank above a neutral artist with higher editorial.
+
+    Uses editorial-only weights so affinity percentile rank doesn't interfere.
+    Liked artist: editorial ≈ 0.76 (sentiment=0.9) — naturally ranks lower
+    Neutral artist: editorial ≈ 0.80 (sentiment=1.0) — naturally ranks higher
+    After 5 thumbs-ups: liked_score × min(1.4, 1+5×0.08) = ×1.4 → 1.06 > 0.80
+    Gap (0.26) far exceeds max exploration swing (0.16), so result is deterministic.
+    """
+    neutral_a = _make_artist(710, "Neutral Artist B", ["jazz"], vec_seed=52, popularity=70)
+    liked_a = _make_artist(711, "Liked Artist", ["jazz"], vec_seed=53, popularity=70)
+
+    neutral_mention = _make_mention(92, 710, 1, sentiment=1.0, days_ago=5, vec_seed=192)
+    liked_mention = _make_mention(93, 711, 1, sentiment=0.9, days_ago=5, vec_seed=193)
+
+    scenario = UserScenario(
+        user_id="feedback_up_test",
+        library_artist_ids=[],
+        played_track_ids=[],
+        top_artist_ids=[],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        # 5× thumbs-up → net artist_feedback = +5 → multiplier = min(1.4, 1+5×0.08) = 1.4
+        feedback=[
+            {"artist_id": 711, "spotify_track_id": f"sp_fb_711_{i}", "feedback": 1}
+            for i in range(5)
+        ],
+    )
+    client = build_mock_client(
+        scenario,
+        artists=[neutral_a, liked_a],
+        tracks=[],
+        mentions=[neutral_mention, liked_mention],
+    )
+    results = rank_candidates(
+        client=client,
+        user_id=scenario.user_id,
+        taste_vector=JAZZ_TASTE_VECTOR,
+        prompt_vector=None,
+        weights={"affinity": 0.0, "context": 0.0, "editorial": 1.0},
+        exclude_library=False,
+        limit=5,
+    )
+    ids = [int(r["artist_id"]) for r in results]
+    neutral_rank = ids.index(710) if 710 in ids else 999
+    liked_rank = ids.index(711) if 711 in ids else 999
+    passed = liked_rank < neutral_rank
+    return EvalResult(
+        name="thumbs_up_boosts_artist",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"Liked artist rank {liked_rank} vs neutral artist rank {neutral_rank} (lower = better)",
+    )
+
+
 # ── Suite runner ─────────────────────────────────────────────────
 
 
@@ -414,4 +524,6 @@ def run_suite() -> list[EvalResult]:
         eval_percentile_rank_spread(),
         eval_exclude_library_flag(),
         eval_diversity_rerank_pool_size(),
+        eval_thumbs_down_penalizes_artist(),
+        eval_thumbs_up_boosts_artist(),
     ]

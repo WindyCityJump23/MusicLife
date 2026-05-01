@@ -157,7 +157,56 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
         weight = max(max_w * 0.2, max_w * (1.0 - (rank - 1) / 50.0))
         artist_weights[int(artist_id)] += weight
 
+    # ── Feedback signal ──────────────────────────────────────────
+    # Explicit thumbs up/down adjusts the taste centroid directly.
+    # thumbs-up: add weight equivalent to ~15 plays
+    # thumbs-down: subtract weight (can go negative, pulling the
+    # centroid AWAY from that artist's embedding)
+    try:
+        fb_resp = (
+            client.table("user_feedback")
+            .select("artist_id,feedback")
+            .eq("user_id", user_id)
+            .range(0, 9999)
+            .execute()
+        )
+        for row in (fb_resp.data or []):
+            aid = row.get("artist_id")
+            if aid is None:
+                continue
+            fb = int(row.get("feedback") or 0)
+            artist_weights[int(aid)] = artist_weights.get(int(aid), 0) + (fb * 15.0)
+    except Exception:
+        pass  # table may not exist yet
+
     return dict(artist_weights)
+
+
+def _get_user_feedback(client: Client, user_id: str) -> dict[int, int]:
+    """Return {artist_id: net_feedback_score} from user_feedback.
+
+    Aggregates per-artist: each thumbs-up adds +1, each thumbs-down adds -1.
+    This gives a net sentiment per artist across all their tracks.
+    """
+    try:
+        resp = (
+            client.table("user_feedback")
+            .select("artist_id,feedback")
+            .eq("user_id", user_id)
+            .range(0, 9999)
+            .execute()
+        )
+    except Exception:
+        return {}
+
+    scores: dict[int, int] = {}
+    for row in (resp.data or []):
+        aid = row.get("artist_id")
+        if aid is None:
+            continue
+        fb = int(row.get("feedback") or 0)
+        scores[int(aid)] = scores.get(int(aid), 0) + fb
+    return scores
 
 
 def _get_previously_recommended_artist_ids(client: Client, user_id: str) -> set[int]:
@@ -329,6 +378,7 @@ def rank_candidates(
     artist_weights = _get_user_artist_weights(client, user_id)
     library_artist_ids = set(artist_weights.keys())
     previously_recommended = _get_previously_recommended_artist_ids(client, user_id)
+    feedback_scores = _get_user_feedback(client, user_id)
 
     # NOTE: Once the embedded-artist catalog grows beyond ~10k rows this
     # in-process cosine pass needs to move to a server-side RPC backed by
@@ -498,6 +548,18 @@ def rank_candidates(
         # They can still appear, just lower ranked — keeps things fresh.
         if artist_id in previously_recommended:
             final_score *= 0.60  # 40% penalty
+
+        # ── User feedback adjustment ─────────────────────────────
+        # Explicit thumbs-up/down from the user. This is the strongest
+        # signal we have — it's direct preference, not inferred.
+        artist_feedback = feedback_scores.get(artist_id, 0)
+        if artist_feedback < 0:
+            # Thumbs-down: significant penalty (but don't zero out —
+            # the user might like a different style from the same artist)
+            final_score *= max(0.15, 1.0 + (artist_feedback * 0.25))  # -1 → 0.75, -2 → 0.50, -3 → 0.25, -4+ → 0.15
+        elif artist_feedback > 0:
+            # Thumbs-up: modest boost (don't let it dominate over diversity)
+            final_score *= min(1.4, 1.0 + (artist_feedback * 0.08))  # +1 → 1.08, +2 → 1.16, etc, cap at 1.4
 
         # ── Exploration factor ───────────────────────────────────
         # Random nudge so each run produces different ordering,

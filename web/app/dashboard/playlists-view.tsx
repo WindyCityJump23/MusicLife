@@ -116,17 +116,23 @@ export default function PlaylistsView() {
 function PlaylistCard({ playlist }: { playlist: Playlist }) {
   const [expanded, setExpanded] = useState(false);
   const [favoritedIds, setFavoritedIds] = useState<Set<string>>(new Set());
+  const [feedbackMap, setFeedbackMap] = useState<Record<string, 1 | -1>>({});
 
-  // Fetch favorites when tracks are expanded
+  // Fetch favorites and feedback when tracks are expanded
   useEffect(() => {
     if (!expanded || playlist.tracks.length === 0) return;
     const trackIds = playlist.tracks
       .map((t) => t.uri?.startsWith("spotify:track:") ? t.uri.replace("spotify:track:", "") : null)
       .filter(Boolean) as string[];
     if (trackIds.length === 0) return;
-    fetch(`/api/favorites-check?ids=${trackIds.join(",")}`)
+    const idsParam = trackIds.join(",");
+    fetch(`/api/favorites-check?ids=${idsParam}`)
       .then((r) => r.json())
       .then((d) => setFavoritedIds(new Set(d.favorited ?? [])))
+      .catch(() => {});
+    fetch(`/api/feedback-check?ids=${idsParam}`)
+      .then((r) => r.json())
+      .then((d) => setFeedbackMap(d.feedback ?? {}))
       .catch(() => {});
   }, [expanded, playlist.tracks]);
 
@@ -196,16 +202,18 @@ function PlaylistCard({ playlist }: { playlist: Playlist }) {
             </p>
           ) : (
             <div className="divide-y divide-neutral-50">
-              {playlist.tracks.map((track, i) => (
-                <TrackRow
-                  key={`${track.uri}-${i}`}
-                  track={track}
-                  index={i + 1}
-                  initialFavorited={favoritedIds.has(
-                    track.uri?.startsWith("spotify:track:") ? track.uri.replace("spotify:track:", "") : ""
-                  )}
-                />
-              ))}
+              {playlist.tracks.map((track, i) => {
+                const tid = track.uri?.startsWith("spotify:track:") ? track.uri.replace("spotify:track:", "") : "";
+                return (
+                  <TrackRow
+                    key={`${track.uri}-${i}`}
+                    track={track}
+                    index={i + 1}
+                    initialFavorited={favoritedIds.has(tid)}
+                    initialFeedback={feedbackMap[tid] ?? null}
+                  />
+                );
+              })}
             </div>
           )}
         </div>
@@ -218,11 +226,13 @@ function PlaylistCard({ playlist }: { playlist: Playlist }) {
 /*  Track row                                                     */
 /* ═══════════════════════════════════════════════════════════════ */
 
-function TrackRow({ track, index, initialFavorited = false }: { track: Track; index: number; initialFavorited?: boolean }) {
+function TrackRow({ track, index, initialFavorited = false, initialFeedback = null }: { track: Track; index: number; initialFavorited?: boolean; initialFeedback?: 1 | -1 | null }) {
   const { playSingle } = usePlayer();
   const [playing, setPlaying] = useState(false);
   const [favorited, setFavorited] = useState(initialFavorited);
   const [favLoading, setFavLoading] = useState(false);
+  const [feedback, setFeedback] = useState<1 | -1 | null>(initialFeedback);
+  const [fbLoading, setFbLoading] = useState(false);
 
   // Extract spotify track ID from URI (spotify:track:XXXX → XXXX)
   const spotifyTrackId = track.uri?.startsWith("spotify:track:")
@@ -262,6 +272,35 @@ function TrackRow({ track, index, initialFavorited = false }: { track: Track; in
       if (res.ok) setFavorited(!favorited);
     } catch {}
     setFavLoading(false);
+  }
+
+  async function handleFeedback(value: 1 | -1) {
+    if (fbLoading || !spotifyTrackId) return;
+    setFbLoading(true);
+    try {
+      if (feedback === value) {
+        const res = await fetch("/api/feedback", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ spotify_track_id: spotifyTrackId }),
+        });
+        if (res.ok) setFeedback(null);
+      } else {
+        const res = await fetch("/api/feedback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            spotify_track_id: spotifyTrackId,
+            feedback: value,
+            track_name: track.name,
+            artist_name: track.artist,
+            source: "playlists",
+          }),
+        });
+        if (res.ok) setFeedback(value);
+      }
+    } catch {}
+    setFbLoading(false);
   }
 
   return (
@@ -329,6 +368,38 @@ function TrackRow({ track, index, initialFavorited = false }: { track: Track; in
             <path d="M8 5v14l11-7z" />
           </svg>
         )}
+      </button>
+
+      {/* Thumbs up/down feedback buttons */}
+      <button
+        onClick={() => handleFeedback(1)}
+        disabled={fbLoading || !spotifyTrackId}
+        title="Thumbs up — recommend more like this"
+        className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 disabled:opacity-30 ${
+          feedback === 1
+            ? "text-emerald-500"
+            : "text-neutral-300 hover:text-neutral-500"
+        }`}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill={feedback === 1 ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z" />
+          <path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
+        </svg>
+      </button>
+      <button
+        onClick={() => handleFeedback(-1)}
+        disabled={fbLoading || !spotifyTrackId}
+        title="Thumbs down — show less like this"
+        className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 disabled:opacity-30 ${
+          feedback === -1
+            ? "text-red-400"
+            : "text-neutral-300 hover:text-neutral-500"
+        }`}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill={feedback === -1 ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z" />
+          <path d="M17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
+        </svg>
       </button>
 
       {/* Favorite heart — always visible on touch, hover on desktop */}
