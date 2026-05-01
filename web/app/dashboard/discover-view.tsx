@@ -304,6 +304,12 @@ export default function DiscoverView({
         .map((r) => r.spotify_track_id)
         .filter(Boolean);
 
+      if (trackIds.length === 0) {
+        setPlaylistState("error");
+        setPlaylistError("No songs with valid Spotify IDs to save");
+        return;
+      }
+
       const res = await fetch("/api/playlist-from-tracks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -312,7 +318,20 @@ export default function DiscoverView({
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setPlaylistState("error");
-        setPlaylistError(data.error ?? "Failed to create playlist");
+        const errMsg = data.error ?? `Failed to create playlist (HTTP ${res.status})`;
+        if (res.status === 403) {
+          setPlaylistError("Missing Spotify permissions — reconnecting...");
+          // Auto-redirect to force re-auth with updated scopes
+          setTimeout(() => {
+            window.location.href = "/api/auth/login?force=1";
+          }, 1500);
+        } else {
+          setPlaylistError(
+            res.status === 401
+              ? "Spotify session expired. Please sign out and back in."
+              : errMsg
+          );
+        }
         return;
       }
       setPlaylistState("done");
