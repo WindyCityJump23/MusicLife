@@ -29,6 +29,30 @@ from app.services.supabase_client import admin_supabase
 # the first sync. Chunking the lookup keeps each URL well under the cap.
 _IN_CHUNK = 200
 
+# Supabase PostgREST also rejects request bodies larger than ~1MB with the
+# same generic "Bad Request" response. Chunking upserts keeps each body
+# well under the cap (a few hundred KB at most).
+_UPSERT_CHUNK = 500
+
+
+def _chunked_upsert(
+    table: str,
+    rows: list[dict],
+    on_conflict: str,
+    *,
+    ignore_duplicates: bool = False,
+) -> None:
+    """Upsert rows in batches to stay under PostgREST body size limits."""
+    for i in range(0, len(rows), _UPSERT_CHUNK):
+        chunk = rows[i : i + _UPSERT_CHUNK]
+        if not chunk:
+            continue
+        admin_supabase.table(table).upsert(
+            chunk,
+            on_conflict=on_conflict,
+            ignore_duplicates=ignore_duplicates,
+        ).execute()
+
 
 def _chunked_id_map(
     table: str, key_col: str, values: list[str]
@@ -129,9 +153,7 @@ def _upsert_artists(artists: list[dict]) -> dict[str, int]:
         }
         for a in artists
     ]
-    admin_supabase.table("artists").upsert(
-        rows, on_conflict="spotify_artist_id"
-    ).execute()
+    _chunked_upsert("artists", rows, on_conflict="spotify_artist_id")
     # SELECT after upsert: PostgREST may return empty data for rows resolved
     # via ON CONFLICT DO UPDATE, so we can't rely on the upsert response alone.
     spotify_ids = [r["spotify_artist_id"] for r in rows]
@@ -156,9 +178,7 @@ def _upsert_tracks(tracks: list[dict], artist_id_map: dict[str, int]) -> dict[st
                 "popularity": t.get("popularity"),
             }
         )
-    admin_supabase.table("tracks").upsert(
-        rows, on_conflict="spotify_track_id"
-    ).execute()
+    _chunked_upsert("tracks", rows, on_conflict="spotify_track_id")
     # SELECT after upsert for the same reason as _upsert_artists.
     spotify_ids = [r["spotify_track_id"] for r in rows]
     return _chunked_id_map("tracks", "spotify_track_id", spotify_ids)
@@ -189,9 +209,7 @@ def _upsert_user_tracks_saved(
             }
         )
     if rows:
-        admin_supabase.table("user_tracks").upsert(
-            rows, on_conflict="user_id,track_id"
-        ).execute()
+        _chunked_upsert("user_tracks", rows, on_conflict="user_id,track_id")
 
 
 def _upsert_user_tracks_recent(
@@ -226,9 +244,7 @@ def _upsert_user_tracks_recent(
         for db_id, count in play_counts.items()
     ]
     if rows:
-        admin_supabase.table("user_tracks").upsert(
-            rows, on_conflict="user_id,track_id"
-        ).execute()
+        _chunked_upsert("user_tracks", rows, on_conflict="user_id,track_id")
 
 
 def _upsert_user_top_artists(

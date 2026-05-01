@@ -363,13 +363,17 @@ def _run_setup_all(job_id: str, user_id: str, spotify_token: str):
             update_job(job_id, JobStatus.RUNNING, f"Step {step}/{total}: {msg}")
         return cb
 
+    current_stage = "starting"
     try:
+        current_stage = "Sync Library"
         progress_for(1)("Syncing Spotify library…")
         run_spotify_library_ingest(user_id, spotify_token)
 
+        current_stage = "Enrich Artists"
         progress_for(2)("Enriching artists…")
         run_artist_enrichment(progress=progress_for(2))
 
+        current_stage = "Generate Embeddings"
         progress_for(3)("Generating embeddings…")
         embed_summary = run_artist_embeddings(progress=progress_for(3))
         if isinstance(embed_summary, dict):
@@ -379,17 +383,20 @@ def _run_setup_all(job_id: str, user_id: str, spotify_token: str):
                 reason = embed_summary.get("last_error") or "no artists were embedded"
                 raise RuntimeError(f"embedding failed: {reason}")
 
+        current_stage = "Sync Sources"
         progress_for(4)("Fetching editorial sources…")
         run_source_ingest(progress=progress_for(4))
 
+        current_stage = "Populate Tracks"
         progress_for(5)("Populating track catalog…")
         run_track_population(spotify_token, progress=progress_for(5))
 
         update_job(job_id, JobStatus.SUCCESS, "Library is ready")
         print(f"setup_all: completed for user {user_id}")
     except Exception as exc:
-        update_job(job_id, JobStatus.FAILED, str(exc)[:500])
-        print(f"setup_all: FAILED for user {user_id}: {exc}")
+        msg = f"{current_stage} failed: {exc}"[:500]
+        update_job(job_id, JobStatus.FAILED, msg)
+        print(f"setup_all: FAILED for user {user_id} at stage {current_stage!r}: {exc}")
 
 
 @router.get("/status/{job_id}")
