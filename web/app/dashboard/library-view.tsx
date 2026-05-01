@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { usePlayer } from "./player-context";
 
 type Artist = {
   id: number;
@@ -207,7 +208,33 @@ function Stats({
 
 function ArtistCard({ artist }: { artist: Artist }) {
   const [expanded, setExpanded] = useState(false);
+  const { playSingle } = usePlayer();
+  const [playLoading, setPlayLoading] = useState(false);
   const spotifySearchUrl = `https://open.spotify.com/search/${encodeURIComponent(artist.name)}`;
+
+  async function handlePlayArtist(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (playLoading) return;
+    setPlayLoading(true);
+    try {
+      // Search for a track by this artist in our DB first
+      const res = await fetch("/api/recommend-songs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: artist.name, limit: 1 }),
+      });
+      const data = await res.json().catch(() => ({}));
+      const songs = data.songs ?? data.recommendations ?? [];
+      if (songs.length > 0 && songs[0].spotify_track_id) {
+        await playSingle({
+          spotifyTrackId: songs[0].spotify_track_id,
+          trackName: songs[0].track_name,
+          artistName: songs[0].artist_name,
+        });
+      }
+    } catch {}
+    setPlayLoading(false);
+  }
 
   return (
     <div
@@ -215,8 +242,25 @@ function ArtistCard({ artist }: { artist: Artist }) {
       onClick={() => setExpanded(!expanded)}
     >
       <div className="flex items-center gap-2.5">
-        {/* Artist thumbnail */}
-        <div className="shrink-0 w-10 h-10 rounded-full bg-neutral-100 overflow-hidden flex items-center justify-center">
+        {/* Play overlay on thumbnail */}
+        <button
+          onClick={handlePlayArtist}
+          disabled={playLoading}
+          className="shrink-0 w-10 h-10 rounded-full bg-neutral-100 overflow-hidden flex items-center justify-center relative group/play"
+          title={`Play ${artist.name}`}
+        >
+          <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover/play:opacity-100 transition-opacity rounded-full">
+            {playLoading ? (
+              <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
+                <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
+                <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
+              </svg>
+            ) : (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="white">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            )}
+          </div>
           {artist.image_url ? (
             <img
               src={artist.image_url}
@@ -227,7 +271,7 @@ function ArtistCard({ artist }: { artist: Artist }) {
           ) : (
             <span className="text-lg text-neutral-300">🎵</span>
           )}
-        </div>
+        </button>
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-neutral-900 truncate">{artist.name}</div>
           <div className="mt-0.5 text-xs text-neutral-500 truncate min-h-[16px]">
