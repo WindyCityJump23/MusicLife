@@ -1,6 +1,14 @@
 "use client";
 
-import { Component, useEffect, useRef, type ReactNode } from "react";
+import {
+  Component,
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { usePlayer } from "./player-context";
 
 class PlayerErrorBoundary extends Component<
@@ -74,6 +82,9 @@ export default function Player() {
     playbackError,
     clearPlaybackError,
   } = usePlayer();
+
+  const embedRef = useRef<EmbedPlayerHandle>(null);
+  const [embedIsPlaying, setEmbedIsPlaying] = useState(false);
 
   const currentTrack =
     currentIndex >= 0 && currentIndex < queue.length ? queue[currentIndex] : null;
@@ -180,7 +191,72 @@ export default function Player() {
           deviceName={selectedDevice?.name ?? "device"}
         />
       ) : (
-        <EmbedPlayer trackId={embedTrackId} onTrackEnd={playNext} />
+        <>
+          <EmbedPlayer
+            ref={embedRef}
+            trackId={embedTrackId}
+            onTrackEnd={playNext}
+            onPlayStateChange={setEmbedIsPlaying}
+          />
+          {/* Prev / pause / next row for embed mode */}
+          <div className="flex items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={playPrev}
+              disabled={!hasPrev}
+              aria-label="Previous track"
+              className="w-10 h-10 rounded-full flex items-center justify-center transition-all disabled:opacity-25 active:scale-95"
+              style={{
+                background: "rgba(255,255,255,0.07)",
+                border: "1px solid rgba(255,255,255,0.12)",
+                color: "rgba(255,255,255,0.85)",
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M6 6h2v12H6zm3.5 6 8.5 6V6z" />
+              </svg>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => embedRef.current?.togglePause()}
+              aria-label={embedIsPlaying ? "Pause" : "Play"}
+              className="w-14 h-14 rounded-full flex items-center justify-center active:scale-95 transition-all"
+              style={{
+                background: "linear-gradient(135deg, #e94560, #c93b50)",
+                color: "white",
+                boxShadow: "0 4px 12px rgba(233,69,96,0.4)",
+              }}
+            >
+              {embedIsPlaying ? (
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M6 5h4v14H6zm8 0h4v14h-4z" />
+                </svg>
+              ) : (
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={playNext}
+              disabled={!hasNext}
+              aria-label="Next track"
+              className="w-10 h-10 rounded-full flex items-center justify-center transition-all disabled:opacity-25 active:scale-95"
+              style={{
+                background: "rgba(255,255,255,0.07)",
+                border: "1px solid rgba(255,255,255,0.12)",
+                color: "rgba(255,255,255,0.85)",
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M6 18l8.5-6L6 6v12zm10-12h2v12h-2z" />
+              </svg>
+            </button>
+          </div>
+        </>
       )}
 
       {/* Queue position + queue list (works in both modes) */}
@@ -471,13 +547,12 @@ function ConnectControls({
 /*  Embed iframe (fallback / preview)                              */
 /* ─────────────────────────────────────────────────────────────── */
 
-function EmbedPlayer({
-  trackId,
-  onTrackEnd,
-}: {
-  trackId: string | null;
-  onTrackEnd: () => void;
-}) {
+type EmbedPlayerHandle = { togglePause: () => void };
+
+const EmbedPlayer = forwardRef<
+  EmbedPlayerHandle,
+  { trackId: string | null; onTrackEnd: () => void; onPlayStateChange?: (playing: boolean) => void }
+>(function EmbedPlayer({ trackId, onTrackEnd, onPlayStateChange }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<any>(null); // eslint-disable-line @typescript-eslint/no-explicit-any
   const spotifyApiRef = useRef<any>(null); // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -487,6 +562,24 @@ function EmbedPlayer({
   const lastPositionRef = useRef(0);
   const onEndRef = useRef(onTrackEnd);
   onEndRef.current = onTrackEnd;
+  const onPlayStateChangeRef = useRef(onPlayStateChange);
+  onPlayStateChangeRef.current = onPlayStateChange;
+
+  useImperativeHandle(ref, () => ({
+    togglePause() {
+      const ctrl = controllerRef.current;
+      if (!ctrl) return;
+      try {
+        if (wasPlayingRef.current) {
+          ctrl.pause();
+        } else {
+          ctrl.play();
+        }
+      } catch (err) {
+        console.error("Spotify toggle pause error:", err);
+      }
+    },
+  }));
 
   // ── Shared helper: create and wire up the Spotify controller ──
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -513,7 +606,9 @@ function EmbedPlayer({
             }
             lastPositionRef.current = position;
             const wasPlaying = wasPlayingRef.current;
-            wasPlayingRef.current = !isPaused && !isBuffering;
+            const nowPlaying = !isPaused && !isBuffering;
+            wasPlayingRef.current = nowPlaying;
+            onPlayStateChangeRef.current?.(nowPlaying);
             if (advancedRef.current) return;
             const nearEnd = duration > 0 && position > 0 && duration - position < 3000;
             const reachedEnd = duration > 0 && position >= duration;
@@ -611,7 +706,7 @@ function EmbedPlayer({
       style={{ minHeight: 152 }}
     />
   );
-}
+});
 
 function toSpotifyTrackUri(trackIdOrUri: string): string {
   return trackIdOrUri.startsWith("spotify:track:")
