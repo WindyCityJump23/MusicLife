@@ -82,6 +82,31 @@ type PlayerContextValue = {
 const noop = () => {};
 const noopAsync = async () => {};
 
+/** Detect mobile browsers where Web Playback SDK won't work. */
+function isMobileBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+}
+
+/** Open a track in the native Spotify app via deep link. */
+function openInSpotifyApp(trackId: string): void {
+  // Try the URI scheme first (opens Spotify app directly)
+  // Fall back to the universal link which also works on mobile
+  const uri = `spotify:track:${trackId}`;
+  const webUrl = `https://open.spotify.com/track/${trackId}`;
+
+  // On iOS/Android, the spotify: URI scheme opens the app directly.
+  // We try it first, then fall back to the web URL after a timeout.
+  const start = Date.now();
+  window.location.href = uri;
+  setTimeout(() => {
+    // If we're still here after 1.5s, the app probably isn't installed
+    if (Date.now() - start < 2000) {
+      window.open(webUrl, "_blank");
+    }
+  }, 1500);
+}
+
 const PlayerContext = createContext<PlayerContextValue>({
   queue: [],
   currentIndex: -1,
@@ -234,6 +259,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       if (modeRef.current === "connect" && deviceIdRef.current) {
         const result = await playOnConnect(index);
         if (!result.ok) {
+          // On mobile without a Connect device, open in Spotify app
+          if (isMobileBrowser()) {
+            openInSpotifyApp(q[index].spotifyTrackId);
+            setIsPlaying(true);
+            return;
+          }
           setPlaybackError(result.error ?? "Playback failed");
           // Fallback to embed so the user still hears something.
           setEmbedTrackIdState(q[index].spotifyTrackId);
@@ -243,6 +274,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         setIsPlaying(true);
         // Clear any embed track so the iframe stops competing for audio.
         setEmbedTrackIdState(null);
+      } else if (isMobileBrowser()) {
+        // On mobile without Connect: open in native Spotify app
+        // This gives full playback instead of 30s embed previews
+        openInSpotifyApp(q[index].spotifyTrackId);
+        setIsPlaying(true);
+        // Still set embed for the UI to show the track info
+        setEmbedTrackIdState(q[index].spotifyTrackId);
       } else {
         setEmbedTrackIdState(q[index].spotifyTrackId);
         setIsPlaying(true);
