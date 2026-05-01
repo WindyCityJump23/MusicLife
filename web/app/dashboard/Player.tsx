@@ -1,7 +1,45 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { Component, useEffect, useRef, type ReactNode } from "react";
 import { usePlayer } from "./player-context";
+
+class PlayerErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          className="rounded-2xl flex flex-col items-center justify-center gap-3 p-5 min-h-full"
+          style={{
+            background:
+              "linear-gradient(160deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%)",
+          }}
+        >
+          <p className="text-white/60 text-sm text-center">
+            Player unavailable. Open Spotify on your device to listen.
+          </p>
+          <button
+            type="button"
+            className="text-xs text-white/40 underline"
+            onClick={() => this.setState({ hasError: false })}
+          >
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 /**
  * Player panel.
@@ -48,6 +86,7 @@ export default function Player() {
     usableDevices.find((d) => d.id === selectedDeviceId) ?? null;
 
   return (
+    <PlayerErrorBoundary>
     <div
       className="rounded-2xl flex flex-col gap-4 p-5 min-h-full"
       style={{
@@ -235,6 +274,7 @@ export default function Player() {
           : "Open Spotify on your phone to play through screen lock."}
       </p>
     </div>
+    </PlayerErrorBoundary>
   );
 }
 
@@ -281,18 +321,15 @@ function DevicePicker({
         className="flex-1 min-w-0 bg-transparent text-xs text-white focus:outline-none truncate"
         style={{ colorScheme: "dark" }}
       >
-        {devices.length === 0 && (
-          <option value="__embed__">This browser (preview)</option>
-        )}
         {devices.map((d) => (
           <option key={d.id} value={d.id}>
             {iconForType(d.type)} {d.name}
             {d.is_active ? " · active" : ""}
           </option>
         ))}
-        {devices.length === 0 && (
-          <option value="__embed__">▷ This browser (preview)</option>
-        )}
+        <option value="__embed__">
+          {devices.length === 0 ? "This browser (preview)" : "▷ This browser (preview)"}
+        </option>
       </select>
       <button
         type="button"
@@ -443,36 +480,31 @@ function EmbedPlayer({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<any>(null); // eslint-disable-line @typescript-eslint/no-explicit-any
-  const pendingRef = useRef<string | null>(null);
+  const spotifyApiRef = useRef<any>(null); // eslint-disable-line @typescript-eslint/no-explicit-any
+  const pendingTrackRef = useRef<string | null>(null);
   const advancedRef = useRef(false);
   const wasPlayingRef = useRef(false);
   const lastPositionRef = useRef(0);
   const onEndRef = useRef(onTrackEnd);
   onEndRef.current = onTrackEnd;
 
-  // Load Spotify IFrame API once and create the controller.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    function onApiReady(IFrameAPI: any) { // eslint-disable-line @typescript-eslint/no-explicit-any
-      const container = containerRef.current;
-      if (!container) return;
-
-      const initialId =
-        pendingRef.current || trackId || "4cOdK2wGLETKBW3PvgPWqT";
-      const uri = toSpotifyTrackUri(initialId);
-
-      IFrameAPI.createController(
+  // ── Shared helper: create and wire up the Spotify controller ──
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const buildController = useRef((api: any, firstTrackId: string) => {
+    const container = containerRef.current;
+    if (!container || controllerRef.current) return;
+    try {
+      api.createController(
         container,
-        { uri, width: "100%", height: 152, theme: "0" },
-        (ctrl: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+        { uri: toSpotifyTrackUri(firstTrackId), width: "100%", height: 152, theme: "0" },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (ctrl: any) => {
           controllerRef.current = ctrl;
-
-          ctrl.addListener("playback_update", (e: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ctrl.addListener("playback_update", (e: any) => {
             const data = e?.data;
             if (!data) return;
             const { isPaused, isBuffering, duration, position } = data;
-
             if (
               position + 5000 < lastPositionRef.current ||
               (position < 1500 && lastPositionRef.current > 5000)
@@ -480,56 +512,74 @@ function EmbedPlayer({
               advancedRef.current = false;
             }
             lastPositionRef.current = position;
-
             const wasPlaying = wasPlayingRef.current;
             wasPlayingRef.current = !isPaused && !isBuffering;
-
             if (advancedRef.current) return;
-
-            const nearEnd =
-              duration > 0 && position > 0 && duration - position < 3000;
+            const nearEnd = duration > 0 && position > 0 && duration - position < 3000;
             const reachedEnd = duration > 0 && position >= duration;
-            const justEnded =
-              wasPlaying && isPaused && !isBuffering && nearEnd;
-
-            if ((justEnded || reachedEnd) && !isBuffering) {
+            if ((wasPlaying && isPaused && !isBuffering && nearEnd) || (reachedEnd && !isBuffering)) {
               advancedRef.current = true;
               setTimeout(() => onEndRef.current(), 300);
             }
           });
-
-          if (pendingRef.current) {
-            ctrl.loadUri(toSpotifyTrackUri(pendingRef.current));
-            ctrl.play();
-            pendingRef.current = null;
+          // If another track arrived while controller was being created, switch to it.
+          if (pendingTrackRef.current && pendingTrackRef.current !== firstTrackId) {
+            try {
+              ctrl.loadUri(toSpotifyTrackUri(pendingTrackRef.current));
+              ctrl.play();
+            } catch { /* ignore */ }
           }
+          pendingTrackRef.current = null;
         }
       );
+    } catch (err) {
+      console.error("Spotify IFrame API error:", err);
+    }
+  });
+
+  // ── Load Spotify IFrame API once ─────────────────────────────
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    function onApiReady(api: any) {
+      spotifyApiRef.current = api;
+      // Only create the controller immediately if a track is already queued.
+      const id = pendingTrackRef.current;
+      if (id) buildController.current(api, id);
     }
 
-    if ((window as any).SpotifyIframeApi) { // eslint-disable-line @typescript-eslint/no-explicit-any
-      onApiReady((window as any).SpotifyIframeApi); // eslint-disable-line @typescript-eslint/no-explicit-any
-    } else {
-      (window as any).onSpotifyIframeApiReady = (IFrameAPI: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
-        (window as any).SpotifyIframeApi = IFrameAPI; // eslint-disable-line @typescript-eslint/no-explicit-any
-        onApiReady(IFrameAPI);
-      };
-
-      if (!document.querySelector('script[src*="embed/iframe-api"]')) {
-        const script = document.createElement("script");
-        script.src = "https://open.spotify.com/embed/iframe-api/v1";
-        script.async = true;
-        document.body.appendChild(script);
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if ((window as any).SpotifyIframeApi) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        onApiReady((window as any).SpotifyIframeApi);
+      } else {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (window as any).onSpotifyIframeApiReady = (api: any) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (window as any).SpotifyIframeApi = api;
+          onApiReady(api);
+        };
+        if (!document.querySelector('script[src*="embed/iframe-api"]')) {
+          const script = document.createElement("script");
+          script.src = "https://open.spotify.com/embed/iframe-api/v1";
+          script.async = true;
+          document.body.appendChild(script);
+        }
       }
+    } catch (err) {
+      console.error("Failed to initialise Spotify IFrame API:", err);
     }
 
     return () => {
-      (window as any).onSpotifyIframeApiReady = undefined; // eslint-disable-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).onSpotifyIframeApiReady = undefined;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When the requested track changes, load it into the existing controller.
+  // ── When the track changes, load it ─────────────────────────
   useEffect(() => {
     if (!trackId) return;
     advancedRef.current = false;
@@ -537,10 +587,20 @@ function EmbedPlayer({
     lastPositionRef.current = 0;
 
     if (controllerRef.current) {
-      controllerRef.current.loadUri(toSpotifyTrackUri(trackId));
-      setTimeout(() => controllerRef.current?.play(), 300);
+      // Controller already exists — switch track.
+      try {
+        controllerRef.current.loadUri(toSpotifyTrackUri(trackId));
+        setTimeout(() => controllerRef.current?.play(), 300);
+      } catch (err) {
+        console.error("Spotify controller error:", err);
+      }
+    } else if (spotifyApiRef.current) {
+      // API loaded but controller deferred (no track on mount) — create it now.
+      pendingTrackRef.current = trackId;
+      buildController.current(spotifyApiRef.current, trackId);
     } else {
-      pendingRef.current = trackId;
+      // API not loaded yet — queue the track for when it loads.
+      pendingTrackRef.current = trackId;
     }
   }, [trackId]);
 
