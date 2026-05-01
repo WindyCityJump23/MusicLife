@@ -29,6 +29,7 @@ from app.services.ranking import (
     _diversity_rerank,
     _get_previously_recommended_artist_ids,
     _get_user_artist_weights,
+    _get_user_feedback,
     _normalize_01,
     _parse_vector,
     _percentile_rank,
@@ -57,6 +58,24 @@ def recommend_songs(
     artist_weights = _get_user_artist_weights(client, user_id)
     library_artist_ids = set(artist_weights.keys())
     previously_recommended = _get_previously_recommended_artist_ids(client, user_id)
+    feedback_scores = _get_user_feedback(client, user_id)
+
+    # Build a per-spotify-track-id feedback map for track-level signals
+    try:
+        track_fb_resp = (
+            client.table("user_feedback")
+            .select("spotify_track_id,feedback")
+            .eq("user_id", user_id)
+            .range(0, 9999)
+            .execute()
+        )
+        track_feedback: dict[str, int] = {
+            row["spotify_track_id"]: int(row["feedback"])
+            for row in (track_fb_resp.data or [])
+            if row.get("spotify_track_id") and row.get("feedback") is not None
+        }
+    except Exception:
+        track_feedback = {}
 
     # ── Fetch all artists with embeddings ─────────────────────
     artists_resp = (
@@ -245,6 +264,13 @@ def recommend_songs(
         if aid in previously_recommended:
             base_score *= 0.65
 
+        # Artist-level feedback adjustment
+        artist_fb = feedback_scores.get(aid, 0)
+        if artist_fb < 0:
+            base_score *= max(0.15, 1.0 + (artist_fb * 0.25))
+        elif artist_fb > 0:
+            base_score *= min(1.4, 1.0 + (artist_fb * 0.08))
+
         artist_scores[aid] = {
             "base_score": base_score,
             "affinity": affinity,
@@ -376,6 +402,15 @@ def recommend_songs(
                 track_boost *= 0.45  # Strong penalty — you've already heard this exact song
             elif is_library_artist:
                 track_boost *= 0.90  # Very mild — new song from a known artist = great find
+
+            # Track-level feedback: stronger signal than artist-level because
+            # "I don't like THIS song" is more precise than "I don't like this artist"
+            track_spotify_id = track.get("spotify_track_id") or ""
+            track_fb = track_feedback.get(track_spotify_id, 0)
+            if track_fb < 0:
+                track_boost *= 0.15  # Very strong penalty — user explicitly disliked this track
+            elif track_fb > 0:
+                track_boost *= 1.15  # Modest boost
 
             # Exploration
             exploration = random.uniform(-EXPLORATION_STRENGTH, EXPLORATION_STRENGTH)

@@ -17,6 +17,11 @@ Do these steps in order. Takes about 20 minutes total.
    - `db/migrations/005_mentions_dedup.sql`
    - `db/migrations/006_triggers_and_indexes.sql`
    - `db/migrations/007_users_display_name.sql`
+   - `db/migrations/008_track_audio_features.sql`
+   - `db/migrations/009_user_favorites.sql`
+   - `db/migrations/010_user_top_artists.sql`
+   - `db/migrations/011_track_embeddings.sql`
+   - `db/migrations/012_user_feedback.sql`
    - `db/seed/sources.sql`
 5. Go to **Project Settings → API** → copy and save these 3 values:
    - **Project URL** → this is your `SUPABASE_URL`

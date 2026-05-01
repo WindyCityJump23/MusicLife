@@ -274,6 +274,7 @@ class UserScenario:
     top_artist_ids: list[int]
     taste_vector: list[float]
     playlist_artist_ids: list[int] = field(default_factory=list)
+    feedback: list[dict] = field(default_factory=list)  # [{"artist_id": int, "spotify_track_id": str, "feedback": 1|-1}]
     description: str = ""
 
 
@@ -347,6 +348,16 @@ def build_mock_client(
         for aid in scenario.playlist_artist_ids:
             playlist_items.append({"playlist_id": 1, "artist_id": aid})
 
+    user_feedback = [
+        {
+            "user_id": scenario.user_id,
+            "artist_id": row.get("artist_id"),
+            "spotify_track_id": row.get("spotify_track_id", f"sp_fb_{i}"),
+            "feedback": row["feedback"],
+        }
+        for i, row in enumerate(scenario.feedback)
+    ]
+
     return MockSupabaseClient(
         {
             "artists": artists,
@@ -357,5 +368,6 @@ def build_mock_client(
             "sources": sources,
             "playlists": playlists,
             "playlist_items": playlist_items,
+            "user_feedback": user_feedback,
         }
     )

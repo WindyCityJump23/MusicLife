@@ -285,6 +285,69 @@ def eval_song_diversity_rerank_contract() -> EvalResult:
     )
 
 
+def eval_thumbs_down_track_strongly_penalized() -> EvalResult:
+    """A thumbs-downed track should rank very low — below unheard tracks from the same artist.
+
+    The 0.15× track_boost multiplier for an explicit thumbs-down is much stronger
+    than the heard-song penalty (0.45×). A track the user said they dislike should
+    essentially drop to the bottom of results, even below familiar tracks.
+    """
+    # Miles Davis (artist 1) has two tracks. User has heard neither, but thumbed down track 101.
+    disliked_track = TRACKS[0]  # Kind of Blue (track 101)
+    neutral_track = TRACKS[1]   # Bitches Brew (track 102)
+
+    assert disliked_track["id"] == 101
+    assert neutral_track["id"] == 102
+
+    scenario = UserScenario(
+        user_id="thumbs_down_track_test",
+        library_artist_ids=[1],
+        played_track_ids=[],  # neither track heard
+        top_artist_ids=[1],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        feedback=[
+            {
+                "artist_id": 1,
+                "spotify_track_id": disliked_track["spotify_track_id"],
+                "feedback": -1,
+            }
+        ],
+    )
+    client = build_mock_client(scenario, artists=JAZZ_ARTISTS[:1], tracks=TRACKS[:2])
+    results = recommend_songs(
+        client=client,
+        user_id=scenario.user_id,
+        taste_vector=JAZZ_TASTE_VECTOR,
+        prompt_vector=None,
+        weights=_weights(),
+        exclude_library=False,
+        limit=10,
+    )
+    by_track = {r["track_name"]: r for r in results}
+    disliked = by_track.get("Kind of Blue")
+    neutral = by_track.get("Bitches Brew")
+
+    if disliked is None or neutral is None:
+        return EvalResult(
+            name="thumbs_down_track_strongly_penalized",
+            passed=False,
+            score=0.0,
+            details="One or both tracks missing from results — check track population",
+        )
+
+    passed = neutral["score"] > disliked["score"]
+    score = 1.0 if passed else 0.0
+    return EvalResult(
+        name="thumbs_down_track_strongly_penalized",
+        passed=passed,
+        score=score,
+        details=(
+            f"Neutral 'Bitches Brew' score={neutral['score']:.4f} vs "
+            f"thumbed-down 'Kind of Blue' score={disliked['score']:.4f}"
+        ),
+    )
+
+
 # ── Suite runner ─────────────────────────────────────────────────
 
 
@@ -296,4 +359,5 @@ def run_suite() -> list[EvalResult]:
         eval_popularity_track_selection(),
         eval_deep_cut_reason_label(),
         eval_song_diversity_rerank_contract(),
+        eval_thumbs_down_track_strongly_penalized(),
     ]

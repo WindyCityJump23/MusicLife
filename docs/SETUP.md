@@ -78,7 +78,13 @@ Manual order:
 4. `db/migrations/004_ingest_constraints.sql` — dedup indexes for listen events
 5. `db/migrations/005_mentions_dedup.sql` — dedup indexes for editorial mentions
 6. `db/migrations/006_triggers_and_indexes.sql` — updated_at triggers + perf indexes
-7. `db/seed/sources.sql` — seed editorial sources (RA, Pitchfork, Stereogum, etc.)
+7. `db/migrations/007_users_display_name.sql` — display name column on users
+8. `db/migrations/008_track_audio_features.sql` — audio feature columns on tracks
+9. `db/migrations/009_user_favorites.sql` — user favorites table + RLS
+10. `db/migrations/010_user_top_artists.sql` — Spotify top artists table
+11. `db/migrations/011_track_embeddings.sql` — track-level embedding column + indexes
+12. `db/migrations/012_user_feedback.sql` — thumbs up/down feedback table + RLS
+13. `db/seed/sources.sql` — seed editorial sources (RA, Pitchfork, Stereogum, etc.)
 
 ## 5) Run locally
 

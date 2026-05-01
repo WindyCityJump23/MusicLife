@@ -47,6 +47,7 @@ export default function DiscoverView({
   const [error, setError] = useState<string | null>(null);
   const [genreFilter, setGenreFilter] = useState<string>("");
   const [favoritedIds, setFavoritedIds] = useState<Set<string>>(new Set());
+  const [feedbackMap, setFeedbackMap] = useState<Record<string, 1 | -1>>({});
   const [playlistState, setPlaylistState] = useState<
     "idle" | "saving" | "done" | "error"
   >("idle");
@@ -227,13 +228,19 @@ export default function DiscoverView({
         }));
       setQueue(queueTracks);
 
-      // Fetch initial favorite state
+      // Fetch initial favorite and feedback state
       const trackIds = deduped.map((s) => s.spotify_track_id).filter(Boolean);
       if (trackIds.length > 0) {
         try {
           const favRes = await fetch(`/api/favorites-check?ids=${trackIds.join(",")}`);
           const favData = await favRes.json().catch(() => ({}));
           setFavoritedIds(new Set(favData.favorited ?? []));
+        } catch {}
+
+        try {
+          const fbRes = await fetch(`/api/feedback-check?ids=${trackIds.join(",")}`);
+          const fbData = await fbRes.json().catch(() => ({}));
+          setFeedbackMap(fbData.feedback ?? {});
         } catch {}
       }
     } catch (err) {
@@ -484,6 +491,8 @@ export default function DiscoverView({
                 song={song}
                 rank={i + 1}
                 initialFavorited={favoritedIds.has(song.spotify_track_id)}
+                initialFeedback={feedbackMap[song.spotify_track_id] ?? null}
+                currentPrompt={prompt}
               />
             ))}
           </div>
@@ -503,15 +512,21 @@ function SongRow({
   song,
   rank,
   initialFavorited = false,
+  initialFeedback = null,
+  currentPrompt = "",
 }: {
   song: SongRecommendation;
   rank: number;
   initialFavorited?: boolean;
+  initialFeedback?: 1 | -1 | null;
+  currentPrompt?: string;
 }) {
   const { playSingle, playFromQueue, queue } = usePlayer();
   const [playState, setPlayState] = useState<"idle" | "loading">("idle");
   const [favorited, setFavorited] = useState(initialFavorited);
   const [favLoading, setFavLoading] = useState(false);
+  const [feedback, setFeedback] = useState<1 | -1 | null>(initialFeedback);
+  const [fbLoading, setFbLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
   const matchPct = Math.round(song.score * 100);
@@ -546,6 +561,39 @@ function SongRow({
     }
 
     setPlayState("idle");
+  }
+
+  async function handleFeedback(value: 1 | -1) {
+    if (fbLoading || !song.spotify_track_id) return;
+    setFbLoading(true);
+    try {
+      if (feedback === value) {
+        // Toggle off — return to neutral
+        const res = await fetch("/api/feedback", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ spotify_track_id: song.spotify_track_id }),
+        });
+        if (res.ok) setFeedback(null);
+      } else {
+        // Set or switch feedback
+        const res = await fetch("/api/feedback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            spotify_track_id: song.spotify_track_id,
+            feedback: value,
+            track_name: song.track_name,
+            artist_name: song.artist_name,
+            score: song.score,
+            prompt: currentPrompt || undefined,
+            source: "discover",
+          }),
+        });
+        if (res.ok) setFeedback(value);
+      }
+    } catch {}
+    setFbLoading(false);
   }
 
   return (
@@ -638,6 +686,38 @@ function SongRow({
               <path d="M8 5v14l11-7z" />
             </svg>
           )}
+        </button>
+
+        {/* Thumbs up/down feedback buttons */}
+        <button
+          onClick={() => handleFeedback(1)}
+          disabled={fbLoading || !song.spotify_track_id}
+          title="Thumbs up — recommend more like this"
+          className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 disabled:opacity-30 ${
+            feedback === 1
+              ? "text-emerald-500"
+              : "text-neutral-300 hover:text-neutral-500"
+          }`}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill={feedback === 1 ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z" />
+            <path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
+          </svg>
+        </button>
+        <button
+          onClick={() => handleFeedback(-1)}
+          disabled={fbLoading || !song.spotify_track_id}
+          title="Thumbs down — show less like this"
+          className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 disabled:opacity-30 ${
+            feedback === -1
+              ? "text-red-400"
+              : "text-neutral-300 hover:text-neutral-500"
+          }`}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill={feedback === -1 ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z" />
+            <path d="M17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
+          </svg>
         </button>
 
         {/* Favorite (heart) button */}
