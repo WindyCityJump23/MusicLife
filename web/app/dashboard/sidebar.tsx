@@ -25,10 +25,12 @@ export default function Sidebar({
   active,
   onChange,
   onClose,
+  onSetupComplete,
 }: {
   active: View;
   onChange: (v: View) => void;
   onClose?: () => void;
+  onSetupComplete?: () => void;
 }) {
   const [displayName,    setDisplayName]    = useState<string | null>(null);
   const [completedSteps, setCompletedSteps] = useState<Set<number>>(new Set());
@@ -196,7 +198,7 @@ export default function Sidebar({
           </p>
         )}
 
-        <SetupAllButton onProgress={checkLibraryStatus} />
+        <SetupAllButton onProgress={checkLibraryStatus} onComplete={onSetupComplete} />
 
         <div className="space-y-2 pt-1">
           {STEP_META.map((s) => (

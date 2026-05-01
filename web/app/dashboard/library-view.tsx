@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import SetupAllButton from "./SetupAllButton";
 
 type Artist = {
   id: number;
@@ -18,7 +19,11 @@ type LibraryData = {
 
 type SortKey = "az" | "za";
 
-export default function LibraryView() {
+export default function LibraryView({
+  onSetupComplete,
+}: {
+  onSetupComplete?: () => void;
+}) {
   const [data, setData] = useState<LibraryData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -81,24 +86,37 @@ export default function LibraryView() {
 
   if (!data || data.artists.length === 0) {
     return (
-      <div className="space-y-6">
-        <Stats stats={{ artistCount: 0, trackCount: 0, recentPlayCount: 0 }} />
-        <div className="border border-dashed border-neutral-300 rounded-xl p-12 text-center space-y-4">
+      <div className="max-w-sm mx-auto py-8 space-y-6">
+        <div className="text-center space-y-2">
           <div className="text-5xl">🎧</div>
-          <div>
-            <p className="text-base font-semibold text-neutral-800">
-              Your library is empty
-            </p>
-            <p className="text-sm text-neutral-500 mt-1 max-w-xs mx-auto leading-relaxed">
-              Sync your Spotify library to get started.
-            </p>
-          </div>
-          <div className="flex items-center justify-center gap-2 text-sm text-neutral-400">
-            <span>Use</span>
-            <span className="font-medium text-neutral-600">&ldquo;Step 1 — Sync Library&rdquo;</span>
-            <span>in the sidebar</span>
-            <span className="text-lg">←</span>
-          </div>
+          <h2 className="text-lg font-semibold text-neutral-900">Welcome to MusicLife</h2>
+          <p className="text-sm text-neutral-500 leading-relaxed">
+            Connect your Spotify library to get personalised recommendations.
+            Takes 2–5 minutes and runs in the background.
+          </p>
+        </div>
+        <SetupAllButton
+          onProgress={fetchLibrary}
+          onComplete={onSetupComplete}
+        />
+        <div className="space-y-2.5 pt-1">
+          {[
+            { n: 1, title: "Sync Library",          desc: "Import your artists & listening history" },
+            { n: 2, title: "Enrich Artists",         desc: "Fetch genres, tags & metadata" },
+            { n: 3, title: "Generate Embeddings",    desc: "Build AI taste vectors for smart matching" },
+            { n: 4, title: "Sync Sources",           desc: "Add editorial content & reviews" },
+            { n: 5, title: "Populate Tracks",        desc: "Fetch songs for Discover" },
+          ].map(({ n, title, desc }) => (
+            <div key={n} className="flex items-start gap-2.5">
+              <div className="shrink-0 w-5 h-5 rounded-full bg-neutral-200 flex items-center justify-center text-[10px] font-bold text-neutral-500 mt-0.5">
+                {n}
+              </div>
+              <div>
+                <p className="text-xs font-medium text-neutral-800 leading-tight">{title}</p>
+                <p className="text-[10px] text-neutral-400 leading-snug mt-0.5">{desc}</p>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     );

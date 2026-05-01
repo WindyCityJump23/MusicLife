@@ -9,7 +9,6 @@ import ActivityView from "./activity-view";
 import SavedView from "./saved-view";
 import Player from "./Player";
 import { PlayerProvider, usePlayer } from "./player-context";
-import OnboardingWizard from "./onboarding-wizard";
 
 const TITLES: Record<View, string> = {
   library: "Library",
@@ -63,9 +62,6 @@ function DashboardInner() {
         Skip to content
       </a>
 
-      {/* ── Onboarding Wizard ────────────────────────────────── */}
-      <OnboardingWizard />
-
       <div
         className={[
           "lg:grid lg:h-screen text-neutral-900",
@@ -117,6 +113,7 @@ function DashboardInner() {
             active={view}
             onChange={handleNavChange}
             onClose={() => setNavOpen(false)}
+            onSetupComplete={() => handleNavChange("discover")}
           />
         </aside>
 
@@ -140,7 +137,9 @@ function DashboardInner() {
               <h2 className="text-lg font-semibold tracking-tight">{TITLES[view]}</h2>
             </header>
             <div className="view-fade-in" key={view}>
-              {view === "library" && <LibraryView />}
+              {view === "library" && (
+                <LibraryView onSetupComplete={() => handleNavChange("discover")} />
+              )}
               {view === "discover" && <DiscoverView onNavigate={(v) => setView(v as View)} />}
               {view === "playlists" && <PlaylistsView />}
               {view === "activity" && <ActivityView />}

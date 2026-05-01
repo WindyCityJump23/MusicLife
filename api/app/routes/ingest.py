@@ -455,10 +455,27 @@ def _run_setup_all(
                     flush=True,
                 )
 
-        progress_for(5)("Populating track catalog…")
-        run_track_population(track_token, progress=progress_for(5))
+        # Step 5 is non-fatal: Spotify dev-mode rate limits are per-app and
+        # can lock out the entire app for hours. If track population fails for
+        # any reason, steps 1–4 are already complete and Discover works with
+        # existing tracks. Surface a soft-success so the user isn't blocked.
+        try:
+            progress_for(5)("Populating track catalog…")
+            summary = run_track_population(track_token, progress=progress_for(5))
+            errors = summary.get("errors", 0) if isinstance(summary, dict) else 0
+            added = summary.get("tracks_added", 0) if isinstance(summary, dict) else 0
+            if errors > 0 and added == 0:
+                last_err = (summary.get("last_error") or "") if isinstance(summary, dict) else ""
+                note = "rate-limited" if "429" in last_err or "rate" in last_err.lower() else "will retry later"
+                update_job(job_id, JobStatus.SUCCESS,
+                           f"Library is ready (track catalog will update later — {note})")
+            else:
+                update_job(job_id, JobStatus.SUCCESS, "Library is ready")
+        except Exception as step5_exc:
+            print(f"setup_all: step 5 non-fatal error — {step5_exc}", flush=True)
+            update_job(job_id, JobStatus.SUCCESS,
+                       "Library is ready (track catalog will update later)")
 
-        update_job(job_id, JobStatus.SUCCESS, "Library is ready")
         print(f"setup_all: completed for user {user_id}")
     except Exception as exc:
         update_job(job_id, JobStatus.FAILED, str(exc)[:500])

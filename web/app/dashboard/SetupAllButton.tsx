@@ -19,12 +19,19 @@ function parseStep(message: string): { step: number; label: string } | null {
   return { step: parseInt(match[1], 10), label: match[3].trim() };
 }
 
-export default function SetupAllButton({ onProgress }: { onProgress?: () => void }) {
+export default function SetupAllButton({
+  onProgress,
+  onComplete,
+}: {
+  onProgress?: () => void;
+  onComplete?: () => void;
+}) {
   const [state, setState]     = useState<RunState>("idle");
   const [message, setMessage] = useState("");
   const [step, setStep]       = useState(0);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const intervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastMessageRef = useRef("");
+  const completedRef = useRef(false);
 
   const cleanup = useCallback(() => {
     if (intervalRef.current) {
@@ -36,7 +43,7 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
   useEffect(() => () => cleanup(), [cleanup]);
 
   const handleStatus = useCallback(
-    (data: JobStatusResponse) => {
+    (data: JobStatusResponse): boolean => {
       if (data.status === "queued" || data.status === "running") {
         setState("running");
         setMessage(data.message || "Working…");
@@ -55,6 +62,10 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
         setStep(TOTAL_STEPS);
         setMessage(data.message || "Library is ready");
         onProgress?.();
+        if (!completedRef.current) {
+          completedRef.current = true;
+          onComplete?.();
+        }
         return true;
       }
       if (data.status === "failed") {
@@ -72,7 +83,7 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
       setStep(0);
       return true;
     },
-    [cleanup, onProgress]
+    [cleanup, onProgress, onComplete]
   );
 
   const startPolling = useCallback(
