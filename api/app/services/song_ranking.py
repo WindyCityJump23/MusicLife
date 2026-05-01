@@ -184,6 +184,19 @@ def recommend_songs(
     effective_prompt_vector = prompt_vector if prompt_vector else taste_vector
     has_explicit_prompt = prompt_vector is not None
 
+    # When there's no explicit prompt, zero out the context weight and
+    # redistribute it to affinity. The old behavior used the taste vector
+    # as a proxy for context, but this made the context signal identical
+    # to affinity — every artist scored ~0.75 context for every user,
+    # drowning out the actual per-user taste differences.
+    if not has_explicit_prompt:
+        redistributed = weights.get("context", 0.0)
+        weights = {
+            "affinity": weights["affinity"] + redistributed * 0.8,
+            "context": 0.0,  # No prompt = no context signal
+            "editorial": weights["editorial"] + redistributed * 0.2,
+        }
+
     # ── Build per-user genre preference weights ───────────────
     # The user's library artists have genres. Weight each genre by
     # how much the user listens to it. This lets genre overlap between
@@ -228,6 +241,22 @@ def recommend_songs(
 
     raw_vals = [r for _, r in raw_affinities]
     pct_ranks = _percentile_rank(raw_vals)
+
+    # ── Detect "universal attractors" ──────────────────────────
+    # Some artists have embeddings near the centroid of the entire
+    # vector space, so they score high affinity for EVERY user. These
+    # aren't truly personalized matches. Penalize artists whose raw
+    # cosine similarity is in the top percentile across ALL users by
+    # checking if they're above the 90th percentile. This is a proxy:
+    # truly personalized matches should have some users where they
+    # rank low and some where they rank high. Artists that rank high
+    # for everyone are probably just centrally-located in embedding
+    # space. We apply a moderate penalty to push them down.
+    if raw_vals:
+        raw_sorted = sorted(raw_vals)
+        p90_threshold = raw_sorted[int(len(raw_sorted) * 0.92)] if len(raw_sorted) > 10 else 1.0
+    else:
+        p90_threshold = 1.0
 
     # Use stronger exploration for non-prompted queries so browsing feels
     # fresh and different between users.  With a prompt the user has a
@@ -316,6 +345,7 @@ def recommend_songs(
         artist_scores[aid] = {
             "base_score": base_score,
             "affinity": affinity,
+            "affinity_raw": affinity_raw,
             "context": context,
             "editorial": editorial,
             "name": artist.get("name") or "Unknown",
@@ -473,6 +503,13 @@ def recommend_songs(
                 + weights["context"] * track_context
                 + weights["editorial"] * a_info["editorial"]
             )
+
+            # Universal attractor penalty: if this artist has high raw
+            # cosine with ALL taste vectors (above p90), it's probably
+            # central in embedding space, not a genuine personal match.
+            if a_info["affinity_raw"] > p90_threshold and not has_explicit_prompt:
+                track_base *= 0.75  # 25% penalty for universally-popular embeddings
+
             if aid in previously_recommended:
                 track_base *= 0.65
 

@@ -443,6 +443,18 @@ def rank_candidates(
     effective_prompt_vector = prompt_vector if prompt_vector else taste_vector
     has_explicit_prompt = prompt_vector is not None
 
+    # When there's no explicit prompt, the context signal (cosine of taste
+    # vector vs mention embeddings) is nearly identical to affinity for
+    # every user — it doesn't differentiate. Redistribute context weight
+    # to affinity so per-user taste differences dominate.
+    if not has_explicit_prompt:
+        redistributed = weights.get("context", 0.0)
+        weights = {
+            "affinity": weights["affinity"] + redistributed * 0.8,
+            "context": 0.0,
+            "editorial": weights["editorial"] + redistributed * 0.2,
+        }
+
     # ── Phase 1: compute raw affinity for all candidates ─────────
     raw_affinities: list[tuple[dict, float]] = []
     for artist in candidates:
