@@ -33,7 +33,7 @@ export default function DiscoverView({
 }: {
   onNavigate?: (view: string) => void;
 }) {
-  const { setQueue } = usePlayer();
+  const { setQueue, playFromQueue } = usePlayer();
   const [prompt, setPrompt] = useState("");
   const [weights, setWeights] = useState({
     affinity: 40,
@@ -445,11 +445,34 @@ export default function DiscoverView({
                 </select>
               )}
             </div>
-            <SavePlaylistButton
-              state={playlistState}
-              count={results.length}
-              onSave={handleSavePlaylist}
-            />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  const tracks = (displayed ?? []).filter((s) => s.spotify_track_id);
+                  if (tracks.length > 0) {
+                    const qTracks = tracks.map((s) => ({
+                      spotifyTrackId: s.spotify_track_id,
+                      trackName: s.track_name,
+                      artistName: s.artist_name,
+                    }));
+                    setQueue(qTracks);
+                    playFromQueue(0);
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-xs font-medium hover:bg-neutral-700 active:scale-95 transition-all"
+                title="Play all songs"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+                Play all
+              </button>
+              <SavePlaylistButton
+                state={playlistState}
+                count={results.length}
+                onSave={handleSavePlaylist}
+              />
+            </div>
           </div>
 
           {/* Playlist success banner */}
