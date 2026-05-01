@@ -23,7 +23,7 @@ function DashboardInner() {
   const [view, setView] = useState<View>("library");
   const [navOpen, setNavOpen] = useState(false);
   const [playerOpen, setPlayerOpen] = useState(false);
-  const { playingArtist, embedTrackId } = usePlayer();
+  const { playingArtist, embedTrackId, queue, currentIndex } = usePlayer();
   const hasTrack = Boolean(playingArtist) || Boolean(embedTrackId);
 
   // Close drawers on Escape
@@ -219,6 +219,32 @@ function DashboardInner() {
               <span>Play a song to open the player</span>
             </div>
           </aside>
+        )}
+
+        {/* ── Mobile now-playing mini-bar ─────────────────────── */}
+        {hasTrack && !playerOpen && (
+          <button
+            onClick={() => setPlayerOpen(true)}
+            className="lg:hidden fixed bottom-0 inset-x-0 z-30 flex items-center gap-3 px-4 h-14 pb-safe"
+            style={{ background: "linear-gradient(90deg, #1a1a2e 0%, #16213e 100%)" }}
+          >
+            <div className="w-8 h-8 rounded-md bg-white/10 flex items-center justify-center text-white/80">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </div>
+            <div className="flex-1 min-w-0 text-left">
+              <p className="text-xs font-medium text-white truncate">
+                {queue[currentIndex]?.trackName || "Now Playing"}
+              </p>
+              <p className="text-[10px] text-white/50 truncate">
+                {queue[currentIndex]?.artistName || ""}
+              </p>
+            </div>
+            <svg className="shrink-0 text-white/40" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M18 15l-6-6-6 6" />
+            </svg>
+          </button>
         )}
 
         {/* ── Mobile player backdrop ─────────────────────────── */}
