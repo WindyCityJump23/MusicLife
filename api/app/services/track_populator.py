@@ -74,6 +74,7 @@ def run_track_population(
     with httpx.Client(timeout=15) as client:
         # Validate token — retry on 429 (rate limit) with exponential backoff
         print(f"track_populator: validating Spotify token (len={len(access_token)})", flush=True)
+        MAX_RETRY_WAIT = 60  # Never wait more than 60s per retry
         for attempt in range(5):
             test_resp = client.get(
                 "https://api.spotify.com/v1/search",
@@ -83,7 +84,16 @@ def run_track_population(
             print(f"track_populator: token test HTTP {test_resp.status_code} (attempt {attempt+1})", flush=True)
             if test_resp.status_code == 429:
                 retry_after = int(test_resp.headers.get("Retry-After", "5"))
-                wait = max(retry_after, 2 ** attempt)
+                # If Spotify says wait more than 5 min, the rate limit is
+                # too severe (dev mode) — abort instead of blocking forever
+                if retry_after > 300:
+                    msg = (f"Spotify rate limit too severe ({retry_after}s / ~{retry_after//3600}h). "
+                           f"Try again in a few minutes. This is a Spotify dev-mode restriction.")
+                    print(f"track_populator: {msg}", flush=True)
+                    if progress:
+                        progress(msg)
+                    return {"artists_total": before_skip, "artists_processed": 0, "tracks_added": 0, "error": msg}
+                wait = min(max(retry_after, 2 ** attempt), MAX_RETRY_WAIT)
                 print(f"track_populator: rate limited, waiting {wait}s", flush=True)
                 if progress:
                     progress(f"Spotify rate limit — waiting {wait}s before retrying...")
@@ -241,65 +251,98 @@ def _compose_embedding_source(
     return " – ".join(parts)
 
 
+def _retry_429(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    params: dict | None = None,
+) -> httpx.Response:
+    """Make an HTTP request with automatic 429 retry (up to 2 retries, capped at 60s)."""
+    for attempt in range(3):
+        resp = client.request(method, url, params=params, headers=headers)
+        if resp.status_code != 429:
+            return resp
+        retry_after = int(resp.headers.get("Retry-After", "5"))
+        if retry_after > 300:
+            return resp  # Let caller handle severe rate limits
+        wait = min(max(retry_after, 5 * (attempt + 1)), 60)
+        print(f"track_populator: 429 on {url.split('/')[-1]}, waiting {wait}s (attempt {attempt+1})", flush=True)
+        time.sleep(wait)
+    return resp  # Return last response even if still 429
+
+
 def _search_and_upsert_tracks(
     client: httpx.Client,
     headers: dict[str, str],
     artist: dict,
     limit: int,
 ) -> tuple[int, str | None]:
-    """Search Spotify for tracks by this artist and upsert them.
+    """Fetch tracks for an artist and upsert them.
 
-    Returns (tracks_upserted, error_message_or_None). A non-None error
-    message indicates the Spotify call failed in a way the caller should
-    surface (e.g. auth, server error). Empty result sets are not errors.
+    Strategy: Use /artists/{id}/top-tracks if we have a spotify_artist_id
+    (direct lookup, cheaper on rate limits). Fall back to Search API.
+
+    Returns (tracks_upserted, error_message_or_None).
     """
     artist_name = (artist.get("name") or "").strip()
     artist_db_id = artist["id"]
+    spotify_artist_id = (artist.get("spotify_artist_id") or "").strip()
 
     if not artist_name:
         return 0, None
 
-    # Spotify field filters require quoting for multi-word values.
-    # Without quotes, `artist:Taylor Swift` is parsed as `artist:Taylor`
-    # plus a free term `Swift`, returning poor or empty results.
-    quoted = artist_name.replace('"', '\\"')
-    query = f'artist:"{quoted}"'
+    items: list[dict] = []
 
-    params = {"q": query, "type": "track", "market": "US", "limit": limit}
-    resp = client.get(
-        "https://api.spotify.com/v1/search",
-        params=params,
-        headers=headers,
-    )
-
-    if resp.status_code == 429:
-        retry_after = int(resp.headers.get("Retry-After", "5"))
-        wait = max(retry_after, 5)  # wait at least 5s on rate limit
-        print(f"track_populator: 429 for '{artist_name}', waiting {wait}s", flush=True)
-        time.sleep(wait)
-        resp = client.get(
-            "https://api.spotify.com/v1/search",
-            params=params,
+    # Prefer top-tracks endpoint (direct, no text search, 1 API call)
+    if spotify_artist_id:
+        resp = _retry_429(
+            client, "GET",
+            f"https://api.spotify.com/v1/artists/{spotify_artist_id}/top-tracks",
             headers=headers,
+            params={"market": "US"},
         )
-        # If still 429, wait longer and try once more
         if resp.status_code == 429:
-            retry_after = int(resp.headers.get("Retry-After", "15"))
-            wait = max(retry_after, 15)
-            print(f"track_populator: still 429, waiting {wait}s", flush=True)
-            time.sleep(wait)
-            resp = client.get(
-                "https://api.spotify.com/v1/search",
-                params=params,
-                headers=headers,
-            )
+            retry_after = int(resp.headers.get("Retry-After", "5"))
+            return 0, f"Spotify rate limit too severe ({retry_after}s)"
+        if resp.status_code == 200:
+            items = resp.json().get("tracks", [])[:limit]
+        elif resp.status_code == 403:
+            # Dev mode may block top-tracks; fall through to search
+            pass
+        elif resp.status_code in (401,):
+            body = (resp.text or "")[:120]
+            return 0, f"spotify top-tracks HTTP {resp.status_code} for '{artist_name}': {body}"
+
+    # Fallback: Search API
+    if not items:
+        quoted = artist_name.replace('"', '\\"')
+        query = f'artist:"{quoted}"'
+        params = {"q": query, "type": "track", "market": "US", "limit": limit}
+        resp = _retry_429(
+            client, "GET",
+            "https://api.spotify.com/v1/search",
+            headers=headers,
+            params=params,
+        )
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", "5"))
+            return 0, f"Spotify rate limit too severe ({retry_after}s)"
 
     if resp.status_code != 200:
         body = (resp.text or "")[:120]
-        return 0, f"spotify search HTTP {resp.status_code} for '{artist_name}': {body}"
+        return 0, f"spotify HTTP {resp.status_code} for '{artist_name}': {body}"
 
-    data = resp.json()
-    items = (data.get("tracks") or {}).get("items") or []
+    # Parse items — top-tracks returns {tracks: [...]}, search returns {tracks: {items: [...]}}
+    if not items:
+        data = resp.json()
+        tracks_data = data.get("tracks")
+        if isinstance(tracks_data, list):
+            # /artists/{id}/top-tracks format
+            items = tracks_data[:limit]
+        elif isinstance(tracks_data, dict):
+            # /search format
+            items = tracks_data.get("items") or []
     if not items:
         return 0, None
 
