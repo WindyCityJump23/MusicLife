@@ -326,6 +326,48 @@ def _run_populate_tracks(job_id: str, spotify_token: str):
 class SetupAllRequest(BaseModel):
     user_id: str
     spotify_access_token: str
+    # Optional fields for auto-refreshing the Spotify token before step 5.
+    # Steps 1–4 can take >1 h for large libraries, so the initial access token
+    # may be expired by the time track population starts.
+    spotify_refresh_token: str = ""
+    spotify_client_id: str = ""
+    spotify_client_secret: str = ""
+
+
+def _refresh_spotify_token(
+    refresh_token: str,
+    client_id: str,
+    client_secret: str,
+) -> str | None:
+    """Exchange a Spotify refresh token for a new access token.
+
+    Returns the new access token string, or None on failure.
+    """
+    import base64
+    import urllib.request
+    import urllib.parse
+
+    credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    data = urllib.parse.urlencode(
+        {"grant_type": "refresh_token", "refresh_token": refresh_token}
+    ).encode()
+    req = urllib.request.Request(
+        "https://accounts.spotify.com/api/token",
+        data=data,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": f"Basic {credentials}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            import json
+            body = json.loads(resp.read())
+            return body.get("access_token")
+    except Exception as exc:
+        print(f"setup_all: Spotify token refresh failed: {exc}", flush=True)
+        return None
 
 
 @router.post("/setup-all")
@@ -345,11 +387,26 @@ def setup_all(
     ensure_valid_bearer_token(token)
     job_id = str(uuid.uuid4())
     create_job(job_id, "setup-all")
-    bg.add_task(_run_setup_all, job_id, req.user_id, req.spotify_access_token)
+    bg.add_task(
+        _run_setup_all,
+        job_id,
+        req.user_id,
+        req.spotify_access_token,
+        req.spotify_refresh_token,
+        req.spotify_client_id,
+        req.spotify_client_secret,
+    )
     return {"status": "queued", "job_id": job_id}
 
 
-def _run_setup_all(job_id: str, user_id: str, spotify_token: str):
+def _run_setup_all(
+    job_id: str,
+    user_id: str,
+    spotify_token: str,
+    spotify_refresh_token: str = "",
+    spotify_client_id: str = "",
+    spotify_client_secret: str = "",
+):
     from app.services.artist_embeddings import run_artist_embeddings
     from app.services.artist_enrichment import run_artist_enrichment
     from app.services.source_ingest import run_source_ingest
@@ -382,8 +439,24 @@ def _run_setup_all(job_id: str, user_id: str, spotify_token: str):
         progress_for(4)("Fetching editorial sources…")
         run_source_ingest(progress=progress_for(4))
 
+        # Refresh the Spotify token before step 5 — steps 1–4 can exceed the
+        # token's 1-hour validity for large libraries.
+        track_token = spotify_token
+        if spotify_refresh_token and spotify_client_id and spotify_client_secret:
+            refreshed = _refresh_spotify_token(
+                spotify_refresh_token, spotify_client_id, spotify_client_secret
+            )
+            if refreshed:
+                track_token = refreshed
+                print("setup_all: refreshed Spotify token for step 5", flush=True)
+            else:
+                print(
+                    "setup_all: token refresh failed; proceeding with original token",
+                    flush=True,
+                )
+
         progress_for(5)("Populating track catalog…")
-        run_track_population(spotify_token, progress=progress_for(5))
+        run_track_population(track_token, progress=progress_for(5))
 
         update_job(job_id, JobStatus.SUCCESS, "Library is ready")
         print(f"setup_all: completed for user {user_id}")

@@ -23,6 +23,9 @@ from app.services.supabase_client import admin_supabase
 
 TRACKS_PER_ARTIST = 5  # How many tracks to fetch per artist
 ABORT_AFTER_ERRORS = 20
+# Cap Retry-After sleep so a single 429 can't freeze the entire job.
+# If Spotify asks us to wait longer, we skip and count it as an error.
+MAX_RETRY_AFTER_SECS = 30
 
 
 def run_track_population(
@@ -56,6 +59,8 @@ def run_track_population(
     total_added = 0
     errors = 0
     last_error: str | None = None
+    consecutive_401s = 0
+    processed = 0
 
     with httpx.Client(timeout=15) as client:
         for i, artist in enumerate(artists):
@@ -64,9 +69,25 @@ def run_track_population(
                     client, headers, artist, TRACKS_PER_ARTIST
                 )
                 total_added += added
+                processed = i + 1
+
                 if err:
                     errors += 1
                     last_error = err
+                    # Fast-abort on token expiry: 3 consecutive 401s means the
+                    # token is dead and every remaining artist will fail too.
+                    if "401" in (err or ""):
+                        consecutive_401s += 1
+                        if consecutive_401s >= 3:
+                            print(
+                                "track_populator: Spotify token expired (3 consecutive 401s), aborting",
+                                flush=True,
+                            )
+                            break
+                    else:
+                        consecutive_401s = 0
+                else:
+                    consecutive_401s = 0
 
                 # Rate limit: Spotify allows ~30 req/sec but be conservative
                 if (i + 1) % 5 == 0:
@@ -84,6 +105,7 @@ def run_track_population(
             except Exception as exc:
                 errors += 1
                 last_error = str(exc)[:200]
+                consecutive_401s = 0
                 time.sleep(1)  # Back off on transient failures
 
             # Update progress every 10 artists regardless of success/error.
@@ -99,7 +121,7 @@ def run_track_population(
 
     summary = {
         "artists_total": len(artists),
-        "artists_processed": i + 1,
+        "artists_processed": processed,
         "tracks_added": total_added,
         "errors": errors,
     }
@@ -107,7 +129,7 @@ def run_track_population(
         summary["last_error"] = last_error
 
     if progress:
-        progress(f"Populating track catalog ({summary['artists_processed']}/{total})")
+        progress(f"Populating track catalog ({processed}/{total})")
 
     print(f"track_populator: done — {summary}", flush=True)
     return summary
@@ -185,12 +207,20 @@ def _search_and_upsert_tracks(
 
     if resp.status_code == 429:
         retry_after = int(resp.headers.get("Retry-After", "5"))
+        if retry_after > MAX_RETRY_AFTER_SECS:
+            return 0, (
+                f"spotify rate-limited for '{artist_name}': "
+                f"Retry-After={retry_after}s exceeds cap; skipping"
+            )
         time.sleep(retry_after)
         resp = client.get(
             "https://api.spotify.com/v1/search",
             params=params,
             headers=headers,
         )
+
+    if resp.status_code == 401:
+        return 0, f"spotify token expired or invalid for '{artist_name}' (HTTP 401)"
 
     if resp.status_code != 200:
         body = (resp.text or "")[:120]
