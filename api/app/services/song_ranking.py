@@ -378,7 +378,7 @@ def recommend_songs(
     # inheriting the artist-level mention match.
     tracks_resp = (
         client.table("tracks")
-        .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
+        .select("id,name,artist_id,album_name,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
         .in_("artist_id", top_artist_ids)
         .range(0, 9999)
         .execute()
@@ -417,7 +417,7 @@ def recommend_songs(
             if extra_artist_ids:
                 extra_tracks_resp = (
                     client.table("tracks")
-                    .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
+                    .select("id,name,artist_id,album_name,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
                     .in_("artist_id", extra_artist_ids)
                     .range(0, 9999)
                     .execute()
