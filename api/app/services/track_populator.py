@@ -72,14 +72,25 @@ def run_track_population(
         progress(f"Populating track catalog (0/{total}, {skipped} skipped)")
 
     with httpx.Client(timeout=15) as client:
-        # Validate token on first request before committing to full loop
+        # Validate token — retry on 429 (rate limit) with exponential backoff
         print(f"track_populator: validating Spotify token (len={len(access_token)})", flush=True)
-        test_resp = client.get(
-            "https://api.spotify.com/v1/search",
-            params={"q": "test", "type": "track", "limit": 1},
-            headers=headers,
-        )
-        print(f"track_populator: token test HTTP {test_resp.status_code}", flush=True)
+        for attempt in range(5):
+            test_resp = client.get(
+                "https://api.spotify.com/v1/search",
+                params={"q": "test", "type": "track", "limit": 1},
+                headers=headers,
+            )
+            print(f"track_populator: token test HTTP {test_resp.status_code} (attempt {attempt+1})", flush=True)
+            if test_resp.status_code == 429:
+                retry_after = int(test_resp.headers.get("Retry-After", "5"))
+                wait = max(retry_after, 2 ** attempt)
+                print(f"track_populator: rate limited, waiting {wait}s", flush=True)
+                if progress:
+                    progress(f"Spotify rate limit — waiting {wait}s before retrying...")
+                time.sleep(wait)
+                continue
+            break
+
         if test_resp.status_code in (401, 403):
             msg = f"Spotify token expired or invalid (HTTP {test_resp.status_code}). Please sign out and back in."
             print(f"track_populator: {msg}", flush=True)
@@ -117,8 +128,9 @@ def run_track_population(
                 else:
                     consecutive_auth_errors = 0
 
-                # Rate limit: Spotify allows ~30 req/sec but be conservative
-                if (i + 1) % 5 == 0:
+                # Rate limit: Spotify allows ~30 req/sec but be very conservative
+                # to avoid 429s, especially after setup steps 1-4 burned quota
+                if (i + 1) % 3 == 0:
                     time.sleep(0.5)
 
                 # Progress logging every 50 artists
@@ -262,12 +274,25 @@ def _search_and_upsert_tracks(
 
     if resp.status_code == 429:
         retry_after = int(resp.headers.get("Retry-After", "5"))
-        time.sleep(retry_after)
+        wait = max(retry_after, 5)  # wait at least 5s on rate limit
+        print(f"track_populator: 429 for '{artist_name}', waiting {wait}s", flush=True)
+        time.sleep(wait)
         resp = client.get(
             "https://api.spotify.com/v1/search",
             params=params,
             headers=headers,
         )
+        # If still 429, wait longer and try once more
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", "15"))
+            wait = max(retry_after, 15)
+            print(f"track_populator: still 429, waiting {wait}s", flush=True)
+            time.sleep(wait)
+            resp = client.get(
+                "https://api.spotify.com/v1/search",
+                params=params,
+                headers=headers,
+            )
 
     if resp.status_code != 200:
         body = (resp.text or "")[:120]

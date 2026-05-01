@@ -475,6 +475,11 @@ def _run_setup_all(
         run_source_ingest(progress=progress_for(4))
 
         current_stage = "Populate Tracks"
+        # Cool down before hitting Spotify Search — steps 1-4 may have
+        # burned through the rate limit window already.
+        import time as _time
+        progress_for(5)("Waiting 10s for Spotify rate limit to reset…")
+        _time.sleep(10)
         progress_for(5)("Populating track catalog…")
         # Refresh again — steps 1-4 may have taken 10+ minutes
         active_token = fresh_token()
