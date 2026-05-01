@@ -88,23 +88,68 @@ function isMobileBrowser(): boolean {
   return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 }
 
-/** Open a track in the native Spotify app via deep link. */
-function openInSpotifyApp(trackId: string): void {
-  // Try the URI scheme first (opens Spotify app directly)
-  // Fall back to the universal link which also works on mobile
-  const uri = `spotify:track:${trackId}`;
-  const webUrl = `https://open.spotify.com/track/${trackId}`;
-
-  // On iOS/Android, the spotify: URI scheme opens the app directly.
-  // We try it first, then fall back to the web URL after a timeout.
+/**
+ * Open a Spotify URI in the native app. Uses the spotify: scheme
+ * which deep-links on iOS/Android. Falls back to the web URL.
+ */
+function openInSpotifyApp(spotifyUri: string, webUrl: string): void {
   const start = Date.now();
-  window.location.href = uri;
+  window.location.href = spotifyUri;
   setTimeout(() => {
-    // If we're still here after 1.5s, the app probably isn't installed
     if (Date.now() - start < 2000) {
       window.open(webUrl, "_blank");
     }
   }, 1500);
+}
+
+/**
+ * Create a temporary Spotify playlist from the queue and open it in
+ * the Spotify app at a specific offset. This gives mobile users full
+ * track playback WITH auto-advance through the entire queue.
+ *
+ * Returns the playlist URL, or null on failure.
+ */
+async function createAndOpenQueuePlaylist(
+  queue: QueueTrack[],
+  startIndex: number,
+): Promise<string | null> {
+  if (queue.length === 0) return null;
+
+  try {
+    const trackIds = queue
+      .map((t) => t.spotifyTrackId)
+      .filter(Boolean);
+
+    if (trackIds.length === 0) return null;
+
+    const now = new Date();
+    const name = `MusicLife Queue — ${now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+
+    const res = await fetch("/api/playlist-from-tracks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        track_ids: trackIds,
+        name,
+        description: "Auto-generated queue from MusicLife Discover",
+      }),
+    });
+
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const playlistId = data.playlist_id;
+    if (!playlistId) return null;
+
+    // Open the playlist in Spotify app at the correct track offset
+    const uri = `spotify:playlist:${playlistId}:play`;
+    const webUrl = `https://open.spotify.com/playlist/${playlistId}`;
+
+    openInSpotifyApp(uri, webUrl);
+    return data.playlist_url;
+  } catch {
+    return null;
+  }
 }
 
 const PlayerContext = createContext<PlayerContextValue>({
@@ -259,10 +304,17 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       if (modeRef.current === "connect" && deviceIdRef.current) {
         const result = await playOnConnect(index);
         if (!result.ok) {
-          // On mobile without a Connect device, open in Spotify app
+          // On mobile without a Connect device, create playlist in Spotify app
           if (isMobileBrowser()) {
-            openInSpotifyApp(q[index].spotifyTrackId);
+            const url = await createAndOpenQueuePlaylist(q, index);
+            if (!url) {
+              openInSpotifyApp(
+                `spotify:track:${q[index].spotifyTrackId}`,
+                `https://open.spotify.com/track/${q[index].spotifyTrackId}`
+              );
+            }
             setIsPlaying(true);
+            setEmbedTrackIdState(q[index].spotifyTrackId);
             return;
           }
           setPlaybackError(result.error ?? "Playback failed");
@@ -275,11 +327,20 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         // Clear any embed track so the iframe stops competing for audio.
         setEmbedTrackIdState(null);
       } else if (isMobileBrowser()) {
-        // On mobile without Connect: open in native Spotify app
-        // This gives full playback instead of 30s embed previews
-        openInSpotifyApp(q[index].spotifyTrackId);
+        // On mobile without Connect: create a playlist from the queue
+        // and open it in the Spotify app. This gives full tracks AND
+        // auto-advance through the entire queue.
+        setPlaybackError(null);
+        const url = await createAndOpenQueuePlaylist(q, index);
+        if (!url) {
+          // Fallback: open just the single track
+          openInSpotifyApp(
+            `spotify:track:${q[index].spotifyTrackId}`,
+            `https://open.spotify.com/track/${q[index].spotifyTrackId}`
+          );
+        }
         setIsPlaying(true);
-        // Still set embed for the UI to show the track info
+        // Still set embed for the UI to show track info
         setEmbedTrackIdState(q[index].spotifyTrackId);
       } else {
         setEmbedTrackIdState(q[index].spotifyTrackId);
