@@ -55,9 +55,36 @@ def run_track_population(
 
     total_added = 0
     errors = 0
+    consecutive_auth_errors = 0
     last_error: str | None = None
 
+    # Skip artists that already have tracks in the DB
+    existing_artist_ids = _get_artists_with_tracks()
+    before_skip = len(artists)
+    artists = [a for a in artists if a["id"] not in existing_artist_ids]
+    skipped = before_skip - len(artists)
+    total = len(artists)
+    print(f"track_populator: {skipped} already have tracks, {total} to process", flush=True)
+
+    if not artists:
+        return {"artists_total": before_skip, "artists_processed": 0, "tracks_added": 0, "skipped": skipped}
+    if progress:
+        progress(f"Populating track catalog (0/{total}, {skipped} skipped)")
+
     with httpx.Client(timeout=15) as client:
+        # Validate token on first request before committing to full loop
+        test_resp = client.get(
+            "https://api.spotify.com/v1/search",
+            params={"q": "test", "type": "track", "limit": 1},
+            headers=headers,
+        )
+        if test_resp.status_code in (401, 403):
+            msg = f"Spotify token expired or invalid (HTTP {test_resp.status_code}). Please sign out and back in."
+            print(f"track_populator: {msg}", flush=True)
+            if progress:
+                progress(msg)
+            return {"artists_total": before_skip, "artists_processed": 0, "tracks_added": 0, "error": msg}
+
         for i, artist in enumerate(artists):
             try:
                 added, err = _search_and_upsert_tracks(
@@ -67,6 +94,17 @@ def run_track_population(
                 if err:
                     errors += 1
                     last_error = err
+                    # Detect auth failures and abort early
+                    if "401" in err or "403" in err:
+                        consecutive_auth_errors += 1
+                        if consecutive_auth_errors >= 3:
+                            print("track_populator: Spotify token expired mid-run", flush=True)
+                            last_error = "Spotify token expired. Sign out & back in, then retry."
+                            break
+                    else:
+                        consecutive_auth_errors = 0
+                else:
+                    consecutive_auth_errors = 0
 
                 # Rate limit: Spotify allows ~30 req/sec but be conservative
                 if (i + 1) % 5 == 0:
@@ -84,10 +122,10 @@ def run_track_population(
             except Exception as exc:
                 errors += 1
                 last_error = str(exc)[:200]
-                time.sleep(1)  # Back off on transient failures
+                time.sleep(1)
 
-            # Update progress every 10 artists regardless of success/error.
-            if progress and (i + 1) % 10 == 0:
+            # Update progress every 5 artists (not 10) for better UI feedback
+            if progress and ((i + 1) % 5 == 0 or i == 0):
                 progress(f"Populating track catalog ({i + 1}/{total})")
 
             if errors > ABORT_AFTER_ERRORS:
@@ -98,9 +136,10 @@ def run_track_population(
                 break
 
     summary = {
-        "artists_total": len(artists),
-        "artists_processed": i + 1,
+        "artists_total": before_skip,
+        "artists_processed": i + 1 if artists else 0,
         "tracks_added": total_added,
+        "skipped": skipped,
         "errors": errors,
     }
     if last_error:
@@ -111,6 +150,32 @@ def run_track_population(
 
     print(f"track_populator: done — {summary}", flush=True)
     return summary
+
+
+def _get_artists_with_tracks() -> set[int]:
+    """Return set of artist IDs that already have at least one track."""
+    ids: set[int] = set()
+    offset = 0
+    page_size = 1000
+
+    while True:
+        resp = (
+            admin_supabase.table("tracks")
+            .select("artist_id")
+            .not_.is_("artist_id", "null")
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        rows = resp.data or []
+        for row in rows:
+            aid = row.get("artist_id")
+            if aid is not None:
+                ids.add(aid)
+        if len(rows) < page_size:
+            break
+        offset += page_size
+
+    return ids
 
 
 def _fetch_all_artists() -> list[dict]:
