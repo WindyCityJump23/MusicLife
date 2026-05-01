@@ -29,9 +29,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY not configured" }, { status: 500 });
   }
 
-  // Also pass the refresh token + client credentials so the backend can
-  // refresh the Spotify token during long-running jobs (steps 1-4 can
-  // take 10+ minutes, and Spotify tokens expire in 1 hour).
+  // Pass the refresh token + client credentials so the API can self-refresh
+  // the Spotify token before step 5 (populate-tracks). Steps 1–4 can take
+  // longer than the access token's 1-hour validity for large libraries.
   const refreshToken = req.cookies.get("sp_refresh")?.value ?? "";
   const spotifyClientId = process.env.SPOTIFY_CLIENT_ID ?? "";
   const spotifyClientSecret = process.env.SPOTIFY_CLIENT_SECRET ?? "";

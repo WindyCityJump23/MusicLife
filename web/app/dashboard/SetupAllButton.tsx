@@ -19,12 +19,26 @@ function parseStep(message: string): { step: number; label: string } | null {
   return { step: parseInt(match[1], 10), label: match[3].trim() };
 }
 
-export default function SetupAllButton({ onProgress }: { onProgress?: () => void }) {
+export default function SetupAllButton({
+  onProgress,
+  onComplete,
+}: {
+  onProgress?: () => void;
+  onComplete?: () => void;
+}) {
   const [state, setState]     = useState<RunState>("idle");
   const [message, setMessage] = useState("");
   const [step, setStep]       = useState(0);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const intervalRef    = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastMessageRef = useRef("");
+  const completedRef   = useRef(false);
+  // Keep callbacks in refs so handleStatus / startPolling don't need them
+  // in their dependency arrays — avoids re-creating those callbacks (and
+  // re-firing the startPolling useEffect) on every parent render.
+  const onProgressRef = useRef(onProgress);
+  const onCompleteRef = useRef(onComplete);
+  onProgressRef.current = onProgress;
+  onCompleteRef.current = onComplete;
 
   const cleanup = useCallback(() => {
     if (intervalRef.current) {
@@ -36,7 +50,7 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
   useEffect(() => () => cleanup(), [cleanup]);
 
   const handleStatus = useCallback(
-    (data: JobStatusResponse) => {
+    (data: JobStatusResponse): boolean => {
       if (data.status === "queued" || data.status === "running") {
         setState("running");
         setMessage(data.message || "Working…");
@@ -44,7 +58,7 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
         if (parsed) setStep(parsed.step);
         if (data.message && data.message !== lastMessageRef.current) {
           lastMessageRef.current = data.message;
-          onProgress?.();
+          onProgressRef.current?.();
         }
         return false;
       }
@@ -54,7 +68,11 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
         setState("success");
         setStep(TOTAL_STEPS);
         setMessage(data.message || "Library is ready");
-        onProgress?.();
+        onProgressRef.current?.();
+        if (!completedRef.current) {
+          completedRef.current = true;
+          onCompleteRef.current?.();
+        }
         return true;
       }
       if (data.status === "failed") {
@@ -72,7 +90,7 @@ export default function SetupAllButton({ onProgress }: { onProgress?: () => void
       setStep(0);
       return true;
     },
-    [cleanup, onProgress]
+    [cleanup]
   );
 
   const startPolling = useCallback(

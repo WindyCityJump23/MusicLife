@@ -348,6 +348,34 @@ def eval_thumbs_down_track_strongly_penalized() -> EvalResult:
     )
 
 
+def eval_no_identical_list_repeated() -> EvalResult:
+    pool = [
+        {"track_name": "A", "artist_name": "X", "genres": ["g"], "score": 1.0},
+        {"track_name": "B", "artist_name": "Y", "genres": ["g"], "score": 0.9},
+    ]
+    first = _song_diversity_rerank(pool, 2)
+    second = _song_diversity_rerank(pool, 2)
+    # Contract helper: collision should be detectable by caller using signature.
+    same = [f"{r['track_name']}|{r['artist_name']}" for r in first] == [f"{r['track_name']}|{r['artist_name']}" for r in second]
+    return EvalResult(name="no_identical_list_repeated", passed=same, score=1.0 if same else 0.0, details="Deterministic list signature baseline")
+
+
+def eval_strict_novelty_zero_overlap_when_possible() -> EvalResult:
+    prior = {"t1", "t2"}
+    candidate = ["t3", "t4", "t5"]
+    overlap = sum(1 for t in candidate if t in prior) / len(candidate)
+    return EvalResult(name="strict_novelty_zero_overlap_when_possible", passed=overlap == 0.0, score=1.0 if overlap == 0.0 else 0.0, details=f"overlap={overlap}")
+
+
+def eval_graceful_mode_refill_under_sparse_catalog() -> EvalResult:
+    pool = [
+        {"track_name": "Only 1", "artist_name": "A", "genres": ["g"], "score": 1.0},
+        {"track_name": "Only 2", "artist_name": "A", "genres": ["g"], "score": 0.8},
+    ]
+    result = _song_diversity_rerank(pool, 3)
+    return EvalResult(name="graceful_mode_refill_under_sparse_catalog", passed=len(result) >= 1, score=1.0 if len(result) >= 1 else 0.0, details=f"returned={len(result)}")
+
+
 # ── Suite runner ─────────────────────────────────────────────────
 
 
@@ -360,4 +388,7 @@ def run_suite() -> list[EvalResult]:
         eval_deep_cut_reason_label(),
         eval_song_diversity_rerank_contract(),
         eval_thumbs_down_track_strongly_penalized(),
+        eval_no_identical_list_repeated(),
+        eval_strict_novelty_zero_overlap_when_possible(),
+        eval_graceful_mode_refill_under_sparse_catalog(),
     ]

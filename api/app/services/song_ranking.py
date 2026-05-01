@@ -46,6 +46,8 @@ def recommend_songs(
     exclude_library: bool,
     limit: int,
     prompt_text: str | None = None,
+    excluded_track_ids: set[str] | None = None,
+    exploration_seed: int | None = None,
 ) -> list[dict]:
     """Return a ranked list of song-level recommendations.
 
@@ -262,6 +264,8 @@ def recommend_songs(
     # fresh and different between users.  With a prompt the user has a
     # specific intent and results should be more deterministic.
     EXPLORATION_STRENGTH = 0.04 if has_explicit_prompt else 0.10
+    rng = random.Random(exploration_seed) if exploration_seed is not None else random
+    excluded_track_ids = excluded_track_ids or set()
 
     artist_scores: dict[int, dict] = {}
     for idx, (artist, affinity_raw) in enumerate(raw_affinities):
@@ -374,7 +378,7 @@ def recommend_songs(
     # inheriting the artist-level mention match.
     tracks_resp = (
         client.table("tracks")
-        .select("id,name,artist_id,album_name,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
+        .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
         .in_("artist_id", top_artist_ids)
         .range(0, 9999)
         .execute()
@@ -413,7 +417,7 @@ def recommend_songs(
             if extra_artist_ids:
                 extra_tracks_resp = (
                     client.table("tracks")
-                    .select("id,name,artist_id,album_name,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
+                    .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
                     .in_("artist_id", extra_artist_ids)
                     .range(0, 9999)
                     .execute()
@@ -516,6 +520,18 @@ def recommend_songs(
             # Track-level boost: popularity + familiarity adjustments
             track_boost = 0.7 + (0.3 * track_pop)  # 0.7–1.0 range
 
+            # New-release bonus: up to +15% for tracks released in the last
+            # calendar year, decaying linearly to 0 at 365 days old.
+            raw_release = track.get("release_date")
+            if raw_release:
+                try:
+                    release_dt = datetime.fromisoformat(str(raw_release))
+                    days_old = max((now.date() - release_dt.date()).days, 0)
+                    if days_old < 365:
+                        track_boost *= 1.0 + 0.15 * (1.0 - days_old / 365)
+                except (ValueError, AttributeError):
+                    pass
+
             # Familiarity: penalize songs the user has already heard,
             # but welcome NEW songs from familiar artists (deep cuts are
             # valuable discoveries even from artists you already know).
@@ -528,15 +544,17 @@ def recommend_songs(
 
             # Track-level feedback: stronger signal than artist-level because
             # "I don't like THIS song" is more precise than "I don't like this artist"
-            track_spotify_id = track.get("spotify_track_id") or ""
-            track_fb = track_feedback.get(track_spotify_id, 0)
+            spotify_track_id = track.get("spotify_track_id") or ""
+            if spotify_track_id and spotify_track_id in excluded_track_ids:
+                continue
+            track_fb = track_feedback.get(spotify_track_id, 0)
             if track_fb < 0:
                 track_boost *= 0.15  # Very strong penalty — user explicitly disliked this track
             elif track_fb > 0:
                 track_boost *= 1.15  # Modest boost
 
             # Exploration
-            exploration = random.uniform(-EXPLORATION_STRENGTH, EXPLORATION_STRENGTH)
+            exploration = rng.uniform(-EXPLORATION_STRENGTH, EXPLORATION_STRENGTH)
 
             final_score = track_base * track_boost + exploration
 
@@ -555,6 +573,14 @@ def recommend_songs(
                 reasons.append(f"Featured in {src_name}" if src_name else "In the press")
             if track_pop > 0.7:
                 reasons.append("Popular track")
+            if raw_release:
+                try:
+                    release_dt = datetime.fromisoformat(str(raw_release))
+                    days_old = max((now.date() - release_dt.date()).days, 0)
+                    if days_old < 365:
+                        reasons.append("New release")
+                except (ValueError, AttributeError):
+                    pass
             if in_library:
                 reasons.append("Already in your library")
             elif is_library_artist and not in_library:
@@ -568,9 +594,10 @@ def recommend_songs(
                 "artist_id": str(aid),
                 "artist_name": a_info["name"],
                 "album_name": track.get("album_name") or "",
+                "release_date": track.get("release_date"),
                 "duration_ms": track.get("duration_ms") or 0,
                 "explicit": track.get("explicit") or False,
-                "spotify_track_id": track.get("spotify_track_id") or "",
+                "spotify_track_id": spotify_track_id,
                 "score": round(max(0.0, final_score), 4),
                 "signals": {
                     "affinity": round(track_affinity, 4),

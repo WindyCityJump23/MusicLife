@@ -348,6 +348,9 @@ def _run_populate_tracks(job_id: str, spotify_token: str):
 class SetupAllRequest(BaseModel):
     user_id: str
     spotify_access_token: str
+    # Optional fields for auto-refreshing the Spotify token before step 5.
+    # Steps 1–4 can take >1 h for large libraries, so the initial access token
+    # may be expired by the time track population starts.
     spotify_refresh_token: str | None = None
     spotify_client_id: str | None = None
     spotify_client_secret: str | None = None
@@ -519,18 +522,32 @@ def _run_setup_all(
             active_token = _get_client_credentials_token(client_id, client_secret)
         if not active_token:
             active_token = fresh_token()
-        track_summary = run_track_population(active_token, progress=progress_for(5))
-        track_error = track_summary.get("error") if isinstance(track_summary, dict) else None
-        if track_error:
-            # Track population is non-critical — the app works with existing
-            # tracks. Mark as success with a warning instead of failing the
-            # entire setup (which already completed steps 1-4 successfully).
-            print(f"setup_all: track population failed (non-fatal): {track_error}", flush=True)
-            update_job(job_id, JobStatus.SUCCESS,
-                       f"Library is ready (track catalog will update later: {track_error})"[:500])
-        else:
+
+        # Step 5 is non-fatal: Spotify dev-mode rate limits are per-app and
+        # can lock out the entire app for hours. If track population fails for
+        # any reason, steps 1–4 are already complete and Discover works with
+        # existing tracks. Surface a soft-success so the user isn't blocked.
+        try:
+            track_summary = run_track_population(active_token, progress=progress_for(5))
+            track_error = track_summary.get("error") if isinstance(track_summary, dict) else None
+            errors = track_summary.get("errors", 0) if isinstance(track_summary, dict) else 0
             added = track_summary.get("tracks_added", 0) if isinstance(track_summary, dict) else 0
-            update_job(job_id, JobStatus.SUCCESS, f"Library is ready ({added} new tracks added)")
+            if track_error:
+                print(f"setup_all: track population failed (non-fatal): {track_error}", flush=True)
+                update_job(job_id, JobStatus.SUCCESS,
+                           f"Library is ready (track catalog will update later: {track_error})"[:500])
+            elif errors > 0 and added == 0:
+                last_err = (track_summary.get("last_error") or "") if isinstance(track_summary, dict) else ""
+                note = "rate-limited" if "429" in last_err or "rate" in last_err.lower() else "will retry later"
+                update_job(job_id, JobStatus.SUCCESS,
+                           f"Library is ready (track catalog will update later — {note})")
+            else:
+                update_job(job_id, JobStatus.SUCCESS, f"Library is ready ({added} new tracks added)")
+        except Exception as step5_exc:
+            print(f"setup_all: step 5 non-fatal error — {step5_exc}", flush=True)
+            update_job(job_id, JobStatus.SUCCESS,
+                       "Library is ready (track catalog will update later)")
+
         print(f"setup_all: completed for user {user_id}")
     except Exception as exc:
         msg = f"{current_stage} failed: {exc}"[:500]

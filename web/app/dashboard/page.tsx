@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Sidebar, { type View } from "./sidebar";
 import LibraryView from "./library-view";
 import DiscoverView from "./discover-view";
@@ -9,7 +9,6 @@ import ActivityView from "./activity-view";
 import SavedView from "./saved-view";
 import Player from "./Player";
 import { PlayerProvider, usePlayer } from "./player-context";
-import OnboardingWizard from "./onboarding-wizard";
 
 const TITLES: Record<View, string> = {
   library: "Library",
@@ -48,10 +47,14 @@ function DashboardInner() {
     };
   }, [navOpen, playerOpen]);
 
-  function handleNavChange(v: View) {
+  const handleNavChange = useCallback((v: View) => {
     setView(v);
     setNavOpen(false);
-  }
+  }, []);
+
+  const handleSetupComplete = useCallback(() => {
+    handleNavChange("discover");
+  }, [handleNavChange]);
 
   return (
     <>
@@ -62,9 +65,6 @@ function DashboardInner() {
       >
         Skip to content
       </a>
-
-      {/* ── Onboarding Wizard ────────────────────────────────── */}
-      <OnboardingWizard />
 
       <div
         className={[
@@ -117,6 +117,7 @@ function DashboardInner() {
             active={view}
             onChange={handleNavChange}
             onClose={() => setNavOpen(false)}
+            onSetupComplete={handleSetupComplete}
           />
         </aside>
 
@@ -140,7 +141,9 @@ function DashboardInner() {
               <h2 className="text-lg font-semibold tracking-tight">{TITLES[view]}</h2>
             </header>
             <div className="view-fade-in" key={view}>
-              {view === "library" && <LibraryView />}
+              {view === "library" && (
+                <LibraryView onSetupComplete={handleSetupComplete} />
+              )}
               {view === "discover" && <DiscoverView onNavigate={(v) => setView(v as View)} />}
               {view === "playlists" && <PlaylistsView />}
               {view === "activity" && <ActivityView />}

@@ -28,6 +28,15 @@ type SongRecommendation = {
   top_mention: TopMention | null;
 };
 
+type Preset = { label: string; desc: string; weights: { affinity: number; context: number; editorial: number } };
+
+const PRESETS: Preset[] = [
+  { label: "Balanced",      desc: "Equal blend of all three signals",         weights: { affinity: 40, context: 40, editorial: 20 } },
+  { label: "Pure Taste",    desc: "Closest to your saved listening history",   weights: { affinity: 75, context: 15, editorial: 10 } },
+  { label: "Trending",      desc: "Artists getting press buzz right now",      weights: { affinity: 25, context: 15, editorial: 60 } },
+  { label: "Match Search",  desc: "Type a prompt above to activate this mode", weights: { affinity: 20, context: 65, editorial: 15 } },
+];
+
 export default function DiscoverView({
   onNavigate,
 }: {
@@ -35,11 +44,7 @@ export default function DiscoverView({
 }) {
   const { setQueue, playFromQueue } = usePlayer();
   const [prompt, setPrompt] = useState("");
-  const [weights, setWeights] = useState({
-    affinity: 40,
-    context: 40,
-    editorial: 20,
-  });
+  const [weights, setWeights] = useState(PRESETS[0].weights);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [results, setResults] = useState<SongRecommendation[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -96,6 +101,11 @@ export default function DiscoverView({
             prompt: prompt || null,
             weights: normalized,
             limit: 30,
+            discover_run_id: crypto.randomUUID(),
+            exclude_previously_shown: true,
+            history_window_runs: 50,
+            max_allowed_overlap: 0,
+            novelty_mode: "strict",
           }),
         });
         if (songRes.ok) {
@@ -388,41 +398,72 @@ export default function DiscoverView({
           </button>
         </div>
 
-        {/* Advanced toggle */}
-        <button
-          onClick={() => setShowAdvanced(!showAdvanced)}
-          className="text-[11px] text-neutral-400 hover:text-neutral-600"
-        >
-          {showAdvanced ? "\u25be Hide tuning" : "\u25b8 Tune weights"}
-        </button>
-        {showAdvanced && (
-          <div className="space-y-3 pt-1 pb-2">
-            <div className="grid grid-cols-3 gap-4">
-              <WeightSlider
-                label="Taste"
-                hint="How close to your listening DNA"
-                value={weights.affinity}
-                onChange={(v) => setWeights({ ...weights, affinity: v })}
-              />
-              <WeightSlider
-                label={prompt ? "Mood" : "Mood (taste profile)"}
-                hint={prompt ? "Vibe match from editorial context" : "Using your taste profile as mood signal (no prompt entered)"}
-                value={weights.context}
-                onChange={(v) => setWeights({ ...weights, context: v })}
-              />
-              <WeightSlider
-                label="Buzz"
-                hint="Currently talked about in press"
-                value={weights.editorial}
-                onChange={(v) => setWeights({ ...weights, editorial: v })}
-              />
-            </div>
-            <p className="text-[10px] text-neutral-400 leading-relaxed">
-              \ud83c\udfb2 Results shuffle each time you hit Discover. Songs you&apos;ve
-              already saved are ranked lower.
-            </p>
+        {/* Mode presets + advanced toggle */}
+        <div className="space-y-2">
+          <div className="flex flex-wrap gap-1.5 items-center">
+            {PRESETS.map((p) => {
+              const isSearchMode = p.label === "Match Search";
+              const unavailable = isSearchMode && !prompt;
+              const active =
+                weights.affinity === p.weights.affinity &&
+                weights.context === p.weights.context &&
+                weights.editorial === p.weights.editorial;
+              return (
+                <button
+                  key={p.label}
+                  onClick={() => { if (!unavailable) setWeights(p.weights); }}
+                  disabled={unavailable}
+                  title={unavailable ? "Enter a search prompt above to use this mode" : p.desc}
+                  className={[
+                    "px-2.5 py-1 rounded-full text-[11px] font-medium border transition-colors",
+                    active
+                      ? "bg-emerald-500 border-emerald-500 text-white"
+                      : unavailable
+                      ? "border-neutral-200 text-neutral-300 cursor-not-allowed bg-white"
+                      : "border-neutral-200 text-neutral-600 hover:border-emerald-300 hover:text-emerald-700 bg-white",
+                  ].join(" ")}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+            <button
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="ml-auto text-[11px] text-neutral-400 hover:text-neutral-600"
+            >
+              {showAdvanced ? "\u25be Hide sliders" : "\u25b8 Fine-tune"}
+            </button>
           </div>
-        )}
+
+          {showAdvanced && (
+            <div className="space-y-3 pt-1 pb-1 px-3 border border-neutral-100 rounded-lg bg-neutral-50/60">
+              <div className="grid grid-cols-3 gap-4 pt-2">
+                <WeightSlider
+                  label="Taste"
+                  hint="Similarity to your saved listening history"
+                  value={weights.affinity}
+                  onChange={(v) => setWeights({ ...weights, affinity: v })}
+                />
+                <WeightSlider
+                  label="Search Match"
+                  hint={prompt ? "How closely songs match your typed prompt" : "Enter a prompt above \u2014 this signal is inactive without one"}
+                  value={weights.context}
+                  dimmed={!prompt}
+                  onChange={(v) => setWeights({ ...weights, context: v })}
+                />
+                <WeightSlider
+                  label="Buzz"
+                  hint="Artists with recent press coverage (last 45 days)"
+                  value={weights.editorial}
+                  onChange={(v) => setWeights({ ...weights, editorial: v })}
+                />
+              </div>
+              <p className="text-[10px] text-neutral-400 leading-relaxed pb-2">
+                Results shuffle each time you hit Discover. Songs you&apos;ve already saved are ranked lower.
+              </p>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Loading stage indicator */}
@@ -864,7 +905,7 @@ function SongRow({
           {/* Signal breakdown */}
           <div className="flex gap-3 text-[10px] flex-wrap">
             <SignalPill label="Taste" value={song.signals.affinity} color="emerald" />
-            <SignalPill label="Mood" value={song.signals.context} color="blue" />
+            <SignalPill label="Search" value={song.signals.context} color="blue" />
             <SignalPill label="Buzz" value={song.signals.editorial} color="amber" />
             {song.signals.track_popularity !== undefined && (
               <SignalPill label="Popularity" value={song.signals.track_popularity} color="purple" />
@@ -966,15 +1007,17 @@ function WeightSlider({
   label,
   hint,
   value,
+  dimmed,
   onChange,
 }: {
   label: string;
   hint?: string;
   value: number;
+  dimmed?: boolean;
   onChange: (v: number) => void;
 }) {
   return (
-    <label className="block">
+    <label className={["block transition-opacity", dimmed ? "opacity-40" : ""].join(" ")}>
       <div className="flex items-center justify-between text-xs text-neutral-600 mb-1">
         <span className="font-medium" title={hint}>
           {label}

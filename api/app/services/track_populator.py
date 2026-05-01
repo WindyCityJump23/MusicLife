@@ -23,6 +23,9 @@ from app.services.supabase_client import admin_supabase
 
 TRACKS_PER_ARTIST = 5  # How many tracks to fetch per artist
 ABORT_AFTER_ERRORS = 20
+# Cap Retry-After sleep so a single 429 can't freeze the entire job.
+# If Spotify asks us to wait longer, we skip and count it as an error.
+MAX_RETRY_AFTER_SECS = 30
 
 
 def run_track_population(
@@ -57,6 +60,8 @@ def run_track_population(
     errors = 0
     consecutive_auth_errors = 0
     last_error: str | None = None
+    consecutive_401s = 0
+    processed = 0
 
     # Skip artists that already have tracks in the DB
     existing_artist_ids = _get_artists_with_tracks()
@@ -121,22 +126,25 @@ def run_track_population(
                     client, headers, artist, TRACKS_PER_ARTIST
                 )
                 total_added += added
-                if i < 3:
-                    print(f"track_populator: artist {i}: {artist.get('name','?')} -> added={added} err={err}", flush=True)
+                processed = i + 1
+
                 if err:
                     errors += 1
                     last_error = err
-                    # Detect auth failures and abort early
-                    if "401" in err or "403" in err:
-                        consecutive_auth_errors += 1
-                        if consecutive_auth_errors >= 3:
-                            print("track_populator: Spotify token expired mid-run", flush=True)
-                            last_error = "Spotify token expired. Sign out & back in, then retry."
+                    # Fast-abort on token expiry: 3 consecutive 401s means the
+                    # token is dead and every remaining artist will fail too.
+                    if "401" in (err or ""):
+                        consecutive_401s += 1
+                        if consecutive_401s >= 3:
+                            print(
+                                "track_populator: Spotify token expired (3 consecutive 401s), aborting",
+                                flush=True,
+                            )
                             break
                     else:
-                        consecutive_auth_errors = 0
+                        consecutive_401s = 0
                 else:
-                    consecutive_auth_errors = 0
+                    consecutive_401s = 0
 
                 # Rate limit: Spotify allows ~30 req/sec but be very conservative
                 # to avoid 429s, especially after setup steps 1-4 burned quota
@@ -155,7 +163,8 @@ def run_track_population(
             except Exception as exc:
                 errors += 1
                 last_error = str(exc)[:200]
-                time.sleep(1)
+                consecutive_401s = 0
+                time.sleep(1)  # Back off on transient failures
 
             # Update progress every 5 artists (not 10) for better UI feedback
             if progress and ((i + 1) % 5 == 0 or i == 0):
@@ -171,7 +180,7 @@ def run_track_population(
 
     summary = {
         "artists_total": before_skip,
-        "artists_processed": i + 1 if artists else 0,
+        "artists_processed": processed,
         "tracks_added": total_added,
         "skipped": skipped,
         "errors": errors,
@@ -180,7 +189,7 @@ def run_track_population(
         summary["last_error"] = last_error
 
     if progress:
-        progress(f"Populating track catalog ({summary['artists_processed']}/{total})")
+        progress(f"Populating track catalog ({processed}/{total})")
 
     print(f"track_populator: done — {summary}", flush=True)
     return summary
@@ -329,6 +338,9 @@ def _search_and_upsert_tracks(
             retry_after = int(resp.headers.get("Retry-After", "5"))
             return 0, f"Spotify rate limit too severe ({retry_after}s)"
 
+    if resp.status_code == 401:
+        return 0, f"spotify token expired or invalid for '{artist_name}' (HTTP 401)"
+
     if resp.status_code != 200:
         body = (resp.text or "")[:120]
         return 0, f"spotify HTTP {resp.status_code} for '{artist_name}': {body}"
@@ -353,16 +365,31 @@ def _search_and_upsert_tracks(
             continue
 
         track_name = track.get("name") or "Unknown"
-        album_name = (track.get("album") or {}).get("name")
+        album = track.get("album") or {}
+        album_name = album.get("name")
         embedding_source = _compose_embedding_source(
             artist_name, track_name, album_name
         )
+
+        # Spotify returns release_date as "YYYY-MM-DD", "YYYY-MM", or "YYYY".
+        # Normalise to a full date string so Postgres DATE cast works.
+        release_date: str | None = None
+        raw_date = album.get("release_date") or ""
+        if raw_date:
+            parts = raw_date.split("-")
+            if len(parts) == 1:
+                release_date = f"{parts[0]}-01-01"
+            elif len(parts) == 2:
+                release_date = f"{parts[0]}-{parts[1]}-01"
+            else:
+                release_date = raw_date  # already YYYY-MM-DD
 
         rows.append({
             "spotify_track_id": spotify_track_id,
             "artist_id": artist_db_id,
             "name": track_name,
             "album_name": album_name,
+            "release_date": release_date,
             "duration_ms": track.get("duration_ms"),
             "explicit": track.get("explicit") or False,
             "popularity": track.get("popularity"),
