@@ -277,7 +277,7 @@ def recommend_songs(
     # inheriting the artist-level mention match.
     tracks_resp = (
         client.table("tracks")
-        .select("id,name,artist_id,album_name,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
+        .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
         .in_("artist_id", top_artist_ids)
         .range(0, 9999)
         .execute()
@@ -316,7 +316,7 @@ def recommend_songs(
             if extra_artist_ids:
                 extra_tracks_resp = (
                     client.table("tracks")
-                    .select("id,name,artist_id,album_name,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
+                    .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
                     .in_("artist_id", extra_artist_ids)
                     .range(0, 9999)
                     .execute()
@@ -412,6 +412,18 @@ def recommend_songs(
             # Track-level boost: popularity + familiarity adjustments
             track_boost = 0.7 + (0.3 * track_pop)  # 0.7–1.0 range
 
+            # New-release bonus: up to +15% for tracks released in the last
+            # calendar year, decaying linearly to 0 at 365 days old.
+            raw_release = track.get("release_date")
+            if raw_release:
+                try:
+                    release_dt = datetime.fromisoformat(str(raw_release))
+                    days_old = max((now.date() - release_dt.date()).days, 0)
+                    if days_old < 365:
+                        track_boost *= 1.0 + 0.15 * (1.0 - days_old / 365)
+                except (ValueError, AttributeError):
+                    pass
+
             # Familiarity: penalize songs the user has already heard,
             # but welcome NEW songs from familiar artists (deep cuts are
             # valuable discoveries even from artists you already know).
@@ -446,6 +458,14 @@ def recommend_songs(
                 reasons.append(f"Featured in {src_name}" if src_name else "In the press")
             if track_pop > 0.7:
                 reasons.append("Popular track")
+            if raw_release:
+                try:
+                    release_dt = datetime.fromisoformat(str(raw_release))
+                    days_old = max((now.date() - release_dt.date()).days, 0)
+                    if days_old < 365:
+                        reasons.append("New release")
+                except (ValueError, AttributeError):
+                    pass
             if in_library:
                 reasons.append("Already in your library")
             elif is_library_artist and not in_library:
@@ -459,6 +479,7 @@ def recommend_songs(
                 "artist_id": str(aid),
                 "artist_name": a_info["name"],
                 "album_name": track.get("album_name") or "",
+                "release_date": track.get("release_date"),
                 "duration_ms": track.get("duration_ms") or 0,
                 "explicit": track.get("explicit") or False,
                 "spotify_track_id": spotify_track_id,

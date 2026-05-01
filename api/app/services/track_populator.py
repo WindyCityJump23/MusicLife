@@ -238,16 +238,31 @@ def _search_and_upsert_tracks(
             continue
 
         track_name = track.get("name") or "Unknown"
-        album_name = (track.get("album") or {}).get("name")
+        album = track.get("album") or {}
+        album_name = album.get("name")
         embedding_source = _compose_embedding_source(
             artist_name, track_name, album_name
         )
+
+        # Spotify returns release_date as "YYYY-MM-DD", "YYYY-MM", or "YYYY".
+        # Normalise to a full date string so Postgres DATE cast works.
+        release_date: str | None = None
+        raw_date = album.get("release_date") or ""
+        if raw_date:
+            parts = raw_date.split("-")
+            if len(parts) == 1:
+                release_date = f"{parts[0]}-01-01"
+            elif len(parts) == 2:
+                release_date = f"{parts[0]}-{parts[1]}-01"
+            else:
+                release_date = raw_date  # already YYYY-MM-DD
 
         rows.append({
             "spotify_track_id": spotify_track_id,
             "artist_id": artist_db_id,
             "name": track_name,
             "album_name": album_name,
+            "release_date": release_date,
             "duration_ms": track.get("duration_ms"),
             "explicit": track.get("explicit") or False,
             "popularity": track.get("popularity"),
