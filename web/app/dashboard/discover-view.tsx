@@ -543,24 +543,23 @@ function SongRow({
         `${song.track_name} ${song.artist_name}`
       )}`;
 
-  function handlePlay() {
+  async function handlePlay() {
     if (!song.spotify_track_id) return;
     setPlayState("loading");
-
-    // Find this track in the queue and play from there (enables auto-advance)
-    const queueIdx = queue.findIndex(t => t.spotifyTrackId === song.spotify_track_id);
-    if (queueIdx >= 0) {
-      playFromQueue(queueIdx);
-    } else {
-      // Not in queue (shouldn't happen, but fallback)
-      playSingle({
-        spotifyTrackId: song.spotify_track_id,
-        trackName: song.track_name,
-        artistName: song.artist_name,
-      });
+    try {
+      const queueIdx = queue.findIndex(t => t.spotifyTrackId === song.spotify_track_id);
+      if (queueIdx >= 0) {
+        await playFromQueue(queueIdx);
+      } else {
+        await playSingle({
+          spotifyTrackId: song.spotify_track_id,
+          trackName: song.track_name,
+          artistName: song.artist_name,
+        });
+      }
+    } finally {
+      setPlayState("idle");
     }
-
-    setPlayState("idle");
   }
 
   async function handleFeedback(value: 1 | -1) {

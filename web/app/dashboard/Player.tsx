@@ -530,7 +530,7 @@ function EmbedPlayer({
 
     if (controllerRef.current) {
       controllerRef.current.loadUri(`spotify:track:${trackId}`);
-      setTimeout(() => controllerRef.current?.play(), 300);
+      controllerRef.current.play();
     } else {
       pendingRef.current = trackId;
     }
