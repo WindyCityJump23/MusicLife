@@ -127,9 +127,17 @@ export default function DiscoverView({
         // Server-side failed — fall through to client-side
       }
 
-      // Attempt 2: Client-side Spotify Search fallback (if DB had no results)
-      if (deduped.length === 0) {
-        setLoadingStage("Getting recommendations\u2026");
+      // Attempt 2: Supplement with real-time Spotify Search
+      // If DB returned fewer than the target, fill remaining slots with live
+      // Spotify results from high-scoring artists. This also runs as a full
+      // fallback when the DB has no songs at all.
+      const TARGET_SONGS = 25;
+      if (deduped.length < TARGET_SONGS) {
+        setLoadingStage(
+          deduped.length > 0
+            ? `Found ${deduped.length} songs, searching Spotify for more\u2026`
+            : "Searching Spotify for songs\u2026"
+        );
         const artistRes = await fetch(`/api/recommend`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -165,8 +173,11 @@ export default function DiscoverView({
 
         setLoadingStage("Fetching songs from Spotify\u2026");
         const spotifyHeaders = { Authorization: `Bearer ${accessToken}` };
+        // Only search for artists we don't already have songs for from DB results
+        const existingArtists = new Set(deduped.map(s => s.artist_name.toLowerCase()));
+        const missingArtists = artists.filter((a: any) => !existingArtists.has(a.artist_name.toLowerCase())); // eslint-disable-line @typescript-eslint/no-explicit-any
         const songArrays = await Promise.all(
-          artists.slice(0, 15).map(async (artist: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+          missingArtists.slice(0, 20).map(async (artist: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
             try {
               const searchRes = await fetch(
                 `https://api.spotify.com/v1/search?q=${encodeURIComponent(`artist:${artist.artist_name}`)}&type=track&market=US&limit=5`,
@@ -210,8 +221,15 @@ export default function DiscoverView({
         const allSongs = songArrays.flat();
         allSongs.sort((a, b) => b.score - a.score);
 
+        // Build dedup sets from existing DB results so we don't duplicate
         const seen = new Set<string>();
         const artistCounts: Record<string, number> = {};
+        for (const existing of deduped) {
+          const key = `${existing.track_name.toLowerCase()}|${existing.artist_name.toLowerCase()}`;
+          seen.add(key);
+          const ak = existing.artist_name.toLowerCase();
+          artistCounts[ak] = (artistCounts[ak] ?? 0) + 1;
+        }
 
         for (const song of allSongs) {
           const key = `${song.track_name.toLowerCase()}|${song.artist_name.toLowerCase()}`;
@@ -221,7 +239,7 @@ export default function DiscoverView({
           seen.add(key);
           artistCounts[ak] = (artistCounts[ak] ?? 0) + 1;
           deduped.push(song);
-          if (deduped.length >= 30) break;
+          if (deduped.length >= TARGET_SONGS) break;
         }
       }
 
