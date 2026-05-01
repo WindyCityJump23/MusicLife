@@ -23,6 +23,36 @@ import httpx
 from app.services.supabase_client import admin_supabase
 
 
+# Cloudflare in front of Supabase rejects requests with URLs longer than
+# ~8KB ("Bad Request"). PostgREST `.in_(col, [...])` packs every value into
+# the URL, so a user with a large saved-tracks library blows the limit on
+# the first sync. Chunking the lookup keeps each URL well under the cap.
+_IN_CHUNK = 200
+
+
+def _chunked_id_map(
+    table: str, key_col: str, values: list[str]
+) -> dict[str, int]:
+    """SELECT id, key_col FROM table WHERE key_col = ANY(values), chunked.
+
+    Returns {value: id}. Empty input yields empty dict.
+    """
+    out: dict[str, int] = {}
+    for i in range(0, len(values), _IN_CHUNK):
+        chunk = values[i : i + _IN_CHUNK]
+        if not chunk:
+            continue
+        result = (
+            admin_supabase.table(table)
+            .select(f"id, {key_col}")
+            .in_(key_col, chunk)
+            .execute()
+        )
+        for row in result.data or []:
+            out[row[key_col]] = row["id"]
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -105,13 +135,7 @@ def _upsert_artists(artists: list[dict]) -> dict[str, int]:
     # SELECT after upsert: PostgREST may return empty data for rows resolved
     # via ON CONFLICT DO UPDATE, so we can't rely on the upsert response alone.
     spotify_ids = [r["spotify_artist_id"] for r in rows]
-    result = (
-        admin_supabase.table("artists")
-        .select("id, spotify_artist_id")
-        .in_("spotify_artist_id", spotify_ids)
-        .execute()
-    )
-    return {row["spotify_artist_id"]: row["id"] for row in (result.data or [])}
+    return _chunked_id_map("artists", "spotify_artist_id", spotify_ids)
 
 
 def _upsert_tracks(tracks: list[dict], artist_id_map: dict[str, int]) -> dict[str, int]:
@@ -137,13 +161,7 @@ def _upsert_tracks(tracks: list[dict], artist_id_map: dict[str, int]) -> dict[st
     ).execute()
     # SELECT after upsert for the same reason as _upsert_artists.
     spotify_ids = [r["spotify_track_id"] for r in rows]
-    result = (
-        admin_supabase.table("tracks")
-        .select("id, spotify_track_id")
-        .in_("spotify_track_id", spotify_ids)
-        .execute()
-    )
-    return {row["spotify_track_id"]: row["id"] for row in (result.data or [])}
+    return _chunked_id_map("tracks", "spotify_track_id", spotify_ids)
 
 
 def _upsert_user_tracks_saved(
