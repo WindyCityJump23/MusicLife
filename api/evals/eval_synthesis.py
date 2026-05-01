@@ -207,10 +207,19 @@ def eval_format_context_includes_all_fields() -> EvalResult:
 # ── LLM-as-judge evals (require API key) ────────────────────────
 
 
+_SENTINEL_MISSING = "__KEY_MISSING__"
+
+
 def _call_judge(prompt: str, max_tokens: int = 200) -> Optional[str]:
-    """Call Claude to act as a judge. Returns None if API key is absent."""
+    """Call Claude to act as a judge.
+
+    Returns None when API key is absent and --require-llm is not set.
+    Returns _SENTINEL_MISSING when key is absent and --require-llm is set.
+    """
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key or api_key.startswith("placeholder"):
+        if os.environ.get("MUSICLIFE_REQUIRE_LLM"):
+            return _SENTINEL_MISSING
         return None
     try:
         import anthropic
@@ -260,6 +269,13 @@ Respond with ONLY a single integer (1–5) and one sentence explaining your rati
             score=1.0,
             skipped=True,
             details="Skipped — ANTHROPIC_API_KEY not set",
+        )
+    if response == _SENTINEL_MISSING:
+        return EvalResult(
+            name="llm_groundedness",
+            passed=False,
+            score=0.0,
+            details="FAILED — ANTHROPIC_API_KEY required by --require-llm but not set",
         )
     if response.startswith("ERROR:"):
         return EvalResult(
@@ -315,6 +331,13 @@ Respond with ONLY a single integer (1–5) and one sentence explaining your rati
             score=1.0,
             skipped=True,
             details="Skipped — ANTHROPIC_API_KEY not set",
+        )
+    if response == _SENTINEL_MISSING:
+        return EvalResult(
+            name="llm_tone",
+            passed=False,
+            score=0.0,
+            details="FAILED — ANTHROPIC_API_KEY required by --require-llm but not set",
         )
     if response.startswith("ERROR:"):
         return EvalResult(name="llm_tone", passed=False, score=0.0, details=response)

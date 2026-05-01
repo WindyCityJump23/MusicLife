@@ -81,7 +81,7 @@ def _percentile_rank(values: list[float]) -> list[float]:
 def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
     tracks_resp = (
         client.table("user_tracks")
-        .select("track_id,play_count")
+        .select("track_id,play_count,last_played_at")
         .eq("user_id", user_id)
         .range(0, 9999)
         .execute()
@@ -106,6 +106,7 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
             if row.get("id") is not None
         }
 
+        now = datetime.now(timezone.utc)
         for row in user_tracks:
             track_id = row.get("track_id")
             artist_id = track_to_artist.get(track_id)
@@ -114,6 +115,16 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
 
             play_count = row.get("play_count") or 0
             weight = float(play_count if play_count > 0 else 1)
+
+            last_played_at = row.get("last_played_at")
+            if last_played_at:
+                try:
+                    lp = datetime.fromisoformat(last_played_at.replace("Z", "+00:00"))
+                    days_since = max((now - lp).days, 0)
+                    weight *= max(0.1, 1.0 - (days_since / 365))
+                except ValueError:
+                    pass  # malformed timestamp — keep weight as-is
+
             artist_weights[int(artist_id)] += weight
 
     # ── Top-artist signal ────────────────────────────────────────
@@ -227,6 +238,7 @@ def _diversity_rerank(
     scored: list[dict],
     limit: int,
     library_artist_ids: set[int] | None = None,
+    hard_genre_cap: bool = False,
 ) -> list[dict]:
     """Re-rank to ensure genre diversity and limit library artists.
 
@@ -268,11 +280,16 @@ def _diversity_rerank(
             genres = candidate.get("genres") or []
             primary_genre = genres[0].lower() if genres else "__none__"
 
-            # Genre diversity penalty
-            genre_share = genre_counts.get(primary_genre, 0) / max(len(selected), 1)
-            penalty = 1.0
-            if genre_share >= MAX_GENRE_FRACTION:
-                penalty = 0.7  # 30% score reduction
+            # Genre diversity: hard cap skips over-represented genres entirely;
+            # soft mode applies a 0.7× penalty instead.
+            genre_count = genre_counts.get(primary_genre, 0)
+            if hard_genre_cap:
+                if genre_count >= limit / 3:
+                    continue
+                penalty = 1.0
+            else:
+                genre_share = genre_count / max(len(selected), 1)
+                penalty = 0.7 if genre_share >= MAX_GENRE_FRACTION else 1.0
 
             adjusted = base_score * penalty
             if adjusted > best_adjusted:
@@ -307,6 +324,7 @@ def rank_candidates(
     weights: dict[str, float],
     exclude_library: bool,
     limit: int,
+    hard_genre_cap: bool = False,
 ) -> list[dict]:
     artist_weights = _get_user_artist_weights(client, user_id)
     library_artist_ids = set(artist_weights.keys())
@@ -528,7 +546,8 @@ def rank_candidates(
     # ── Genre diversity re-ranking ───────────────────────────────
     # Greedy selection that penalizes over-represented genres in top N.
     diverse_results = _diversity_rerank(
-        scored, max(limit, 0), library_artist_ids=library_artist_ids
+        scored, max(limit, 0), library_artist_ids=library_artist_ids,
+        hard_genre_cap=hard_genre_cap,
     )
 
     return diverse_results

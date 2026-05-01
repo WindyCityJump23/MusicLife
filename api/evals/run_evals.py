@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -201,7 +202,15 @@ def main() -> None:
         action="store_true",
         help="Print details for passing evals too",
     )
+    parser.add_argument(
+        "--require-llm",
+        action="store_true",
+        help="Fail (not skip) LLM-judge evals when ANTHROPIC_API_KEY is absent",
+    )
     args = parser.parse_args()
+
+    if args.require_llm:
+        os.environ["MUSICLIFE_REQUIRE_LLM"] = "1"
 
     suite_arg = args.suite.lower().strip()
     if suite_arg == "all":

@@ -1,0 +1,100 @@
+name: Recommendation Evals
+
+on:
+  schedule:
+    # Nightly at 02:00 UTC — runs full suite including LLM-judge evals
+    - cron: "0 2 * * *"
+  pull_request:
+    # On every PR — runs non-LLM suites only (no API key required)
+
+jobs:
+  # ── PR: non-LLM suites ────────────────────────────────────────────
+  evals-pr:
+    if: github.event_name == 'pull_request'
+    name: Evals (non-LLM)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run non-LLM eval suites
+        run: python -m evals.run_evals --suite ranking,songs,context,synthesis --json eval-results/report.json
+
+  # ── Nightly: full suite with LLM-judge evals ─────────────────────
+  evals-nightly:
+    if: github.event_name == 'schedule'
+    name: Evals (full + LLM)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run full eval suite
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: >
+          python -m evals.run_evals
+          --suite all
+          --require-llm
+          --json eval-results/report.json
+
+      - name: Upload eval report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: api/eval-results/report.json
+          retention-days: 90
+
+      - name: Find previous nightly baseline
+        id: baseline
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PREV_RUN=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/evals.yml/runs?event=schedule&status=success&per_page=5" \
+            --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }})] | .[0].id // ""')
+          echo "run_id=$PREV_RUN" >> "$GITHUB_OUTPUT"
+
+      - name: Download baseline artifact
+        id: download-baseline
+        if: steps.baseline.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: eval-results
+          path: api/baseline
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.baseline.outputs.run_id }}
+        continue-on-error: true
+
+      - name: Regression check
+        if: steps.download-baseline.outcome == 'success'
+        working-directory: api
+        run: >
+          python -m evals.check_regression
+          --current eval-results/report.json
+          --baseline baseline/report.json
+          --max-drop 0.1
