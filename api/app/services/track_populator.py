@@ -72,10 +72,6 @@ def run_track_population(
                 if (i + 1) % 5 == 0:
                     time.sleep(0.5)
 
-                # Update progress every 10 artists (in-memory dict, cheap)
-                if progress and (i + 1) % 10 == 0:
-                    progress(f"Populating track catalog ({i + 1}/{total})")
-
                 # Progress logging every 50 artists
                 if (i + 1) % 50 == 0:
                     print(
@@ -89,6 +85,10 @@ def run_track_population(
                 errors += 1
                 last_error = str(exc)[:200]
                 time.sleep(1)  # Back off on transient failures
+
+            # Update progress every 10 artists regardless of success/error.
+            if progress and (i + 1) % 10 == 0:
+                progress(f"Populating track catalog ({i + 1}/{total})")
 
             if errors > ABORT_AFTER_ERRORS:
                 print(
@@ -105,6 +105,9 @@ def run_track_population(
     }
     if last_error:
         summary["last_error"] = last_error
+
+    if progress:
+        progress(f"Populating track catalog ({summary['artists_processed']}/{total})")
 
     print(f"track_populator: done — {summary}", flush=True)
     return summary
