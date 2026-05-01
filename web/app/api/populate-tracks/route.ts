@@ -60,7 +60,12 @@ export async function POST(req: NextRequest) {
       "Content-Type": "application/json",
       Authorization: `Bearer ${serviceRoleKey}`,
     },
-    body: JSON.stringify({ spotify_access_token: accessToken }),
+    body: JSON.stringify({
+      spotify_access_token: accessToken,
+      spotify_refresh_token: req.cookies.get("sp_refresh")?.value ?? undefined,
+      spotify_client_id: process.env.SPOTIFY_CLIENT_ID ?? undefined,
+      spotify_client_secret: process.env.SPOTIFY_CLIENT_SECRET ?? undefined,
+    }),
   });
 
   const data = await upstream.json().catch(() => ({}));

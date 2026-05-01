@@ -29,13 +29,26 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY not configured" }, { status: 500 });
   }
 
+  // Also pass the refresh token + client credentials so the backend can
+  // refresh the Spotify token during long-running jobs (steps 1-4 can
+  // take 10+ minutes, and Spotify tokens expire in 1 hour).
+  const refreshToken = req.cookies.get("sp_refresh")?.value ?? "";
+  const spotifyClientId = process.env.SPOTIFY_CLIENT_ID ?? "";
+  const spotifyClientSecret = process.env.SPOTIFY_CLIENT_SECRET ?? "";
+
   const upstream = await fetch(`${apiUrl}/ingest/setup-all`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${serviceRoleKey}`,
     },
-    body: JSON.stringify({ user_id: user.userId, spotify_access_token: accessToken }),
+    body: JSON.stringify({
+      user_id: user.userId,
+      spotify_access_token: accessToken,
+      spotify_refresh_token: refreshToken || undefined,
+      spotify_client_id: spotifyClientId || undefined,
+      spotify_client_secret: spotifyClientSecret || undefined,
+    }),
   });
 
   const data = await upstream.json().catch(() => ({}));

@@ -280,6 +280,9 @@ def _run_expand_catalog(job_id: str):
 
 class PopulateTracksRequest(BaseModel):
     spotify_access_token: str
+    spotify_refresh_token: str | None = None
+    spotify_client_id: str | None = None
+    spotify_client_secret: str | None = None
 
 
 @router.post("/populate-tracks")
@@ -297,7 +300,17 @@ def populate_tracks(
     ensure_valid_bearer_token(token)
     job_id = str(uuid.uuid4())
     create_job(job_id, "populate-tracks")
-    bg.add_task(_run_populate_tracks, job_id, req.spotify_access_token)
+
+    # Try refreshing the token immediately so we start with a fresh one
+    active_token = req.spotify_access_token
+    if req.spotify_refresh_token and req.spotify_client_id and req.spotify_client_secret:
+        refreshed = _refresh_spotify_token(
+            req.spotify_refresh_token, req.spotify_client_id, req.spotify_client_secret
+        )
+        if refreshed:
+            active_token = refreshed
+
+    bg.add_task(_run_populate_tracks, job_id, active_token)
     return {"status": "queued", "job_id": job_id}
 
 
@@ -326,6 +339,40 @@ def _run_populate_tracks(job_id: str, spotify_token: str):
 class SetupAllRequest(BaseModel):
     user_id: str
     spotify_access_token: str
+    spotify_refresh_token: str | None = None
+    spotify_client_id: str | None = None
+    spotify_client_secret: str | None = None
+
+
+def _refresh_spotify_token(
+    refresh_token: str,
+    client_id: str,
+    client_secret: str,
+) -> str | None:
+    """Refresh a Spotify access token. Returns new token or None on failure."""
+    import base64
+    import httpx
+
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    try:
+        resp = httpx.post(
+            "https://accounts.spotify.com/api/token",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Authorization": f"Basic {basic}",
+            },
+            data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            token = resp.json().get("access_token")
+            if token:
+                print("spotify_refresh: successfully refreshed token")
+                return token
+        print(f"spotify_refresh: failed HTTP {resp.status_code}")
+    except Exception as exc:
+        print(f"spotify_refresh: error: {exc}")
+    return None
 
 
 @router.post("/setup-all")
@@ -345,11 +392,26 @@ def setup_all(
     ensure_valid_bearer_token(token)
     job_id = str(uuid.uuid4())
     create_job(job_id, "setup-all")
-    bg.add_task(_run_setup_all, job_id, req.user_id, req.spotify_access_token)
+    bg.add_task(
+        _run_setup_all,
+        job_id,
+        req.user_id,
+        req.spotify_access_token,
+        req.spotify_refresh_token,
+        req.spotify_client_id,
+        req.spotify_client_secret,
+    )
     return {"status": "queued", "job_id": job_id}
 
 
-def _run_setup_all(job_id: str, user_id: str, spotify_token: str):
+def _run_setup_all(
+    job_id: str,
+    user_id: str,
+    spotify_token: str,
+    refresh_token: str | None = None,
+    client_id: str | None = None,
+    client_secret: str | None = None,
+):
     from app.services.artist_embeddings import run_artist_embeddings
     from app.services.artist_enrichment import run_artist_enrichment
     from app.services.source_ingest import run_source_ingest
@@ -389,7 +451,15 @@ def _run_setup_all(job_id: str, user_id: str, spotify_token: str):
 
         current_stage = "Populate Tracks"
         progress_for(5)("Populating track catalog…")
-        run_track_population(spotify_token, progress=progress_for(5))
+        # Refresh the Spotify token before the heaviest step (track population)
+        # since steps 1-4 may have taken 10+ minutes and the original token
+        # could be close to (or past) expiry.
+        active_token = spotify_token
+        if refresh_token and client_id and client_secret:
+            refreshed = _refresh_spotify_token(refresh_token, client_id, client_secret)
+            if refreshed:
+                active_token = refreshed
+        run_track_population(active_token, progress=progress_for(5))
 
         update_job(job_id, JobStatus.SUCCESS, "Library is ready")
         print(f"setup_all: completed for user {user_id}")
