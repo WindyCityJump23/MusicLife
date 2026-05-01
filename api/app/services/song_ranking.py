@@ -521,11 +521,6 @@ def recommend_songs(
             # the goal so we don't want hits to dominate just because they're hits.
             track_boost = 0.85 + (0.15 * track_pop)  # 0.85–1.0 range
 
-            # Obscurity bonus: reward genuinely unknown tracks. Popularity < 40
-            # and not already in the user's library is a signal worth chasing.
-            if track_pop < 0.40 and not in_library:
-                track_boost *= 1.12
-
             # New-release bonus: up to +15% for tracks released in the last
             # calendar year, decaying linearly to 0 at 365 days old.
             raw_release = track.get("release_date")
@@ -547,6 +542,11 @@ def recommend_songs(
                 track_boost *= 0.45  # Strong penalty — you've already heard this exact song
             elif is_library_artist:
                 track_boost *= 0.90  # Very mild — new song from a known artist = great find
+
+            # Obscurity bonus: reward genuinely unknown tracks that aren't
+            # already in the user's library — defined after in_library is set.
+            if track_pop < 0.40 and not in_library:
+                track_boost *= 1.12
 
             # Track-level feedback: stronger signal than artist-level because
             # "I don't like THIS song" is more precise than "I don't like this artist"
