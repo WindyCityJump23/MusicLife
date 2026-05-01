@@ -323,14 +323,23 @@ def _run_populate_tracks(job_id: str, spotify_token: str):
         added = summary.get("tracks_added", 0)
         processed = summary.get("artists_processed", 0)
         errors = summary.get("errors", 0)
+        fatal_error = summary.get("error")  # Token expired, etc.
         msg = f"Added {added} tracks for {processed} artists"
         if errors:
             msg += f" ({errors} errors)"
         last_err = summary.get("last_error")
         if last_err:
             msg += f" — last error: {last_err}"
-        update_job(job_id, JobStatus.SUCCESS, msg[:500])
-        print(f"populate_tracks: completed — {msg}")
+        if fatal_error:
+            msg = f"Failed: {fatal_error}"
+            update_job(job_id, JobStatus.FAILED, msg[:500])
+            print(f"populate_tracks: FAILED — {msg}")
+        elif added == 0 and processed == 0:
+            update_job(job_id, JobStatus.FAILED, msg[:500])
+            print(f"populate_tracks: FAILED (0 results) — {msg}")
+        else:
+            update_job(job_id, JobStatus.SUCCESS, msg[:500])
+            print(f"populate_tracks: completed — {msg}")
     except Exception as exc:
         update_job(job_id, JobStatus.FAILED, str(exc)[:500])
         print(f"populate_tracks: FAILED: {exc}")
@@ -459,7 +468,10 @@ def _run_setup_all(
             refreshed = _refresh_spotify_token(refresh_token, client_id, client_secret)
             if refreshed:
                 active_token = refreshed
-        run_track_population(active_token, progress=progress_for(5))
+        track_summary = run_track_population(active_token, progress=progress_for(5))
+        track_error = track_summary.get("error") if isinstance(track_summary, dict) else None
+        if track_error:
+            raise RuntimeError(f"Track population failed: {track_error}")
 
         update_job(job_id, JobStatus.SUCCESS, "Library is ready")
         print(f"setup_all: completed for user {user_id}")
