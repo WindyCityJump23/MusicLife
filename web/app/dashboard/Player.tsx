@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePlayer } from "./player-context";
 
 /**
@@ -36,6 +36,13 @@ export default function Player() {
     playbackError,
     clearPlaybackError,
   } = usePlayer();
+
+  // Detect mobile ONLY on the client to avoid hydration mismatches.
+  // Server always renders as non-mobile; client updates after mount.
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    setIsMobile(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
+  }, []);
 
   const currentTrack =
     currentIndex >= 0 && currentIndex < queue.length ? queue[currentIndex] : null;
@@ -129,8 +136,7 @@ export default function Player() {
       )}
 
       {/* Mobile: Open in Spotify button — opens the queue as a playlist */}
-      {typeof navigator !== "undefined" &&
-        /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) &&
+      {isMobile &&
         currentTrack &&
         !(mode === "connect" && selectedDeviceId) && (
         <a
@@ -249,7 +255,7 @@ export default function Player() {
       >
         {mode === "connect" && selectedDeviceId
           ? "Audio plays on your device — keeps going through screen lock."
-          : typeof navigator !== "undefined" && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+          : isMobile
           ? "Tap play to open in Spotify for full tracks."
           : "Open Spotify on your phone for full tracks beyond previews."}
       </p>
