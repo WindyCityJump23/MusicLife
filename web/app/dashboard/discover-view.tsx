@@ -86,6 +86,11 @@ export default function DiscoverView({
             prompt: prompt || null,
             weights: normalized,
             limit: 30,
+            discover_run_id: crypto.randomUUID(),
+            exclude_previously_shown: true,
+            history_window_runs: 50,
+            max_allowed_overlap: 0,
+            novelty_mode: "strict",
           }),
         });
         if (songRes.ok) {

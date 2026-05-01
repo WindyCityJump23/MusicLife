@@ -45,6 +45,8 @@ def recommend_songs(
     exclude_library: bool,
     limit: int,
     prompt_text: str | None = None,
+    excluded_track_ids: set[str] | None = None,
+    exploration_seed: int | None = None,
 ) -> list[dict]:
     """Return a ranked list of song-level recommendations.
 
@@ -185,6 +187,8 @@ def recommend_songs(
     pct_ranks = _percentile_rank(raw_vals)
 
     EXPLORATION_STRENGTH = 0.06
+    rng = random.Random(exploration_seed) if exploration_seed is not None else random
+    excluded_track_ids = excluded_track_ids or set()
 
     artist_scores: dict[int, dict] = {}
     for idx, (artist, affinity_raw) in enumerate(raw_affinities):
@@ -418,8 +422,12 @@ def recommend_songs(
             elif is_library_artist:
                 track_boost *= 0.90  # Very mild — new song from a known artist = great find
 
+            spotify_track_id = track.get("spotify_track_id") or ""
+            if spotify_track_id and spotify_track_id in excluded_track_ids:
+                continue
+
             # Exploration
-            exploration = random.uniform(-EXPLORATION_STRENGTH, EXPLORATION_STRENGTH)
+            exploration = rng.uniform(-EXPLORATION_STRENGTH, EXPLORATION_STRENGTH)
 
             final_score = track_base * track_boost + exploration
 
@@ -453,7 +461,7 @@ def recommend_songs(
                 "album_name": track.get("album_name") or "",
                 "duration_ms": track.get("duration_ms") or 0,
                 "explicit": track.get("explicit") or False,
-                "spotify_track_id": track.get("spotify_track_id") or "",
+                "spotify_track_id": spotify_track_id,
                 "score": round(max(0.0, final_score), 4),
                 "signals": {
                     "affinity": round(track_affinity, 4),
