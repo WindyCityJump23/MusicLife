@@ -514,20 +514,23 @@ def _run_setup_all(
         _time.sleep(10)
         progress_for(5)("Populating track catalog…")
         # For track population, prefer a Client Credentials token.
-        # It uses the app's own rate limit pool, separate from the user
-        # token that steps 1-4 already burned through.
         active_token = None
         if client_id and client_secret:
             active_token = _get_client_credentials_token(client_id, client_secret)
         if not active_token:
-            # Fall back to refreshed user token
             active_token = fresh_token()
         track_summary = run_track_population(active_token, progress=progress_for(5))
         track_error = track_summary.get("error") if isinstance(track_summary, dict) else None
         if track_error:
-            raise RuntimeError(f"Track population failed: {track_error}")
-
-        update_job(job_id, JobStatus.SUCCESS, "Library is ready")
+            # Track population is non-critical — the app works with existing
+            # tracks. Mark as success with a warning instead of failing the
+            # entire setup (which already completed steps 1-4 successfully).
+            print(f"setup_all: track population failed (non-fatal): {track_error}", flush=True)
+            update_job(job_id, JobStatus.SUCCESS,
+                       f"Library is ready (track catalog will update later: {track_error})"[:500])
+        else:
+            added = track_summary.get("tracks_added", 0) if isinstance(track_summary, dict) else 0
+            update_job(job_id, JobStatus.SUCCESS, f"Library is ready ({added} new tracks added)")
         print(f"setup_all: completed for user {user_id}")
     except Exception as exc:
         msg = f"{current_stage} failed: {exc}"[:500]
