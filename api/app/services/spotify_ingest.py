@@ -314,6 +314,16 @@ def _insert_listen_events(
 # ---------------------------------------------------------------------------
 
 
+def _spotify_raise(resp: httpx.Response, context: str) -> None:
+    """Raise a clear RuntimeError for Spotify API failures."""
+    if resp.status_code == 401:
+        raise RuntimeError(
+            "Spotify token is expired or missing required permissions. "
+            "Please sign out and sign back in to reconnect your Spotify account."
+        )
+    resp.raise_for_status()
+
+
 def _fetch_saved_tracks(client: httpx.Client, headers: dict[str, str]) -> list[dict]:
     items: list[dict] = []
     offset = 0
@@ -323,7 +333,7 @@ def _fetch_saved_tracks(client: httpx.Client, headers: dict[str, str]) -> list[d
             headers=headers,
             params={"limit": 50, "offset": offset},
         )
-        resp.raise_for_status()
+        _spotify_raise(resp, "saved tracks")
         batch = resp.json().get("items", [])
         if not batch:
             break
@@ -340,7 +350,7 @@ def _fetch_top_artists(
         headers=headers,
         params={"time_range": term, "limit": 50},
     )
-    resp.raise_for_status()
+    _spotify_raise(resp, f"top artists ({term})")
     return resp.json().get("items", [])
 
 
@@ -352,6 +362,6 @@ def _fetch_recently_played(
         headers=headers,
         params={"limit": 50},
     )
-    resp.raise_for_status()
+    _spotify_raise(resp, "recently played")
     return resp.json().get("items", [])
 
