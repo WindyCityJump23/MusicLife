@@ -73,24 +73,35 @@ def run_track_population(
 
     with httpx.Client(timeout=15) as client:
         # Validate token on first request before committing to full loop
+        print(f"track_populator: validating Spotify token (len={len(access_token)})", flush=True)
         test_resp = client.get(
             "https://api.spotify.com/v1/search",
             params={"q": "test", "type": "track", "limit": 1},
             headers=headers,
         )
+        print(f"track_populator: token test HTTP {test_resp.status_code}", flush=True)
         if test_resp.status_code in (401, 403):
             msg = f"Spotify token expired or invalid (HTTP {test_resp.status_code}). Please sign out and back in."
             print(f"track_populator: {msg}", flush=True)
             if progress:
                 progress(msg)
             return {"artists_total": before_skip, "artists_processed": 0, "tracks_added": 0, "error": msg}
+        if test_resp.status_code != 200:
+            msg = f"Spotify API error (HTTP {test_resp.status_code}): {test_resp.text[:200]}"
+            print(f"track_populator: {msg}", flush=True)
+            if progress:
+                progress(msg)
+            return {"artists_total": before_skip, "artists_processed": 0, "tracks_added": 0, "error": msg}
 
+        print(f"track_populator: starting loop for {total} artists", flush=True)
         for i, artist in enumerate(artists):
             try:
                 added, err = _search_and_upsert_tracks(
                     client, headers, artist, TRACKS_PER_ARTIST
                 )
                 total_added += added
+                if i < 3:
+                    print(f"track_populator: artist {i}: {artist.get('name','?')} -> added={added} err={err}", flush=True)
                 if err:
                     errors += 1
                     last_error = err
@@ -126,7 +137,8 @@ def run_track_population(
 
             # Update progress every 5 artists (not 10) for better UI feedback
             if progress and ((i + 1) % 5 == 0 or i == 0):
-                progress(f"Populating track catalog ({i + 1}/{total})")
+                err_suffix = f" ({errors} errors)" if errors > 0 else ""
+                progress(f"Populating track catalog ({i + 1}/{total}, {total_added} tracks added{err_suffix})")
 
             if errors > ABORT_AFTER_ERRORS:
                 print(
