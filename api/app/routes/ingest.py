@@ -353,6 +353,38 @@ class SetupAllRequest(BaseModel):
     spotify_client_secret: str | None = None
 
 
+def _get_client_credentials_token(client_id: str, client_secret: str) -> str | None:
+    """Get a Spotify token via Client Credentials flow.
+
+    This uses the app's own credentials (not a user token), which may have
+    a separate rate limit pool from user OAuth tokens. Good for endpoints
+    that don't need user context (Search, top-tracks, etc.).
+    """
+    import base64
+    import httpx
+
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    try:
+        resp = httpx.post(
+            "https://accounts.spotify.com/api/token",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Authorization": f"Basic {basic}",
+            },
+            data={"grant_type": "client_credentials"},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            token = resp.json().get("access_token")
+            if token:
+                print("spotify_cc: got client credentials token", flush=True)
+                return token
+        print(f"spotify_cc: failed HTTP {resp.status_code}", flush=True)
+    except Exception as exc:
+        print(f"spotify_cc: error: {exc}", flush=True)
+    return None
+
+
 def _refresh_spotify_token(
     refresh_token: str,
     client_id: str,
@@ -481,8 +513,15 @@ def _run_setup_all(
         progress_for(5)("Waiting 10s for Spotify rate limit to reset…")
         _time.sleep(10)
         progress_for(5)("Populating track catalog…")
-        # Refresh again — steps 1-4 may have taken 10+ minutes
-        active_token = fresh_token()
+        # For track population, prefer a Client Credentials token.
+        # It uses the app's own rate limit pool, separate from the user
+        # token that steps 1-4 already burned through.
+        active_token = None
+        if client_id and client_secret:
+            active_token = _get_client_credentials_token(client_id, client_secret)
+        if not active_token:
+            # Fall back to refreshed user token
+            active_token = fresh_token()
         track_summary = run_track_population(active_token, progress=progress_for(5))
         track_error = track_summary.get("error") if isinstance(track_summary, dict) else None
         if track_error:
