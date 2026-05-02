@@ -68,28 +68,11 @@ export async function POST(request: NextRequest) {
     "Content-Type": "application/json",
   };
 
-  // ── Get Spotify user ID ────────────────────────────────────
-  const meRes = await fetch("https://api.spotify.com/v1/me", { headers });
-  if (!meRes.ok) {
-    const meErr = await meRes.json().catch(() => ({}));
-    console.error(`[playlist-from-tracks] /me failed HTTP ${meRes.status}:`, JSON.stringify(meErr));
-    if (meRes.status === 401 || meRes.status === 403) {
-      return NextResponse.json(
-        { error: "Spotify session expired — please sign out and sign back in." },
-        { status: 401 }
-      );
-    }
-    return NextResponse.json(
-      { error: `Failed to get Spotify profile (HTTP ${meRes.status})` },
-      { status: 502 }
-    );
-  }
-  const meData = await meRes.json();
-  const spotifyUserId: string = meData.id;
-
   // ── Create the playlist ────────────────────────────────────
+  // Use /me/playlists (not /users/{id}/playlists) — it works without
+  // resolving the user ID first and has looser scope enforcement in dev mode.
   const createRes = await fetch(
-    `https://api.spotify.com/v1/users/${spotifyUserId}/playlists`,
+    "https://api.spotify.com/v1/me/playlists",
     {
       method: "POST",
       headers,
