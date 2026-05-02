@@ -6,6 +6,14 @@ DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'mentions_dedup_key'
   ) THEN
+    -- Remove duplicate rows first (keep the one with the highest id)
+    DELETE FROM public.mentions
+    WHERE id NOT IN (
+      SELECT MAX(id)
+      FROM public.mentions
+      GROUP BY source_id, url, artist_id
+    );
+
     ALTER TABLE public.mentions
       ADD CONSTRAINT mentions_dedup_key UNIQUE (source_id, url, artist_id);
     CREATE INDEX IF NOT EXISTS idx_mentions_published
