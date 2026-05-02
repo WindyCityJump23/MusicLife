@@ -307,9 +307,14 @@ def recommend_songs(
     # Use stronger exploration for non-prompted queries so browsing feels
     # fresh and different between users.  With a prompt the user has a
     # specific intent and results should be more deterministic.
-    EXPLORATION_STRENGTH = 0.04 if has_explicit_prompt else 0.10
+    EXPLORATION_STRENGTH = 0.04 if has_explicit_prompt else 0.12
     rng = random.Random(exploration_seed) if exploration_seed is not None else random
     excluded_track_ids = excluded_track_ids or set()
+    # Artist-level jitter: add a small random perturbation to each artist's
+    # base score so that artists near the score boundary rotate in/out each
+    # request. Without this, the same N artists always win Phase 1 and results
+    # feel identical even when individual tracks are excluded.
+    ARTIST_JITTER = 0.0 if has_explicit_prompt else 0.08
 
     artist_scores: dict[int, dict] = {}
     for idx, (artist, affinity_raw) in enumerate(raw_affinities):
@@ -396,6 +401,11 @@ def recommend_songs(
             base_score *= max(0.15, 1.0 + (artist_fb * 0.25))
         elif artist_fb > 0:
             base_score *= min(1.4, 1.0 + (artist_fb * 0.08))
+
+        # Per-request jitter: small random nudge so artists near the selection
+        # boundary rotate across different sessions. Prompts stay deterministic.
+        if ARTIST_JITTER:
+            base_score += rng.uniform(-ARTIST_JITTER, ARTIST_JITTER)
 
         artist_scores[aid] = {
             "base_score": base_score,
@@ -729,9 +739,10 @@ def _song_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
     if not scored or limit <= 0:
         return []
 
-    # Use the full pool when small, otherwise widen it to give the
-    # greedy selector room to pull from diverse and obscure candidates.
-    pool = scored if len(scored) <= limit else scored[: limit * 5]
+    # Use the full pool — the greedy selector needs room to find diverse,
+    # non-saturated candidates. Capping at limit*5 was too tight and forced
+    # the same top-scored songs to win every time.
+    pool = scored
     selected: list[dict] = []
     genre_counts: Counter[str] = Counter()
     artist_counts: Counter[str] = Counter()

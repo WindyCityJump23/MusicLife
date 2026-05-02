@@ -1,6 +1,8 @@
 """
 The taste model.
 """
+import random as _std_random
+import time
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends
@@ -52,7 +54,7 @@ class RecommendSongsRequest(BaseModel):
     exclude_library: bool = False
     limit: int = Field(default=30, ge=1, le=100)
     exclude_previously_shown: bool = True
-    history_window_runs: int = Field(default=50, ge=1, le=500)
+    history_window_runs: int = Field(default=15, ge=1, le=500)
     max_allowed_overlap: float = Field(default=0.0, ge=0.0, le=1.0)
     novelty_mode: str = Field(default="strict", pattern="^(strict|graceful)$")
     discover_run_id: str | None = None
@@ -108,6 +110,11 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
     run_id = req.discover_run_id or str(uuid4())
     overlap = 0.0
 
+    # Use a unique base seed per request so that even attempt=0 produces
+    # different randomness on every call. Without this, seed=0 always gives
+    # the exact same track ordering and results feel identical across sessions.
+    request_base_seed = _std_random.randint(0, 2**31)
+
     for attempt in range(5):
         attempts = attempt + 1
         local_excluded = excluded_track_ids
@@ -123,7 +130,7 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             limit=req.limit,
             prompt_text=req.prompt,
             excluded_track_ids=local_excluded,
-            exploration_seed=attempt,
+            exploration_seed=request_base_seed + attempt,
         )
         track_ids = [r.get("spotify_track_id") for r in attempt_results if r.get("spotify_track_id")]
         signature = signature_from_ordered(track_ids)
