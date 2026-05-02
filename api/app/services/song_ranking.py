@@ -152,7 +152,13 @@ def recommend_songs(
     _AUDIO_FEATS = ("energy", "danceability", "valence", "acousticness", "instrumentalness")
     user_audio_pref: dict[str, float] | None = None
     if user_track_map:
-        _audio_ids = list(user_track_map.keys())[:300]
+        # Sort by play_count descending so the most-listened tracks dominate
+        # the weighted average — not just the first 300 rows the DB returned.
+        _audio_ids = sorted(
+            user_track_map.keys(),
+            key=lambda tid: (user_track_map[tid].get("play_count") or 0),
+            reverse=True,
+        )[:300]
         try:
             _audio_resp = (
                 client.table("tracks")
@@ -431,6 +437,7 @@ def recommend_songs(
     # If the result pool is still shallow, widen artist frontier using
     # genre-neighbor artists related to the current top set. This helps
     # discover more songs without requiring a separate ingest pass.
+    top_artist_ids_set = set(top_artist_ids)  # O(1) membership checks below
     if len(all_tracks) < max(limit * 6, 30):
         seed_genres = {
             g.lower()
@@ -445,7 +452,7 @@ def recommend_songs(
                 if aid is None:
                     continue
                 aid_int = int(aid)
-                if aid_int in top_artist_ids:
+                if aid_int in top_artist_ids_set:
                     continue
                 genres = [g.lower() for g in (artist.get("genres") or [])]
                 if not genres:
@@ -466,6 +473,14 @@ def recommend_songs(
                 )
                 extra_tracks = extra_tracks_resp.data or []
                 all_tracks.extend(extra_tracks)
+                # Critical: extend the scoring frontier so Phase 3 actually
+                # considers these artists. Without this the tracks are fetched
+                # and grouped but the Phase 3 loop never reaches them.
+                top_artist_ids = top_artist_ids + [
+                    a for a in extra_artist_ids if a in artist_scores
+                ]
+                print(f"song_ranking: genre expansion added {len(extra_artist_ids)} artists, "
+                      f"{len(extra_tracks)} tracks")
 
     # Group tracks by artist
     tracks_by_artist: dict[int, list[dict]] = defaultdict(list)
