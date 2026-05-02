@@ -507,7 +507,11 @@ def _run_setup_all(
 
         current_stage = "Sync Sources"
         progress_for(4)("Fetching editorial sources…")
-        run_source_ingest(progress=progress_for(4))
+        run_source_ingest(
+            progress=progress_for(4),
+            spotify_client_id=client_id,
+            spotify_client_secret=client_secret,
+        )
 
         current_stage = "Populate Tracks"
         # Cool down before hitting Spotify Search — steps 1-4 may have
