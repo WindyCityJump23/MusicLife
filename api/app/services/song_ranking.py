@@ -739,10 +739,9 @@ def _song_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
     if not scored or limit <= 0:
         return []
 
-    # Use the full pool — the greedy selector needs room to find diverse,
-    # non-saturated candidates. Capping at limit*5 was too tight and forced
-    # the same top-scored songs to win every time.
-    pool = scored
+    # Give the greedy selector a wide pool so it can find diverse candidates,
+    # but cap it to avoid O(n²) slowdown on very large catalogs.
+    pool = scored if len(scored) <= limit * 15 else scored[: limit * 15]
     selected: list[dict] = []
     genre_counts: Counter[str] = Counter()
     artist_counts: Counter[str] = Counter()
