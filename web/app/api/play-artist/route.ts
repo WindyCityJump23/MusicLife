@@ -93,21 +93,56 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // ── Start playback ────────────────────────────────────────────
-  const playRes = await fetch("https://api.spotify.com/v1/me/player/play", {
-    method: "PUT",
-    headers: {
-      Authorization: `Bearer ${access_token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ uris }),
+  // ── Find an active device ─────────────────────────────────────
+  const devicesRes = await fetch("https://api.spotify.com/v1/me/player/devices", {
+    headers: { Authorization: `Bearer ${access_token}` },
   });
+
+  let device_id: string | undefined;
+
+  if (devicesRes.ok) {
+    const devicesData = await devicesRes.json();
+    const devices: Array<{ id: string; is_active: boolean }> =
+      devicesData.devices ?? [];
+
+    const active = devices.find((d) => d.is_active) ?? devices[0];
+    device_id = active?.id;
+  }
+
+  if (!device_id) {
+    return NextResponse.json(
+      {
+        error:
+          "No active Spotify device found. Open Spotify on any device, start playing something, then try again.",
+      },
+      { status: 404 }
+    );
+  }
+
+  // ── Start playback on the target device ───────────────────────
+  const playRes = await fetch(
+    `https://api.spotify.com/v1/me/player/play?device_id=${device_id}`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ uris }),
+    }
+  );
 
   // 204 = success with no content; 202 = accepted
   if (!playRes.ok && playRes.status !== 204 && playRes.status !== 202) {
     const errBody = await playRes.json().catch(() => ({}));
+    const message = errBody?.error?.message ?? "Failed to start playback";
+    const isPremium = playRes.status === 403;
     return NextResponse.json(
-      { error: errBody?.error?.message ?? "Failed to start playback" },
+      {
+        error: isPremium
+          ? "Spotify Premium is required to control playback."
+          : message,
+      },
       { status: playRes.status }
     );
   }
