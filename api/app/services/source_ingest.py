@@ -121,11 +121,28 @@ def run_source_ingest(
     with httpx.Client(timeout=20, follow_redirects=True) as client:
         spotify_headers = {"Authorization": f"Bearer {spotify_token}"} if spotify_token else {}
 
+        reddit_failures = 0  # consecutive Reddit 429s; if >= 3 the IP is banned for this run
+        skip_reddit = False
+
         for i, source in enumerate(sources):
+            is_reddit = source.get("kind") == "reddit"
+            if is_reddit and skip_reddit:
+                print(f"source_ingest: {source['name']!r} — skipped (Reddit IP ban active this run)")
+                if progress:
+                    progress(f"Fetching editorial sources ({i + 1}/{total})")
+                continue
+
             try:
                 entries = _fetch_feed(client, source["url"])
+                if is_reddit:
+                    reddit_failures = 0  # successful Reddit request resets the counter
             except Exception as exc:
                 print(f"source_ingest: fetch failed for {source['name']!r}: {exc}")
+                if is_reddit and "429" in str(exc):
+                    reddit_failures += 1
+                    if reddit_failures >= 2:
+                        skip_reddit = True
+                        print("source_ingest: Reddit IP rate-limited — skipping remaining Reddit sources this run")
                 if progress:
                     progress(f"Fetching editorial sources ({i + 1}/{total})")
                 continue
@@ -210,14 +227,22 @@ def _load_spotify_artist_index() -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
+_REDDIT_UA = "MusicLife:music-discovery-app:0.1 (by /u/musiclife_bot; aggregator)"
+_DEFAULT_UA = "MusicLife-ingest/0.1"
+
 def _fetch_feed(client: httpx.Client, url: str) -> list[dict]:
     is_reddit = "reddit.com" in url
-    delays = [3, 8, 20] if is_reddit else [2, 5]
+    ua = _REDDIT_UA if is_reddit else _DEFAULT_UA
+    # Reddit: add a polite delay before each request to reduce IP-level rate limits,
+    # then allow 2 retries with backoff. Non-Reddit: 2 quick retries.
+    if is_reddit:
+        time.sleep(2)  # base inter-source delay for Reddit
+    delays = [5, 15] if is_reddit else [2, 5]
     for attempt, delay in enumerate([0] + delays):
         if delay:
             time.sleep(delay)
         try:
-            resp = client.get(url, headers={"User-Agent": "music-dashboard/0.1 (+ingest)"})
+            resp = client.get(url, headers={"User-Agent": ua})
             if resp.status_code == 429:
                 if attempt < len(delays):
                     continue
