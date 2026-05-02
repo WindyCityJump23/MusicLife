@@ -194,7 +194,7 @@ def recommend_songs(
 
     source_resp = (
         client.table("sources")
-        .select("id,name,trust_weight")
+        .select("id,name,trust_weight,url")
         .range(0, 9999)
         .execute()
     )
@@ -202,6 +202,7 @@ def recommend_songs(
         int(row["id"]): {
             "trust_weight": float(row.get("trust_weight") or 0.7),
             "name": row.get("name") or "",
+            "url": row.get("url") or "",
         }
         for row in (source_resp.data or [])
         if row.get("id") is not None
@@ -210,7 +211,7 @@ def recommend_songs(
     if candidate_ids:
         mention_resp = (
             client.table("mentions")
-            .select("artist_id,source_id,embedding,published_at,sentiment,excerpt")
+            .select("artist_id,source_id,embedding,published_at,sentiment,excerpt,url")
             .in_("artist_id", candidate_ids)
             .range(0, 9999)
             .execute()
@@ -366,6 +367,8 @@ def recommend_songs(
                 best_mention_score = component
                 best_mention = {
                     "source": src["name"],
+                    "source_url": src["url"],
+                    "article_url": mention.get("url") or "",
                     "excerpt": mention.get("excerpt"),
                     "published_at": pub_raw,
                 }

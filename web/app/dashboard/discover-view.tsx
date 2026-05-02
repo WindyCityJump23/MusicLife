@@ -9,7 +9,13 @@ type SignalBreakdown = {
   editorial: number;
   track_popularity?: number;
 };
-type TopMention = { source: string; excerpt: string; published_at: string };
+type TopMention = {
+  source: string;
+  source_url?: string;
+  article_url?: string;
+  excerpt: string;
+  published_at: string;
+};
 
 type SongRecommendation = {
   track_id: string | null;
@@ -130,7 +136,15 @@ export default function DiscoverView({
             genres: r.genres ?? [],
             reasons: r.reasons ?? [],
             mention_count: r.mention_count ?? 0,
-            top_mention: r.top_mention ?? null,
+            top_mention: r.top_mention
+              ? {
+                  source: r.top_mention.source ?? "",
+                  source_url: r.top_mention.source_url ?? "",
+                  article_url: r.top_mention.article_url ?? "",
+                  excerpt: r.top_mention.excerpt ?? "",
+                  published_at: r.top_mention.published_at ?? "",
+                }
+              : null,
           }));
         }
       } catch {
@@ -766,11 +780,9 @@ function SongRow({
               <span className="text-neutral-400 hidden sm:inline"> &middot; {song.album_name}</span>
             )}
           </p>
-          {/* Reason — desktop only to save mobile space */}
-          {song.reasons.length > 0 && (
-            <p className="text-[10px] text-neutral-400 truncate mt-0.5 hidden sm:block">
-              {song.reasons[0]}
-            </p>
+          {/* Source badge — shown when this song has editorial coverage */}
+          {song.top_mention?.source && (
+            <SourceBadge mention={song.top_mention} />
           )}
         </div>
 
@@ -949,9 +961,23 @@ function SongRow({
                 &ldquo;{song.top_mention.excerpt}&rdquo;
               </p>
               {song.top_mention.source && (
-                <p className="text-[10px] text-neutral-400 mt-1">
-                  — {song.top_mention.source}
-                </p>
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  <SourceFavicon sourceUrl={song.top_mention.source_url} size={12} />
+                  {song.top_mention.article_url ? (
+                    <a
+                      href={song.top_mention.article_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[10px] text-neutral-500 hover:text-neutral-700 hover:underline"
+                    >
+                      — {song.top_mention.source} ↗
+                    </a>
+                  ) : (
+                    <p className="text-[10px] text-neutral-400">
+                      — {song.top_mention.source}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -1040,6 +1066,62 @@ function WeightSlider({
       />
     </label>
   );
+}
+
+function getSourceDomain(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function SourceFavicon({ sourceUrl, size = 14 }: { sourceUrl?: string; size?: number }) {
+  const domain = sourceUrl ? getSourceDomain(sourceUrl) : "";
+  if (!domain) return null;
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={`https://www.google.com/s2/favicons?domain=${domain}&sz=${size * 2}`}
+      alt=""
+      width={size}
+      height={size}
+      className="rounded-sm shrink-0"
+      style={{ imageRendering: "auto" }}
+      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+    />
+  );
+}
+
+function SourceBadge({ mention }: { mention: TopMention }) {
+  const domain = mention.source_url ? getSourceDomain(mention.source_url) : "";
+  const href = mention.article_url || (domain ? `https://${domain}` : undefined);
+
+  const inner = (
+    <span className="inline-flex items-center gap-1 text-[10px] text-neutral-400 mt-0.5">
+      {domain && (
+        <SourceFavicon sourceUrl={mention.source_url} size={11} />
+      )}
+      <span className="truncate max-w-[120px]">{mention.source}</span>
+      {href && <span className="shrink-0">↗</span>}
+    </span>
+  );
+
+  if (href) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="block hover:text-neutral-600 transition-colors"
+        onClick={(e) => e.stopPropagation()}
+        title={`Read on ${mention.source}`}
+      >
+        {inner}
+      </a>
+    );
+  }
+  return <div>{inner}</div>;
 }
 
 function SpotifyIcon({ size = 16 }: { size?: number }) {
