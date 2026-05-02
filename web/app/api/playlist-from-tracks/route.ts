@@ -71,8 +71,16 @@ export async function POST(request: NextRequest) {
   // ── Get Spotify user ID ────────────────────────────────────
   const meRes = await fetch("https://api.spotify.com/v1/me", { headers });
   if (!meRes.ok) {
+    const meErr = await meRes.json().catch(() => ({}));
+    console.error(`[playlist-from-tracks] /me failed HTTP ${meRes.status}:`, JSON.stringify(meErr));
+    if (meRes.status === 401 || meRes.status === 403) {
+      return NextResponse.json(
+        { error: "Spotify session expired — please sign out and sign back in." },
+        { status: 401 }
+      );
+    }
     return NextResponse.json(
-      { error: "Failed to get Spotify profile" },
+      { error: `Failed to get Spotify profile (HTTP ${meRes.status})` },
       { status: 502 }
     );
   }
@@ -95,19 +103,29 @@ export async function POST(request: NextRequest) {
 
   if (!createRes.ok) {
     const err = await createRes.json().catch(() => ({}));
-    const msg = err?.error?.message ?? "Failed to create playlist";
+    const spotifyMsg = err?.error?.message ?? "";
+    console.error(
+      `[playlist-from-tracks] Spotify create failed HTTP ${createRes.status}:`,
+      JSON.stringify(err)
+    );
 
+    if (createRes.status === 401) {
+      return NextResponse.json(
+        { error: "Spotify session expired — please sign out and sign back in." },
+        { status: 401 }
+      );
+    }
     if (createRes.status === 403) {
       return NextResponse.json(
-        {
-          error:
-            "Missing playlist permissions. Please sign out and sign back in to grant the new permissions.",
-        },
+        { error: "Playlist permissions missing — please sign out and sign back in to grant access." },
         { status: 403 }
       );
     }
 
-    return NextResponse.json({ error: msg }, { status: createRes.status });
+    return NextResponse.json(
+      { error: spotifyMsg || `Spotify error (HTTP ${createRes.status})` },
+      { status: createRes.status }
+    );
   }
 
   const playlist = await createRes.json();
