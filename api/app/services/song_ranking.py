@@ -62,6 +62,20 @@ def recommend_songs(
     previously_recommended = _get_previously_recommended_artist_ids(client, user_id)
     feedback_scores = _get_user_feedback(client, user_id)
 
+    # New user with no library: taste_vector is empty so cosine similarity
+    # returns 0 for every artist, making affinity useless. Shift weight
+    # entirely to editorial so the user still gets meaningful picks based on
+    # press mentions and popularity rather than a blank slate.
+    no_library = not taste_vector
+    if no_library:
+        print("song_ranking: empty taste vector — new user, shifting to editorial/context weights")
+        if prompt_vector:
+            weights = {"affinity": 0.0, "context": 0.7, "editorial": 0.3}
+        else:
+            weights = {"affinity": 0.0, "context": 0.0, "editorial": 1.0}
+        # Use a zero vector so cosine calls don't crash; results will all be 0 affinity
+        taste_vector = []
+
     # Build a per-spotify-track-id feedback map for track-level signals
     try:
         track_fb_resp = (
@@ -282,7 +296,7 @@ def recommend_songs(
         vec = _parse_vector(artist.get("embedding"))
         if not vec:
             continue
-        raw = _cosine_similarity(taste_vector, vec)
+        raw = _cosine_similarity(taste_vector, vec) if taste_vector else 0.0
         raw_affinities.append((artist, raw))
 
     raw_vals = [r for _, r in raw_affinities]
@@ -486,14 +500,52 @@ def recommend_songs(
                 )
                 extra_tracks = extra_tracks_resp.data or []
                 all_tracks.extend(extra_tracks)
-                # Critical: extend the scoring frontier so Phase 3 actually
-                # considers these artists. Without this the tracks are fetched
-                # and grouped but the Phase 3 loop never reaches them.
+
+                # Score expansion artists so Phase 3 can rank their tracks.
+                # These artists were not in Phase 1 (they scored below the
+                # top_artist_ids cutoff), so we add them with a reduced affinity
+                # signal derived from taste-vector similarity. Editorial/context
+                # signals default to 0 — they're here for genre coverage, not
+                # because they're known editorial picks.
+                extra_artist_lookup = {
+                    int(a["id"]): a
+                    for a in all_artists
+                    if a.get("id") is not None and int(a["id"]) in set(extra_artist_ids)
+                }
+                newly_added = 0
+                for aid_int in extra_artist_ids:
+                    if aid_int in artist_scores:
+                        continue  # already scored
+                    artist = extra_artist_lookup.get(aid_int)
+                    if not artist:
+                        continue
+                    vec = _parse_vector(artist.get("embedding"))
+                    if not vec:
+                        continue
+                    raw = _cosine_similarity(taste_vector, vec)
+                    affinity = _normalize_01(raw) * 0.7  # discounted vs Phase 1 artists
+                    base_score = weights["affinity"] * affinity
+                    if ARTIST_JITTER:
+                        base_score += rng.uniform(-ARTIST_JITTER, ARTIST_JITTER)
+                    artist_scores[aid_int] = {
+                        "base_score": base_score,
+                        "affinity": affinity,
+                        "affinity_raw": raw,
+                        "context": 0.0,
+                        "editorial": 0.0,
+                        "name": artist.get("name") or "Unknown",
+                        "genres": list(artist.get("genres") or []),
+                        "best_mention": None,
+                        "mention_count": 0,
+                        "spotify_artist_id": artist.get("spotify_artist_id"),
+                    }
+                    newly_added += 1
+
                 top_artist_ids = top_artist_ids + [
                     a for a in extra_artist_ids if a in artist_scores
                 ]
-                print(f"song_ranking: genre expansion added {len(extra_artist_ids)} artists, "
-                      f"{len(extra_tracks)} tracks")
+                print(f"song_ranking: genre expansion added {len(extra_artist_ids)} artists "
+                      f"({newly_added} newly scored), {len(extra_tracks)} tracks")
 
     # Group tracks by artist
     tracks_by_artist: dict[int, list[dict]] = defaultdict(list)

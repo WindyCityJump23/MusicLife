@@ -38,6 +38,11 @@ export async function POST(req: NextRequest) {
       prompt: body.prompt ?? null,
       weights: body.weights ?? { affinity: 0.4, context: 0.4, editorial: 0.2 },
       limit: body.limit ?? 30,
+      discover_run_id: body.discover_run_id ?? null,
+      exclude_previously_shown: body.exclude_previously_shown ?? true,
+      history_window_runs: body.history_window_runs ?? 15,
+      max_allowed_overlap: body.max_allowed_overlap ?? 0,
+      novelty_mode: body.novelty_mode ?? "strict",
     }),
   });
 
