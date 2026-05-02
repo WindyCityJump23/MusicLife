@@ -211,8 +211,23 @@ def _load_spotify_artist_index() -> dict[str, int]:
 
 
 def _fetch_feed(client: httpx.Client, url: str) -> list[dict]:
-    resp = client.get(url, headers={"User-Agent": "music-dashboard/0.1 (+ingest)"})
-    resp.raise_for_status()
+    is_reddit = "reddit.com" in url
+    delays = [3, 8, 20] if is_reddit else [2, 5]
+    for attempt, delay in enumerate([0] + delays):
+        if delay:
+            time.sleep(delay)
+        try:
+            resp = client.get(url, headers={"User-Agent": "music-dashboard/0.1 (+ingest)"})
+            if resp.status_code == 429:
+                if attempt < len(delays):
+                    continue
+                resp.raise_for_status()
+            resp.raise_for_status()
+            break
+        except httpx.HTTPStatusError:
+            if attempt < len(delays):
+                continue
+            raise
     parsed = feedparser.parse(resp.content)
     return list(parsed.entries[:MAX_ENTRIES_PER_FEED])
 

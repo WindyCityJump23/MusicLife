@@ -13,7 +13,7 @@ insert into public.sources (name, kind, url, trust_weight) values
   ('Reddit r/Music', 'reddit', 'https://www.reddit.com/r/Music/.rss', 0.550),
   ('Consequence of Sound', 'rss', 'https://consequence.net/feed/', 0.780),
   ('NME', 'rss', 'https://www.nme.com/feed', 0.750),
-  ('FADER', 'rss', 'https://www.thefader.com/rss', 0.800),
+  ('FADER', 'rss', 'https://www.thefader.com/feed', 0.800),
   ('Brooklyn Vegan', 'rss', 'https://www.brooklynvegan.com/feed/', 0.740),
   ('Line of Best Fit', 'rss', 'https://www.thelineofbestfit.com/feed', 0.760),
   ('Reddit r/jazz', 'reddit', 'https://www.reddit.com/r/jazz/.rss', 0.600),
