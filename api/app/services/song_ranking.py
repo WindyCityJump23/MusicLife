@@ -146,6 +146,43 @@ def recommend_songs(
         if row.get("track_id")
     }
 
+    # ── User audio feature profile ─────────────────────────────
+    # Build a sound fingerprint from the user's most-played library tracks.
+    # Weighted by play_count so frequently-heard tracks dominate the profile.
+    _AUDIO_FEATS = ("energy", "danceability", "valence", "acousticness", "instrumentalness")
+    user_audio_pref: dict[str, float] | None = None
+    if user_track_map:
+        _audio_ids = list(user_track_map.keys())[:300]
+        try:
+            _audio_resp = (
+                client.table("tracks")
+                .select("id,energy,danceability,valence,acousticness,instrumentalness")
+                .in_("id", _audio_ids)
+                .execute()
+            )
+            _feat_totals: dict[str, float] = defaultdict(float)
+            _feat_weight = 0.0
+            for _t in (_audio_resp.data or []):
+                _tid = _t.get("id")
+                _entry = user_track_map.get(_tid) or {}
+                _play = max(float(_entry.get("play_count") or 1), 1.0)
+                _has_feat = False
+                for _feat in _AUDIO_FEATS:
+                    _v = _t.get(_feat)
+                    if _v is not None:
+                        _feat_totals[_feat] += float(_v) * _play
+                        _has_feat = True
+                if _has_feat:
+                    _feat_weight += _play
+            if _feat_weight > 0 and len(_feat_totals) >= 2:
+                user_audio_pref = {k: v / _feat_weight for k, v in _feat_totals.items()}
+                print(f"song_ranking: audio profile built from {len(_audio_ids)} library tracks — "
+                      f"energy={user_audio_pref.get('energy', 0):.2f} "
+                      f"dance={user_audio_pref.get('danceability', 0):.2f} "
+                      f"valence={user_audio_pref.get('valence', 0):.2f}")
+        except Exception as _e:
+            print(f"song_ranking: audio profile failed (non-fatal): {_e}")
+
     # ── Source/mention data for editorial + context signals ────
     candidate_ids = [int(a["id"]) for a in all_artists if a.get("id")]
 
@@ -328,7 +365,12 @@ def recommend_songs(
                 }
 
         context = max(context_scores) if context_scores else 0.0
-        editorial = min(1.0, sum(editorial_components) / max(len(editorial_components), 1))
+        if editorial_components:
+            _mean_e = sum(editorial_components) / len(editorial_components)
+            _max_e = max(editorial_components)
+            editorial = min(1.0, 0.55 * _max_e + 0.45 * _mean_e)
+        else:
+            editorial = 0.0
 
         base_score = (
             weights["affinity"] * affinity
@@ -436,6 +478,31 @@ def recommend_songs(
     song_results: list[dict] = []
     seen_songs: set[str] = set()
 
+    # Defined once outside the artist loop — closes over effective_prompt_vector,
+    # rng, and now which are all fixed for the lifetime of this request.
+    def _track_shortlist_score(t: dict) -> float:
+        """Score a track for shortlist selection within an artist's catalog.
+
+        Blends prompt/taste similarity, popularity, recency, and randomness.
+        Randomness ensures variety across the novelty retry attempts (seed 0–4).
+        """
+        pop = float(t.get("popularity") or 0) / 100.0
+        recency = 0.0
+        _rd = t.get("release_date")
+        if _rd:
+            try:
+                _rd_dt = datetime.fromisoformat(str(_rd))
+                _days_old = max((now.date() - _rd_dt.date()).days, 0)
+                if _days_old < 365:
+                    recency = 1.0 - _days_old / 365
+            except (ValueError, AttributeError):
+                pass
+        tv = _parse_vector(t.get("embedding"))
+        if effective_prompt_vector and tv:
+            ctx = _normalize_01(_cosine_similarity(effective_prompt_vector, tv))
+            return 0.60 * ctx + 0.12 * pop + 0.10 * recency + 0.18 * rng.random()
+        return 0.28 * pop + 0.12 * recency + 0.60 * rng.random()
+
     for aid in top_artist_ids:
         a_info = artist_scores.get(aid)
         if not a_info:
@@ -444,21 +511,6 @@ def recommend_songs(
         tracks = tracks_by_artist.get(aid, [])
         if not tracks:
             continue
-
-        # Shortlist tracks per artist. Blend taste/prompt similarity with a
-        # small popularity signal and randomness so deep cuts get a fair shot
-        # instead of the same hits every time. Without embeddings fall back to
-        # randomness-first so we're not purely sorted by chart position.
-        def _track_shortlist_score(t: dict) -> float:
-            pop = float(t.get("popularity") or 0) / 100.0
-            tv = _parse_vector(t.get("embedding"))
-            if effective_prompt_vector and tv:
-                ctx = _normalize_01(
-                    _cosine_similarity(effective_prompt_vector, tv)
-                )
-                return 0.65 * ctx + 0.15 * pop + 0.20 * rng.random()
-            # No embedding: randomness-first so obscure tracks surface, not just hits
-            return 0.35 * pop + 0.65 * rng.random()
 
         tracks.sort(key=_track_shortlist_score, reverse=True)
         per_artist_cap = 5 if has_explicit_prompt else 4
@@ -539,7 +591,19 @@ def recommend_songs(
             in_library = track_id in user_track_map if track_id else False
             is_library_artist = aid in library_artist_ids
             if in_library:
-                track_boost *= 0.45  # Strong penalty — you've already heard this exact song
+                # Time-decay: a track not played in 6+ months is a rediscovery,
+                # not a repeat. Penalty relaxes from 0.45 (recent) → 0.80 (stale).
+                _entry = user_track_map.get(track_id) or {}
+                _staleness = 1.0
+                _lp = _entry.get("last_played_at")
+                if _lp:
+                    try:
+                        _lp_dt = datetime.fromisoformat(_lp.replace("Z", "+00:00"))
+                        _days_since = max((now - _lp_dt).days, 0)
+                        _staleness = max(0.0, 1.0 - _days_since / 180)
+                    except (ValueError, AttributeError):
+                        pass
+                track_boost *= 0.45 + 0.35 * (1.0 - _staleness)
             elif is_library_artist:
                 track_boost *= 0.90  # Very mild — new song from a known artist = great find
 
@@ -547,6 +611,16 @@ def recommend_songs(
             # already in the user's library — defined after in_library is set.
             if track_pop < 0.40 and not in_library:
                 track_boost *= 1.12
+
+            # Audio feature alignment: prefer tracks that sound like the user's library.
+            # This is the "does it sound right" signal — energy, danceability, mood, etc.
+            if user_audio_pref:
+                _diff_sq = sum(
+                    (float(track.get(k) or 0.5) - user_audio_pref.get(k, 0.5)) ** 2
+                    for k in ("energy", "danceability", "valence", "acousticness")
+                )
+                _audio_match = 1.0 - math.sqrt(_diff_sq / 4.0)
+                track_boost *= 0.88 + 0.12 * _audio_match
 
             # Track-level feedback: stronger signal than artist-level because
             # "I don't like THIS song" is more precise than "I don't like this artist"
@@ -659,16 +733,19 @@ def _song_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
 
             base = candidate["score"]
             genres = candidate.get("genres") or []
-            primary_genre = genres[0].lower() if genres else "__none__"
+            all_genres = [g.lower() for g in genres] or ["__none__"]
             artist = candidate["artist_name"].lower()
 
             # Artist cap
             if artist_counts.get(artist, 0) >= MAX_ARTIST_SONGS:
                 continue
 
-            # Genre diversity penalty
-            genre_share = genre_counts.get(primary_genre, 0) / max(len(selected), 1)
-            penalty = 0.7 if genre_share >= MAX_GENRE_FRACTION else 1.0
+            # Genre diversity penalty: check saturation across ALL genres, not
+            # just genres[0] (Spotify's ordering is arbitrary).
+            max_genre_share = max(
+                genre_counts.get(g, 0.0) / max(len(selected), 1) for g in all_genres
+            )
+            penalty = 0.7 if max_genre_share >= MAX_GENRE_FRACTION else 1.0
 
             adjusted = base * penalty
             if adjusted > best_adjusted:
@@ -683,9 +760,10 @@ def _song_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
         selected.append(pick)
         used.add(key)
 
-        genres = pick.get("genres") or []
-        primary_genre = genres[0].lower() if genres else "__none__"
-        genre_counts[primary_genre] += 1
+        pick_genres = [g.lower() for g in (pick.get("genres") or [])] or ["__none__"]
+        n_pick_genres = len(pick_genres)
+        for g in pick_genres:
+            genre_counts[g] += 1.0 / n_pick_genres  # distribute across all genres equally
         artist_counts[pick["artist_name"].lower()] += 1
 
     # ── Top-up pass ──────────────────────────────────────────────

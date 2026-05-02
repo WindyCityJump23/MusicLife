@@ -21,7 +21,7 @@ import httpx
 from app.services.supabase_client import admin_supabase
 
 
-TRACKS_PER_ARTIST = 5  # How many tracks to fetch per artist
+TRACKS_PER_ARTIST = 10  # How many tracks to fetch per artist
 ABORT_AFTER_ERRORS = 20
 # Cap Retry-After sleep so a single 429 can't freeze the entire job.
 # If Spotify asks us to wait longer, we skip and count it as an error.
