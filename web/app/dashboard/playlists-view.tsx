@@ -243,15 +243,18 @@ function TrackRow({ track, index, initialFavorited = false, initialFeedback = nu
   const seconds = Math.floor((track.duration_ms % 60000) / 1000);
   const duration = `${minutes}:${seconds.toString().padStart(2, "0")}`;
 
-  function handlePlay() {
+  async function handlePlay() {
     if (!spotifyTrackId) return;
     setPlaying(true);
-    playSingle({
-      spotifyTrackId,
-      trackName: track.name,
-      artistName: track.artist,
-    });
-    setPlaying(false);
+    try {
+      await playSingle({
+        spotifyTrackId,
+        trackName: track.name,
+        artistName: track.artist,
+      });
+    } finally {
+      setPlaying(false);
+    }
   }
 
   async function handleFavorite() {
