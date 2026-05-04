@@ -79,8 +79,11 @@ def recommend(req: RecommendRequest, credentials: HTTPAuthorizationCredentials |
     taste_vector = _build_taste_vector(user_client, req.user_id)
     prompt_vec = None
     if req.prompt:
-        embedded = embedder.embed([req.prompt], input_type="query")
-        prompt_vec = embedded[0] if embedded else None
+        try:
+            embedded = embedder.embed([req.prompt], input_type="query")
+            prompt_vec = embedded[0] if embedded else None
+        except Exception as e:
+            print(f"recommend: prompt embedding failed — {e}")
     from app.services.ranking import rank_candidates
     results = rank_candidates(client=user_client, user_id=req.user_id, taste_vector=taste_vector, prompt_vector=prompt_vec, weights=req.weights, exclude_library=req.exclude_library, limit=req.limit)
     return RecommendResponse(results=results)
@@ -95,8 +98,11 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
 
     prompt_vec = None
     if req.prompt:
-        embedded = embedder.embed([req.prompt], input_type="query")
-        prompt_vec = embedded[0] if embedded else None
+        try:
+            embedded = embedder.embed([req.prompt], input_type="query")
+            prompt_vec = embedded[0] if embedded else None
+        except Exception as e:
+            print(f"recommend_songs: prompt embedding failed — {e}. Continuing without prompt vector.")
 
     history_rows = load_recent_history(user_client, req.user_id, req.history_window_runs)
     excluded_track_ids = set()

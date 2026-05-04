@@ -147,18 +147,24 @@ def recommend_songs(
             )
 
     # ── Fetch user's track data for familiarity detection ─────
-    user_tracks_resp = (
-        client.table("user_tracks")
-        .select("track_id,play_count,last_played_at")
-        .eq("user_id", user_id)
-        .range(0, 9999)
-        .execute()
-    )
-    user_track_map: dict[int, dict] = {
-        row["track_id"]: row
-        for row in (user_tracks_resp.data or [])
-        if row.get("track_id")
-    }
+    # Paginate to handle users with very large libraries (>9999 tracks).
+    user_track_map: dict[int, dict] = {}
+    _ut_offset = 0
+    _ut_page = 1000
+    while True:
+        _ut_resp = (
+            client.table("user_tracks")
+            .select("track_id,play_count,last_played_at")
+            .eq("user_id", user_id)
+            .range(_ut_offset, _ut_offset + _ut_page - 1)
+            .execute()
+        )
+        for row in (_ut_resp.data or []):
+            if row.get("track_id"):
+                user_track_map[row["track_id"]] = row
+        if len(_ut_resp.data or []) < _ut_page:
+            break
+        _ut_offset += _ut_page
 
     # ── User audio feature profile ─────────────────────────────
     # Build a sound fingerprint from the user's most-played library tracks.
@@ -547,12 +553,16 @@ def recommend_songs(
                 print(f"song_ranking: genre expansion added {len(extra_artist_ids)} artists "
                       f"({newly_added} newly scored), {len(extra_tracks)} tracks")
 
-    # Group tracks by artist
+    # Group tracks by artist, dropping excluded spotify_track_ids here so
+    # Phase 3 never scores tracks that will be discarded anyway.
     tracks_by_artist: dict[int, list[dict]] = defaultdict(list)
     for t in all_tracks:
         aid = t.get("artist_id")
-        if aid is not None:
-            tracks_by_artist[int(aid)].append(t)
+        if aid is None:
+            continue
+        if excluded_track_ids and (t.get("spotify_track_id") or "") in excluded_track_ids:
+            continue
+        tracks_by_artist[int(aid)].append(t)
 
     # ── Phase 3: Score individual songs ──────────────────────────
     song_results: list[dict] = []
@@ -598,7 +608,10 @@ def recommend_songs(
 
         for track in tracks:
             track_name = (track.get("name") or "").strip()
-            dedup_key = f"{track_name.lower()}|{a_info['name'].lower()}"
+            spotify_tid = (track.get("spotify_track_id") or "").strip()
+            # Prefer spotify_track_id for dedup (unique per recording).
+            # Fall back to name+artist to catch untitled/missing-ID tracks.
+            dedup_key = spotify_tid if spotify_tid else f"{track_name.lower()}|{a_info['name'].lower()}"
             if dedup_key in seen_songs:
                 continue
             seen_songs.add(dedup_key)
@@ -620,14 +633,15 @@ def recommend_songs(
                     track_context = _normalize_01(
                         _cosine_similarity(effective_prompt_vector, track_vec)
                     )
-                # Blend track-level taste similarity with the artist
-                # affinity so that, within an artist's catalog, tracks
-                # whose description aligns with the user's taste vector
-                # rank above generic ones.
-                track_affinity_raw = _normalize_01(
-                    _cosine_similarity(taste_vector, track_vec)
-                )
-                track_affinity = 0.7 * a_info["affinity"] + 0.3 * track_affinity_raw
+                # Blend track-level taste similarity with artist affinity
+                # so tracks whose description aligns with the user's taste
+                # rank above generic ones. Skip the blend for new users
+                # with no taste vector — artist-level affinity is already 0.
+                if taste_vector:
+                    track_affinity_raw = _normalize_01(
+                        _cosine_similarity(taste_vector, track_vec)
+                    )
+                    track_affinity = 0.7 * a_info["affinity"] + 0.3 * track_affinity_raw
                 used_track_embedding = True
 
             # Recompute the base score per track using the (possibly)
@@ -705,8 +719,6 @@ def recommend_songs(
             # Track-level feedback: stronger signal than artist-level because
             # "I don't like THIS song" is more precise than "I don't like this artist"
             spotify_track_id = track.get("spotify_track_id") or ""
-            if spotify_track_id and spotify_track_id in excluded_track_ids:
-                continue
             track_fb = track_feedback.get(spotify_track_id, 0)
             if track_fb < 0:
                 track_boost *= 0.15  # Very strong penalty — user explicitly disliked this track
