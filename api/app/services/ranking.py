@@ -12,17 +12,26 @@ v2 improvements:
 
 from __future__ import annotations
 
-import math
 import random
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 from supabase import Client
 
+from app.services.vector_rpc import (
+    match_artists,
+    max_mention_similarity_per_artist,
+)
+
 
 # ── Vector utilities ─────────────────────────────────────────────
 
 def _parse_vector(value: object) -> list[float]:
+    """Parse pgvector text/list payloads. Used by build_taste_vector when
+    the user's library artists' embeddings are pulled to compute the
+    taste centroid. The catalog-wide cosine pass moved to SQL via the
+    pgvector RPCs in migration 017.
+    """
     if value is None:
         return []
 
@@ -38,18 +47,6 @@ def _parse_vector(value: object) -> list[float]:
             return [float(part) for part in body.split(",")]
 
     return []
-
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    if not a or not b or len(a) != len(b):
-        return 0.0
-
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(y * y for y in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
 
 
 def _normalize_01(value: float) -> float:
@@ -380,23 +377,25 @@ def rank_candidates(
     previously_recommended = _get_previously_recommended_artist_ids(client, user_id)
     feedback_scores = _get_user_feedback(client, user_id)
 
-    # NOTE: Once the embedded-artist catalog grows beyond ~10k rows this
-    # in-process cosine pass needs to move to a server-side RPC backed by
-    # pgvector similarity (e.g. SELECT ... ORDER BY embedding <=> $1 LIMIT N).
-    # The .range bound below is a safety net, not a long-term plan.
-    artists_resp = (
-        client.table("artists")
-        .select("id,name,embedding,popularity,genres,spotify_artist_id")
-        .not_.is_("embedding", "null")
-        .range(0, 9999)
-        .execute()
+    # ── Candidate pool via pgvector RPC ──────────────────────────
+    # Migration 017 pushes cosine similarity into Postgres so we don't
+    # stream every artists.embedding vector(1024) over HTTPS — which used
+    # to time out the Render→Supabase connection on Discover requests.
+    # The RPC returns metadata + similarity; embeddings stay in Postgres.
+    pool_size = max(limit * 8, 200)
+    exclude = sorted(library_artist_ids) if exclude_library and library_artist_ids else []
+    candidates = match_artists(
+        client,
+        query_vector=taste_vector or None,
+        match_count=pool_size,
+        exclude_ids=exclude,
     )
-    candidates = artists_resp.data or []
 
-    # Collect candidate artist ids so we only fetch relevant mentions.
-    candidate_ids = [
-        int(a["id"]) for a in candidates if a.get("id") is not None
-    ]
+    # Map: artist_id → row (for editorial best_mention attribution etc.)
+    candidate_by_id: dict[int, dict] = {
+        int(a["id"]): a for a in candidates if a.get("id") is not None
+    }
+    candidate_ids = list(candidate_by_id.keys())
 
     source_resp = (
         client.table("sources")
@@ -413,18 +412,18 @@ def rank_candidates(
         if row.get("id") is not None
     }
 
-    # Only fetch mentions for artists in the candidate pool, not all mentions.
+    # Mention metadata for the candidate pool — embedding column is
+    # NOT selected (the context signal comes from the RPC below).
+    mentions: list[dict] = []
     if candidate_ids:
         mention_resp = (
             client.table("mentions")
-            .select("artist_id,source_id,embedding,published_at,sentiment,excerpt")
+            .select("artist_id,source_id,published_at,sentiment,excerpt")
             .in_("artist_id", candidate_ids)
             .range(0, 9999)
             .execute()
         )
-    else:
-        mention_resp = type("_R", (), {"data": []})()  # type: ignore[assignment]
-    mentions = mention_resp.data or []
+        mentions = mention_resp.data or []
 
     mentions_by_artist: dict[int, list[dict]] = defaultdict(list)
     for m in mentions:
@@ -437,9 +436,7 @@ def rank_candidates(
     recent_window_days = 45
 
     # ── Mood fallback: when no prompt, use taste vector for context ──
-    # This makes the "Mood" slider meaningful even without a search query.
-    # Instead of being 0 for everyone, it measures how well each artist's
-    # editorial coverage aligns with your overall listening taste.
+    # Same intent as before, but evaluated in SQL instead of Python.
     effective_prompt_vector = prompt_vector if prompt_vector else taste_vector
     has_explicit_prompt = prompt_vector is not None
 
@@ -455,23 +452,22 @@ def rank_candidates(
             "editorial": weights["editorial"] + redistributed * 0.2,
         }
 
-    # ── Phase 1: compute raw affinity for all candidates ─────────
-    raw_affinities: list[tuple[dict, float]] = []
-    for artist in candidates:
-        artist_id = artist.get("id")
-        if artist_id is None:
-            continue
-        artist_id = int(artist_id)
-        if exclude_library and artist_id in library_artist_ids:
-            continue
-        candidate_vec = _parse_vector(artist.get("embedding"))
-        if not candidate_vec:
-            continue
-        raw = _cosine_similarity(taste_vector, candidate_vec)
-        raw_affinities.append((artist, raw))
+    # Per-artist max(cosine(prompt|taste, mention.embedding)) — done in SQL.
+    # Skipped entirely when context weight is zero.
+    if effective_prompt_vector and weights.get("context", 0.0) > 0:
+        context_by_artist = max_mention_similarity_per_artist(
+            client, effective_prompt_vector, candidate_ids
+        )
+    else:
+        context_by_artist = {}
 
-    # Percentile-rank the affinity scores so they spread 0–100% instead
-    # of clustering around 86%.
+    # ── Phase 1: build raw affinity list from RPC results ────────
+    # `similarity` is cosine in [-1, 1]; the existing scoring path normalizes
+    # to [0, 1] either via percentile rank or _normalize_01.
+    raw_affinities: list[tuple[dict, float]] = [
+        (a, float(a.get("similarity") or 0.0)) for a in candidates
+    ]
+
     raw_vals = [r for _, r in raw_affinities]
     pct_ranks = _percentile_rank(raw_vals)
 
@@ -493,18 +489,11 @@ def rank_candidates(
 
         affinity = pct_ranks[idx] if pct_ranks else _normalize_01(affinity_raw)
         artist_mentions = mentions_by_artist.get(artist_id, [])
-        context_scores: list[float] = []
         editorial_components: list[float] = []
         best_mention: dict | None = None
         best_mention_score: float = -1.0
 
         for mention in artist_mentions:
-            mention_vec = _parse_vector(mention.get("embedding"))
-            if effective_prompt_vector and mention_vec:
-                context_scores.append(
-                    _normalize_01(_cosine_similarity(effective_prompt_vector, mention_vec))
-                )
-
             published_at_raw = mention.get("published_at")
             recency_multiplier = 0.2
             if published_at_raw:
@@ -531,7 +520,10 @@ def rank_candidates(
                     "published_at": published_at_raw,
                 }
 
-        context = max(context_scores) if context_scores else 0.0
+        # Context comes from the SQL RPC (max cosine over all this artist's
+        # mentions). Already in [-1, 1], normalize to [0, 1] like before.
+        context_raw = context_by_artist.get(artist_id, 0.0)
+        context = _normalize_01(context_raw) if context_by_artist else 0.0
         editorial = min(1.0, sum(editorial_components) / max(len(editorial_components), 1))
 
         # Tiny popularity tiebreaker (0–0.02) to differentiate artists

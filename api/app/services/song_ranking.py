@@ -25,15 +25,16 @@ from datetime import datetime, timezone
 from supabase import Client
 
 from app.services.ranking import (
-    _cosine_similarity,
-    _diversity_rerank,
     _get_previously_recommended_artist_ids,
     _get_user_artist_weights,
     _get_user_feedback,
     _normalize_01,
-    _parse_vector,
     _percentile_rank,
-    build_taste_vector,
+)
+from app.services.vector_rpc import (
+    match_artists,
+    max_mention_similarity_per_artist,
+    track_similarity_for_artists,
 )
 
 
@@ -93,58 +94,46 @@ def recommend_songs(
     except Exception:
         track_feedback = {}
 
-    # ── Fetch all artists with embeddings ─────────────────────
-    artists_resp = (
-        client.table("artists")
-        .select("id,name,embedding,popularity,genres,spotify_artist_id")
-        .not_.is_("embedding", "null")
-        .range(0, 9999)
-        .execute()
-    )
-    all_artists = artists_resp.data or []
+    # ── Candidate pool via pgvector RPC ──────────────────────────
+    # Migration 017 pushes cosine similarity into Postgres so we don't
+    # stream every artists.embedding vector(1024) over HTTPS — which used
+    # to time out the Render→Supabase connection on Discover requests.
+    # The RPC returns metadata + similarity; embeddings stay in Postgres.
+    POOL_SIZE = max(limit * 20, 500)
 
-    # ── Genre filtering: if prompt looks like a genre, filter artists ──
-    # Matching rules (in order of strictness):
-    #   1. The full normalized prompt is a substring of a genre (e.g. "rock"
-    #      matches "alt rock", "pop dance" matches "pop dance pop").
-    #   2. A genre is a substring of the prompt (e.g. "lo-fi" matches a
-    #      "chill lo-fi" prompt).
-    #   3. EVERY prompt word appears (as a whole word or substring) in a
-    #      single genre string. This requires "pop" AND "dance" to both
-    #      live in the same genre — preventing "pop r&b" from matching
-    #      "pop dance" via a single shared word.
-    genre_filtered = False
+    # Genre tokens: when the prompt looks like a genre, restrict the pool
+    # to artists with matching genres (fuzzy substring on each genre). The
+    # SQL filter is permissive (any token matches any genre); we fall back
+    # to no genre filter if the result is too thin.
+    genre_tokens: list[str] | None = None
     if prompt_text:
-        prompt_lower = prompt_text.strip().lower()
-        prompt_norm = prompt_lower.replace("-", " ").strip()
-        prompt_words = [w for w in prompt_norm.split() if w]
+        _norm = prompt_text.strip().lower().replace("-", " ").strip()
+        _toks = [w for w in _norm.split() if len(w) >= 2]
+        if _toks:
+            genre_tokens = _toks
 
-        def _artist_matches_genre(artist: dict) -> bool:
-            genres = artist.get("genres") or []
-            for g in genres:
-                gl = g.lower()
-                gl_norm = gl.replace("-", " ")
-                if prompt_norm and prompt_norm in gl_norm:
-                    return True
-                if gl_norm and gl_norm in prompt_norm:
-                    return True
-                if prompt_words and all(w in gl_norm for w in prompt_words):
-                    return True
-            return False
-
-        matching = [a for a in all_artists if _artist_matches_genre(a)]
-        # Only apply the filter if it produces a workable pool. Otherwise
-        # fall back to embedding similarity over the full catalog so the
-        # user always gets *some* recommendations.
-        if len(matching) >= 5:
-            all_artists = matching
-            genre_filtered = True
-            print(f"song_ranking: genre filter '{prompt_text}' matched {len(matching)} artists")
-        else:
-            print(
-                f"song_ranking: genre filter '{prompt_text}' matched only "
-                f"{len(matching)} artists — falling back to full catalog"
-            )
+    all_artists = match_artists(
+        client,
+        query_vector=taste_vector or None,
+        match_count=POOL_SIZE,
+        genre_tokens=genre_tokens,
+    )
+    genre_filtered = bool(genre_tokens) and len(all_artists) >= 5
+    if genre_tokens and len(all_artists) < 5:
+        print(
+            f"song_ranking: genre filter '{prompt_text}' matched only "
+            f"{len(all_artists)} artists — falling back to full catalog"
+        )
+        all_artists = match_artists(
+            client,
+            query_vector=taste_vector or None,
+            match_count=POOL_SIZE,
+        )
+    elif genre_tokens:
+        print(
+            f"song_ranking: genre filter '{prompt_text}' matched "
+            f"{len(all_artists)} artists"
+        )
 
     # ── Fetch user's track data for familiarity detection ─────
     # Paginate to handle users with very large libraries (>9999 tracks).
@@ -229,9 +218,11 @@ def recommend_songs(
     }
 
     if candidate_ids:
+        # No embedding column — context similarity is computed in SQL via
+        # max_mention_similarity_per_artist RPC below.
         mention_resp = (
             client.table("mentions")
-            .select("artist_id,source_id,embedding,published_at,sentiment,excerpt,url")
+            .select("artist_id,source_id,published_at,sentiment,excerpt,url")
             .in_("artist_id", candidate_ids)
             .range(0, 9999)
             .execute()
@@ -263,6 +254,15 @@ def recommend_songs(
             "editorial": weights["editorial"] + redistributed * 0.2,
         }
 
+    # Per-artist max(cosine(prompt|taste, mention.embedding)) computed in
+    # SQL — replaces the in-process pass that needed every mention vector.
+    if effective_prompt_vector and weights.get("context", 0.0) > 0 and candidate_ids:
+        context_by_artist = max_mention_similarity_per_artist(
+            client, effective_prompt_vector, candidate_ids
+        )
+    else:
+        context_by_artist = {}
+
     # ── Build per-user genre preference weights ───────────────
     # The user's library artists have genres. Weight each genre by
     # how much the user listens to it. This lets genre overlap between
@@ -293,17 +293,13 @@ def recommend_songs(
     # NOTE: We include library artists in scoring (don't skip them)
     # because tracks in the DB mostly belong to library artists.
     # Instead, we apply a softer penalty to library-artist songs later.
-    raw_affinities: list[tuple[dict, float]] = []
-    for artist in all_artists:
-        aid = artist.get("id")
-        if aid is None:
-            continue
-        aid = int(aid)
-        vec = _parse_vector(artist.get("embedding"))
-        if not vec:
-            continue
-        raw = _cosine_similarity(taste_vector, vec) if taste_vector else 0.0
-        raw_affinities.append((artist, raw))
+    # Affinity comes from the RPC's `similarity` field — pgvector cosine
+    # against taste_vector — so no embedding column is fetched here.
+    raw_affinities: list[tuple[dict, float]] = [
+        (a, float(a.get("similarity") or 0.0))
+        for a in all_artists
+        if a.get("id") is not None
+    ]
 
     raw_vals = [r for _, r in raw_affinities]
     pct_ranks = _percentile_rank(raw_vals)
@@ -361,17 +357,11 @@ def recommend_songs(
             affinity = min(1.0, affinity + genre_boost * 0.15)
 
         artist_mentions = mentions_by_artist.get(aid, [])
-        context_scores: list[float] = []
         editorial_components: list[float] = []
         best_mention: dict | None = None
         best_mention_score = -1.0
 
         for mention in artist_mentions:
-            mvec = _parse_vector(mention.get("embedding"))
-            if effective_prompt_vector and mvec:
-                context_scores.append(
-                    _normalize_01(_cosine_similarity(effective_prompt_vector, mvec))
-                )
             pub_raw = mention.get("published_at")
             recency_mult = 0.2
             if pub_raw:
@@ -398,7 +388,9 @@ def recommend_songs(
                     "published_at": pub_raw,
                 }
 
-        context = max(context_scores) if context_scores else 0.0
+        # Context = best mention-vs-query cosine, computed in SQL above.
+        context_raw = context_by_artist.get(aid, 0.0)
+        context = _normalize_01(context_raw) if context_by_artist else 0.0
         if editorial_components:
             _mean_e = sum(editorial_components) / len(editorial_components)
             _max_e = max(editorial_components)
@@ -454,12 +446,12 @@ def recommend_songs(
     if not top_artist_ids:
         return []
 
-    # Get tracks from DB for these artists. We pull the track embedding
-    # so the context signal can be computed track-by-track instead of
-    # inheriting the artist-level mention match.
+    # Track metadata only — no embedding column. Per-track similarity
+    # against prompt and taste vectors is fetched via RPC below so we
+    # never pull tracks.embedding (vector(1024)) over HTTPS.
     tracks_resp = (
         client.table("tracks")
-        .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
+        .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness")
         .in_("artist_id", top_artist_ids)
         .range(0, 9999)
         .execute()
@@ -499,7 +491,7 @@ def recommend_songs(
             if extra_artist_ids:
                 extra_tracks_resp = (
                     client.table("tracks")
-                    .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
+                    .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness")
                     .in_("artist_id", extra_artist_ids)
                     .range(0, 9999)
                     .execute()
@@ -509,10 +501,9 @@ def recommend_songs(
 
                 # Score expansion artists so Phase 3 can rank their tracks.
                 # These artists were not in Phase 1 (they scored below the
-                # top_artist_ids cutoff), so we add them with a reduced affinity
-                # signal derived from taste-vector similarity. Editorial/context
-                # signals default to 0 — they're here for genre coverage, not
-                # because they're known editorial picks.
+                # top_artist_ids cutoff). Lookup similarity from the RPC pool
+                # — they're already in `all_artists` because the RPC returned
+                # them, just below the score cutoff.
                 extra_artist_lookup = {
                     int(a["id"]): a
                     for a in all_artists
@@ -525,10 +516,7 @@ def recommend_songs(
                     artist = extra_artist_lookup.get(aid_int)
                     if not artist:
                         continue
-                    vec = _parse_vector(artist.get("embedding"))
-                    if not vec:
-                        continue
-                    raw = _cosine_similarity(taste_vector, vec)
+                    raw = float(artist.get("similarity") or 0.0)
                     affinity = _normalize_01(raw) * 0.7  # discounted vs Phase 1 artists
                     base_score = weights["affinity"] * affinity
                     if ARTIST_JITTER:
@@ -564,6 +552,21 @@ def recommend_songs(
             continue
         tracks_by_artist[int(aid)].append(t)
 
+    # ── Per-track cosine similarity via RPC (no embedding pulled) ─
+    # Two SQL calls (one for prompt context, one for taste affinity) replace
+    # what used to be a streaming pull of every tracks.embedding row.
+    track_context_sim: dict[int, float] = {}
+    track_taste_sim: dict[int, float] = {}
+    if top_artist_ids:
+        if effective_prompt_vector:
+            track_context_sim = track_similarity_for_artists(
+                client, effective_prompt_vector, top_artist_ids
+            )
+        if taste_vector:
+            track_taste_sim = track_similarity_for_artists(
+                client, taste_vector, top_artist_ids
+            )
+
     # ── Phase 3: Score individual songs ──────────────────────────
     song_results: list[dict] = []
     seen_songs: set[str] = set()
@@ -575,6 +578,8 @@ def recommend_songs(
 
         Blends prompt/taste similarity, popularity, recency, and randomness.
         Randomness ensures variety across the novelty retry attempts (seed 0–4).
+        Per-track similarity comes from the SQL RPC; no embedding crosses
+        the wire.
         """
         pop = float(t.get("popularity") or 0) / 100.0
         recency = 0.0
@@ -587,9 +592,9 @@ def recommend_songs(
                     recency = 1.0 - _days_old / 365
             except (ValueError, AttributeError):
                 pass
-        tv = _parse_vector(t.get("embedding"))
-        if effective_prompt_vector and tv:
-            ctx = _normalize_01(_cosine_similarity(effective_prompt_vector, tv))
+        tid = t.get("id")
+        if effective_prompt_vector and tid is not None and tid in track_context_sim:
+            ctx = _normalize_01(track_context_sim[tid])
             return 0.60 * ctx + 0.12 * pop + 0.10 * recency + 0.18 * rng.random()
         return 0.28 * pop + 0.12 * recency + 0.60 * rng.random()
 
@@ -620,29 +625,26 @@ def recommend_songs(
             track_pop = float(track.get("popularity") or 50) / 100.0
 
             # ── Per-track context score ──────────────────────────
-            # Prefer cosine(prompt, track.embedding). This is the core
-            # quality lift: tracks within the same artist now score
-            # differently for prompts like "summer driving" or "sad
-            # piano", instead of all inheriting the artist's match.
-            track_vec = _parse_vector(track.get("embedding"))
+            # Prefer cosine(prompt, track.embedding) when the track has an
+            # embedding. The cosine values come from the SQL RPC keyed by
+            # track id — no embedding crosses the wire.
             track_context = a_info["context"]
             track_affinity = a_info["affinity"]
             used_track_embedding = False
-            if track_vec:
-                if effective_prompt_vector:
-                    track_context = _normalize_01(
-                        _cosine_similarity(effective_prompt_vector, track_vec)
-                    )
+            tid_lookup = track_id
+            if tid_lookup is not None and (
+                tid_lookup in track_context_sim or tid_lookup in track_taste_sim
+            ):
+                used_track_embedding = True
+                if effective_prompt_vector and tid_lookup in track_context_sim:
+                    track_context = _normalize_01(track_context_sim[tid_lookup])
                 # Blend track-level taste similarity with artist affinity
                 # so tracks whose description aligns with the user's taste
                 # rank above generic ones. Skip the blend for new users
                 # with no taste vector — artist-level affinity is already 0.
-                if taste_vector:
-                    track_affinity_raw = _normalize_01(
-                        _cosine_similarity(taste_vector, track_vec)
-                    )
+                if taste_vector and tid_lookup in track_taste_sim:
+                    track_affinity_raw = _normalize_01(track_taste_sim[tid_lookup])
                     track_affinity = 0.7 * a_info["affinity"] + 0.3 * track_affinity_raw
-                used_track_embedding = True
 
             # Recompute the base score per track using the (possibly)
             # track-specific affinity and context. Editorial stays at
