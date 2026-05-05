@@ -5,7 +5,10 @@ from typing import Any, Callable, TypeVar
 
 from supabase import Client, ClientOptions, create_client
 
-from app.config import settings
+# NOTE: settings is imported lazily inside the functions below. Importing it
+# at module load time evaluates app.config.Settings() immediately, which
+# raises pydantic ValidationError when env vars are missing — that breaks
+# the eval suite (which imports ranking.py without setting any env vars).
 
 
 class _LazyAdminClient:
@@ -33,6 +36,7 @@ class _LazyAdminClient:
     def _get(self) -> Client:
         now = time.monotonic()
         if self._client is None or (now - self._created_at) > self._CLIENT_TTL_SECONDS:
+            from app.config import settings  # lazy: see module note above
             self._client = create_client(
                 settings.supabase_url,
                 settings.supabase_service_role_key,
@@ -97,6 +101,8 @@ def get_user_scoped_supabase(jwt: str) -> Client:
     For real user JWTs, we use the anon key + Authorization header so Postgres
     RLS policies evaluate against `auth.uid()` of the caller.
     """
+    from app.config import settings  # lazy: see module note above
+
     if jwt == settings.supabase_service_role_key:
         return admin_supabase
 
