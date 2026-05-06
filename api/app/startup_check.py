@@ -72,13 +72,12 @@ def run_checks() -> None:
             f"{settings.embedding_dims} to match the DB schema."
         )
 
-    # ── Required for artist enrichment ──────────────────────────────────────
+    # ── Required for artist enrichment (optional — API boots without them) ──
     if not settings.lastfm_api_key:
-        errors.append("LASTFM_API_KEY is not set (needed for /ingest/enrich-artists)")
+        print("[startup] WARNING: LASTFM_API_KEY not set — enrichment will return errors")
     if not settings.musicbrainz_user_agent:
-        errors.append(
-            "MUSICBRAINZ_USER_AGENT is not set "
-            "(format: appname/version (email@example.com))"
+        print(
+            "[startup] WARNING: MUSICBRAINZ_USER_AGENT not set — enrichment will return errors"
         )
 
     if errors:
