@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     supabase_service_role_key: str
     supabase_anon_key: str
 
-    anthropic_api_key: str
+    anthropic_api_key: str = ""
 
     voyage_api_key: str = ""
     openai_api_key: str = ""
@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     embedding_model: str = "voyage-3"
     embedding_dims: int = 1024
 
-    lastfm_api_key: str
-    musicbrainz_user_agent: str
+    lastfm_api_key: str = ""
+    musicbrainz_user_agent: str = ""
 
     cors_origins: str = "http://localhost:3000"
 
