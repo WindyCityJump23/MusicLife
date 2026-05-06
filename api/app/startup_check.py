@@ -31,15 +31,17 @@ def run_checks() -> None:
     if not settings.anthropic_api_key or settings.anthropic_api_key.startswith("placeholder"):
         print("[startup] WARNING: ANTHROPIC_API_KEY not set — /synthesize will return errors")
 
-    # ── Required for embedding jobs ─────────────────────────────────────────
+    # ── Required for embedding jobs (optional — API boots without them) ─────
     provider = settings.embedding_provider.lower().strip()
     if provider == "voyage" and not settings.voyage_api_key:
-        errors.append(
-            "EMBEDDING_PROVIDER=voyage but VOYAGE_API_KEY is not set"
+        print(
+            "[startup] WARNING: EMBEDDING_PROVIDER=voyage but VOYAGE_API_KEY "
+            "is not set — embedding jobs will return errors"
         )
     elif provider == "openai" and not settings.openai_api_key:
-        errors.append(
-            "EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is not set"
+        print(
+            "[startup] WARNING: EMBEDDING_PROVIDER=openai but OPENAI_API_KEY "
+            "is not set — embedding jobs will return errors"
         )
     elif provider not in ("voyage", "openai"):
         errors.append(
