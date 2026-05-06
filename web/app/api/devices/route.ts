@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
-import { getSpotifyAccessToken } from "@/lib/spotify-token";
+import { applySpotifyTokenCookies, getSpotifyToken } from "@/lib/spotify-token";
 
 export const dynamic = "force-dynamic";
 
@@ -19,10 +19,11 @@ export async function GET(request: NextRequest) {
   const user = requireUser(request);
   if (isErrorResponse(user)) return user;
 
-  const accessToken = await getSpotifyAccessToken(request);
-  if (!accessToken) {
+  const token = await getSpotifyToken(request);
+  if (!token) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
+  const accessToken = token.accessToken;
 
   const res = await fetch("https://api.spotify.com/v1/me/player/devices", {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -31,9 +32,12 @@ export async function GET(request: NextRequest) {
 
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}));
-    return NextResponse.json(
-      { error: errBody?.error?.message ?? "Failed to list devices" },
-      { status: res.status }
+    return applySpotifyTokenCookies(
+      NextResponse.json(
+        { error: errBody?.error?.message ?? "Failed to list devices" },
+        { status: res.status }
+      ),
+      token
     );
   }
 
@@ -58,5 +62,5 @@ export async function GET(request: NextRequest) {
     })
   );
 
-  return NextResponse.json({ devices });
+  return applySpotifyTokenCookies(NextResponse.json({ devices }), token);
 }
