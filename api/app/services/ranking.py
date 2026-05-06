@@ -472,8 +472,11 @@ def rank_candidates(
         }
 
     # Per-artist max(cosine(prompt|taste, mention.embedding)) — done in SQL.
-    # Skipped entirely when context weight is zero.
-    if effective_prompt_vector and weights.get("context", 0.0) > 0:
+    # Computed whenever there's an effective query vector, even if context's
+    # final weight has been redistributed to 0 above. The signal is still
+    # surfaced on each result row (the UI shows a "context" / mood pill),
+    # and the mood-fallback eval reads it independently of the weight.
+    if effective_prompt_vector and candidate_ids:
         context_by_artist = max_mention_similarity_per_artist(
             client, effective_prompt_vector, candidate_ids
         )

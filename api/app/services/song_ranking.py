@@ -256,7 +256,10 @@ def recommend_songs(
 
     # Per-artist max(cosine(prompt|taste, mention.embedding)) computed in
     # SQL — replaces the in-process pass that needed every mention vector.
-    if effective_prompt_vector and weights.get("context", 0.0) > 0 and candidate_ids:
+    # Computed whenever there's an effective query vector so the context
+    # signal value is still populated when the weight has been redistributed
+    # to 0 (mood-fallback path).
+    if effective_prompt_vector and candidate_ids:
         context_by_artist = max_mention_similarity_per_artist(
             client, effective_prompt_vector, candidate_ids
         )
