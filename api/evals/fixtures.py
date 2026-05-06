@@ -90,12 +90,153 @@ class MockQueryBuilder:
         return resp
 
 
+def _cos(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _parse_pgvector(value: Any) -> list[float]:
+    """Parse the pgvector text literal `[v1,v2,...]` produced by
+    vector_rpc.serialize_vector. Lists pass through unchanged.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [float(x) for x in value]
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("[") and text.endswith("]"):
+            body = text[1:-1].strip()
+            if not body:
+                return []
+            return [float(p) for p in body.split(",")]
+    return []
+
+
+class _MockRpcResp:
+    def __init__(self, data: list[dict]) -> None:
+        self.data = data
+
+
+class MockRpcCall:
+    """Captures (name, params) and emulates the three pgvector RPCs from
+    migration 017 against the in-memory fixture tables. Exists so eval
+    code that imports `app.services.vector_rpc.match_artists` etc. can run
+    without a real Postgres connection.
+    """
+
+    def __init__(self, tables: dict[str, list[dict]], name: str, params: dict | None) -> None:
+        self._tables = tables
+        self._name = name
+        self._params = params or {}
+
+    def execute(self) -> _MockRpcResp:
+        if self._name == "match_artists_by_embedding":
+            return _MockRpcResp(self._match_artists())
+        if self._name == "max_mention_similarity_per_artist":
+            return _MockRpcResp(self._max_mention_similarity())
+        if self._name == "track_similarity_for_artists":
+            return _MockRpcResp(self._track_similarity())
+        # Unknown RPC — return empty so callers handle gracefully.
+        return _MockRpcResp([])
+
+    def _match_artists(self) -> list[dict]:
+        query = _parse_pgvector(self._params.get("query_embedding"))
+        match_count = int(self._params.get("match_count") or 200)
+        exclude_ids = set(int(x) for x in (self._params.get("exclude_ids") or []))
+        genre_tokens = self._params.get("genre_tokens") or None
+
+        rows: list[dict] = []
+        for a in self._tables.get("artists", []):
+            if a.get("embedding") is None:
+                continue
+            aid = int(a.get("id"))
+            if aid in exclude_ids:
+                continue
+            if genre_tokens:
+                genres_lower = [str(g).lower() for g in (a.get("genres") or [])]
+                hit = any(
+                    any(str(t).lower() in g for g in genres_lower)
+                    for t in genre_tokens if t
+                )
+                if not hit:
+                    continue
+            embedding = _parse_pgvector(a.get("embedding"))
+            sim = _cos(query, embedding) if query else 0.0
+            rows.append(
+                {
+                    "id": aid,
+                    "name": a.get("name"),
+                    "popularity": a.get("popularity"),
+                    "genres": list(a.get("genres") or []),
+                    "spotify_artist_id": a.get("spotify_artist_id"),
+                    "similarity": sim,
+                }
+            )
+
+        # Match the SQL function: when query_embedding is provided, sort by
+        # cosine distance ascending (= similarity descending). Otherwise
+        # fall back to popularity descending.
+        if query:
+            rows.sort(key=lambda r: -float(r.get("similarity") or 0.0))
+        else:
+            rows.sort(key=lambda r: -(r.get("popularity") or 0))
+        return rows[: max(match_count, 1)]
+
+    def _max_mention_similarity(self) -> list[dict]:
+        query = _parse_pgvector(self._params.get("query_embedding"))
+        artist_ids = set(int(x) for x in (self._params.get("artist_ids") or []))
+        if not query or not artist_ids:
+            return []
+        per_artist: dict[int, float] = {}
+        for m in self._tables.get("mentions", []):
+            aid = m.get("artist_id")
+            if aid is None or int(aid) not in artist_ids:
+                continue
+            mvec = _parse_pgvector(m.get("embedding"))
+            if not mvec:
+                continue
+            sim = _cos(query, mvec)
+            cur = per_artist.get(int(aid))
+            if cur is None or sim > cur:
+                per_artist[int(aid)] = sim
+        return [{"artist_id": aid, "max_similarity": s} for aid, s in per_artist.items()]
+
+    def _track_similarity(self) -> list[dict]:
+        query = _parse_pgvector(self._params.get("query_embedding"))
+        artist_ids = set(int(x) for x in (self._params.get("artist_ids") or []))
+        if not query or not artist_ids:
+            return []
+        out: list[dict] = []
+        for t in self._tables.get("tracks", []):
+            aid = t.get("artist_id")
+            if aid is None or int(aid) not in artist_ids:
+                continue
+            tvec = _parse_pgvector(t.get("embedding"))
+            if not tvec:
+                continue
+            out.append({"track_id": int(t.get("id")), "similarity": _cos(query, tvec)})
+        return out
+
+
 class MockSupabaseClient:
     def __init__(self, tables: dict[str, list[dict]]) -> None:
         self._tables = tables
 
     def table(self, name: str) -> MockQueryBuilder:
         return MockQueryBuilder(self._tables.get(name, []))
+
+    def rpc(self, name: str, params: dict | None = None) -> MockRpcCall:
+        """Emulate Supabase's rpc() method for the three pgvector functions
+        introduced in migration 017. Anything else returns an empty result.
+        """
+        return MockRpcCall(self._tables, name, params)
 
 
 # ── Genre-correlated vector generation ──────────────────────────
