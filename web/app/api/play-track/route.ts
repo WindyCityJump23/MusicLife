@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
-import { getSpotifyAccessToken } from "@/lib/spotify-token";
+import { applySpotifyTokenCookies, getSpotifyToken } from "@/lib/spotify-token";
 
 export const dynamic = "force-dynamic";
 
@@ -58,10 +58,11 @@ export async function POST(request: NextRequest) {
   // Spotify caps `uris` at 100 per request.
   if (uris.length > 100) uris = uris.slice(0, 100);
 
-  const accessToken = await getSpotifyAccessToken(request);
-  if (!accessToken) {
+  const token = await getSpotifyToken(request);
+  if (!token) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
+  const accessToken = token.accessToken;
 
   let playUrl = "https://api.spotify.com/v1/me/player/play";
   if (deviceId && typeof deviceId === "string") {
@@ -92,28 +93,40 @@ export async function POST(request: NextRequest) {
     const reason = errBody?.error?.reason;
 
     if (reason === "NO_ACTIVE_DEVICE" || playRes.status === 404) {
-      return NextResponse.json(
-        {
-          error:
-            "No active Spotify device. Open Spotify on your phone, then pick it from the device list.",
-          reason: "NO_ACTIVE_DEVICE",
-        },
-        { status: 404 }
+      return applySpotifyTokenCookies(
+        NextResponse.json(
+          {
+            error:
+              "No active Spotify device. Open Spotify on your phone, then pick it from the device list.",
+            reason: "NO_ACTIVE_DEVICE",
+          },
+          { status: 404 }
+        ),
+        token
       );
     }
 
     if (playRes.status === 403 || reason === "PREMIUM_REQUIRED") {
-      return NextResponse.json(
-        {
-          error: "Spotify Premium required for remote playback.",
-          reason: "PREMIUM_REQUIRED",
-        },
-        { status: 403 }
+      return applySpotifyTokenCookies(
+        NextResponse.json(
+          {
+            error: "Spotify Premium required for remote playback.",
+            reason: "PREMIUM_REQUIRED",
+          },
+          { status: 403 }
+        ),
+        token
       );
     }
 
-    return NextResponse.json({ error: errorMsg }, { status: playRes.status });
+    return applySpotifyTokenCookies(
+      NextResponse.json({ error: errorMsg }, { status: playRes.status }),
+      token
+    );
   }
 
-  return NextResponse.json({ ok: true, count: uris.length });
+  return applySpotifyTokenCookies(
+    NextResponse.json({ ok: true, count: uris.length }),
+    token
+  );
 }

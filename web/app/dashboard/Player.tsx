@@ -53,6 +53,8 @@ export default function Player() {
   const usableDevices = devices.filter((d) => !d.is_restricted);
   const selectedDevice =
     usableDevices.find((d) => d.id === selectedDeviceId) ?? null;
+  const isConnectMode = mode === "connect" && Boolean(selectedDeviceId);
+  const useMobileSpotify = isMobile && currentTrack !== null && !isConnectMode;
 
   return (
     <div
@@ -107,9 +109,9 @@ export default function Player() {
         onSelect={(id) => {
           if (id === "__embed__") {
             setMode("embed");
-            selectDevice(null);
+            void selectDevice(null);
           } else {
-            selectDevice(id);
+            void selectDevice(id);
           }
         }}
         onRefresh={refreshDevices}
@@ -135,12 +137,10 @@ export default function Player() {
         </div>
       )}
 
-      {/* Mobile: Open in Spotify button — opens the queue as a playlist */}
-      {isMobile &&
-        currentTrack &&
-        !(mode === "connect" && selectedDeviceId) && (
+      {/* Mobile: use the native Spotify app for reliable full-track playback. */}
+      {useMobileSpotify && currentTrack && (
         <a
-          href={`https://open.spotify.com/track/${currentTrack.spotifyTrackId}`}
+          href={`https://open.spotify.com/track/${toSpotifyTrackId(currentTrack.spotifyTrackId)}`}
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-white text-sm font-medium active:scale-95 transition-all"
@@ -149,12 +149,12 @@ export default function Player() {
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z" />
           </svg>
-          Open Queue in Spotify
+          Open in Spotify
         </a>
       )}
 
       {/* Mode-specific player */}
-      {mode === "connect" && selectedDeviceId ? (
+      {isConnectMode ? (
         <ConnectControls
           isPlaying={isPlaying}
           hasNext={hasNext}
@@ -164,6 +164,8 @@ export default function Player() {
           onTogglePause={togglePause}
           deviceName={selectedDevice?.name ?? "device"}
         />
+      ) : useMobileSpotify ? (
+        <MobileSpotifyStatus />
       ) : (
         <EmbedPlayer trackId={embedTrackId} onTrackEnd={playNext} />
       )}
@@ -263,6 +265,26 @@ export default function Player() {
   );
 }
 
+function MobileSpotifyStatus() {
+  return (
+    <div
+      className="rounded-xl px-4 py-4 text-center"
+      style={{
+        background: "rgba(255,255,255,0.06)",
+        border: "1px solid rgba(255,255,255,0.1)",
+      }}
+    >
+      <p className="text-sm font-medium text-white">Continue in Spotify</p>
+      <p
+        className="text-xs mt-1 leading-relaxed"
+        style={{ color: "rgba(255,255,255,0.5)" }}
+      >
+        Full-track playback is handled by Spotify on mobile.
+      </p>
+    </div>
+  );
+}
+
 /* ─────────────────────────────────────────────────────────────── */
 /*  Device picker                                                  */
 /* ─────────────────────────────────────────────────────────────── */
@@ -306,9 +328,6 @@ function DevicePicker({
         className="flex-1 min-w-0 bg-transparent text-xs text-white focus:outline-none truncate"
         style={{ colorScheme: "dark" }}
       >
-        {devices.length === 0 && (
-          <option value="__embed__">This browser (preview)</option>
-        )}
         {devices.map((d) => (
           <option key={d.id} value={d.id}>
             {iconForType(d.type)} {d.name}
@@ -360,6 +379,14 @@ function iconForType(type: string): string {
   if (t === "tv") return "📺";
   if (t === "tablet") return "📱";
   return "🎵";
+}
+
+function toSpotifyTrackId(value: string): string {
+  return value.startsWith("spotify:track:") ? value.replace("spotify:track:", "") : value;
+}
+
+function toSpotifyTrackUri(value: string): string {
+  return value.startsWith("spotify:track:") ? value : `spotify:track:${value}`;
 }
 
 /* ─────────────────────────────────────────────────────────────── */
@@ -479,7 +506,7 @@ function EmbedPlayer({
 
       const initialId =
         pendingRef.current || trackId || "4cOdK2wGLETKBW3PvgPWqT";
-      const uri = `spotify:track:${initialId}`;
+      const uri = toSpotifyTrackUri(initialId);
 
       IFrameAPI.createController(
         container,
@@ -518,7 +545,7 @@ function EmbedPlayer({
           });
 
           if (pendingRef.current) {
-            ctrl.loadUri(`spotify:track:${pendingRef.current}`);
+            ctrl.loadUri(toSpotifyTrackUri(pendingRef.current));
             ctrl.play();
             pendingRef.current = null;
           }
@@ -556,7 +583,7 @@ function EmbedPlayer({
     lastPositionRef.current = 0;
 
     if (controllerRef.current) {
-      controllerRef.current.loadUri(`spotify:track:${trackId}`);
+      controllerRef.current.loadUri(toSpotifyTrackUri(trackId));
       controllerRef.current.play();
     } else {
       pendingRef.current = trackId;

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
-import { getSpotifyAccessToken } from "@/lib/spotify-token";
+import { applySpotifyTokenCookies, getSpotifyToken } from "@/lib/spotify-token";
 
 export const dynamic = "force-dynamic";
 
@@ -44,10 +44,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "action is required" }, { status: 400 });
   }
 
-  const accessToken = await getSpotifyAccessToken(request);
-  if (!accessToken) {
+  const token = await getSpotifyToken(request);
+  if (!token) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
+  const accessToken = token.accessToken;
 
   // Transfer playback to a specific device (e.g. when user picks their phone).
   if (action === "transfer") {
@@ -67,12 +68,15 @@ export async function POST(request: NextRequest) {
     });
     if (!res.ok && res.status !== 204) {
       const errBody = await res.json().catch(() => ({}));
-      return NextResponse.json(
-        { error: errBody?.error?.message ?? "Failed to transfer playback" },
-        { status: res.status }
+      return applySpotifyTokenCookies(
+        NextResponse.json(
+          { error: errBody?.error?.message ?? "Failed to transfer playback" },
+          { status: res.status }
+        ),
+        token
       );
     }
-    return NextResponse.json({ ok: true });
+    return applySpotifyTokenCookies(NextResponse.json({ ok: true }), token);
   }
 
   const spec = ACTION_TO_REQUEST[action];
@@ -92,22 +96,31 @@ export async function POST(request: NextRequest) {
     const errBody = await res.json().catch(() => ({}));
     const reason = errBody?.error?.reason;
     if (reason === "NO_ACTIVE_DEVICE" || res.status === 404) {
-      return NextResponse.json(
-        { error: "No active Spotify device. Open Spotify on your phone or pick a device." },
-        { status: 404 }
+      return applySpotifyTokenCookies(
+        NextResponse.json(
+          { error: "No active Spotify device. Open Spotify on your phone or pick a device." },
+          { status: 404 }
+        ),
+        token
       );
     }
     if (res.status === 403 || reason === "PREMIUM_REQUIRED") {
-      return NextResponse.json(
-        { error: "Spotify Premium required for remote playback control." },
-        { status: 403 }
+      return applySpotifyTokenCookies(
+        NextResponse.json(
+          { error: "Spotify Premium required for remote playback control." },
+          { status: 403 }
+        ),
+        token
       );
     }
-    return NextResponse.json(
-      { error: errBody?.error?.message ?? `Failed: ${action}` },
-      { status: res.status }
+    return applySpotifyTokenCookies(
+      NextResponse.json(
+        { error: errBody?.error?.message ?? `Failed: ${action}` },
+        { status: res.status }
+      ),
+      token
     );
   }
 
-  return NextResponse.json({ ok: true });
+  return applySpotifyTokenCookies(NextResponse.json({ ok: true }), token);
 }
