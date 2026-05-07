@@ -3,22 +3,21 @@
 import { useEffect, useState } from "react";
 import SetupAllButton from "./SetupAllButton";
 
-export type View = "library" | "discover" | "playlists" | "activity" | "saved";
+export type View = "discover" | "playlists" | "library" | "activity";
 
 const NAV: { id: View; label: string; icon: string }[] = [
-  { id: "library",    label: "Library",    icon: "🎵" },
-  { id: "discover",   label: "Discover",   icon: "🔍" },
-  { id: "playlists",  label: "Playlists",  icon: "📀" },
-  { id: "activity",   label: "Activity",   icon: "📊" },
-  { id: "saved",      label: "Saved",      icon: "💾" },
+  { id: "discover",   label: "Radio",         icon: "▶" },
+  { id: "playlists",  label: "Playlists",     icon: "▦" },
+  { id: "library",    label: "Taste Profile", icon: "◎" },
+  { id: "activity",   label: "History",       icon: "◷" },
 ];
 
 const STEP_META = [
-  { step: 1, title: "Sync Library",    desc: "Import your Spotify artists & listening history" },
-  { step: 2, title: "Enrich Artists",  desc: "Fetch genres, tags & metadata for each artist" },
-  { step: 3, title: "Generate Embeddings", desc: "Build AI taste vectors for smart matching" },
-  { step: 4, title: "Sync Sources",    desc: "Add editorial content (blogs, charts, reviews)" },
-  { step: 5, title: "Populate Tracks", desc: "Fetch songs for all artists to power Discover" },
+  { step: 1, title: "Import listening history", desc: "Bring in your Spotify artists and recent plays" },
+  { step: 2, title: "Learn your taste",         desc: "Add genre and artist context" },
+  { step: 3, title: "Build your radio model",   desc: "Prepare matching signals for better stations" },
+  { step: 4, title: "Add music context",        desc: "Blend in editorial sources and buzz" },
+  { step: 5, title: "Prepare song catalog",     desc: "Load playable tracks for radio and playlists" },
 ];
 
 export default function Sidebar({
@@ -62,11 +61,14 @@ export default function Sidebar({
         const artists: Array<{ enriched: boolean; embedded: boolean }> =
           data.artists ?? [];
         const done = new Set<number>();
-        if (artists.length > 0)                          done.add(1);
-        if (artists.some((a) => a.enriched))             done.add(2);
-        if (artists.some((a) => a.embedded))             done.add(3);
-        if ((data.stats?.mentionCount ?? 0) > 0)         done.add(4);
-        if ((data.stats?.catalogTrackCount ?? 0) > artists.length * 2) done.add(5);
+        const enrichedCount = artists.filter((a) => a.enriched).length;
+        const embeddedCount = artists.filter((a) => a.embedded).length;
+        const readyRatio = Math.max(5, Math.ceil(artists.length * 0.25));
+        if (artists.length > 0) done.add(1);
+        if (enrichedCount >= Math.min(artists.length, readyRatio)) done.add(2);
+        if (embeddedCount >= Math.min(artists.length, readyRatio)) done.add(3);
+        if ((data.stats?.mentionCount ?? 0) > 0) done.add(4);
+        if ((data.stats?.catalogTrackCount ?? 0) >= Math.max(25, artists.length * 2)) done.add(5);
         setCompletedSteps(done);
       })
       .catch(() => {});
@@ -158,7 +160,7 @@ export default function Sidebar({
           aria-expanded={setupOpen}
         >
           <p className="text-[10px] uppercase tracking-widest text-neutral-400 font-medium">
-            Setup Your Library
+            Radio Setup
           </p>
           <svg
             width="12"
