@@ -35,15 +35,12 @@ export default function RadioView({
 
   async function refreshReadiness(): Promise<RadioReadiness> {
     try {
-      const res = await fetch("/api/library", { cache: "no-store" });
+      const res = await fetch("/api/readiness", { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? "Could not check radio setup");
 
-      const artists: Array<{ enriched: boolean; embedded: boolean }> = data.artists ?? [];
-      const artistCount = artists.length;
-      const enrichedCount = artists.filter((a) => a.enriched).length;
-      const embeddedCount = artists.filter((a) => a.embedded).length;
       const serverReadiness = data.readiness ?? {};
+      const artistCount = data.stats?.artistCount ?? 0;
       const requiredArtistCount =
         serverReadiness.requiredArtistCount ??
         Math.min(artistCount, Math.max(5, Math.ceil(artistCount * 0.25)));
@@ -56,16 +53,16 @@ export default function RadioView({
         typeof serverReadiness.radioReady === "boolean"
           ? serverReadiness.radioReady
           : artistCount > 0 &&
-            enrichedCount >= requiredArtistCount &&
-            embeddedCount >= requiredArtistCount &&
+            (serverReadiness.enrichedCount ?? 0) >= requiredArtistCount &&
+            (serverReadiness.embeddedCount ?? 0) >= requiredArtistCount &&
             playableTrackCount >= requiredPlayableTrackCount;
 
       const next = {
         loading: false,
         ready,
         artistCount,
-        enrichedCount: serverReadiness.enrichedCount ?? enrichedCount,
-        embeddedCount: serverReadiness.embeddedCount ?? embeddedCount,
+        enrichedCount: serverReadiness.enrichedCount ?? 0,
+        embeddedCount: serverReadiness.embeddedCount ?? 0,
         playableTrackCount,
         requiredArtistCount,
         requiredPlayableTrackCount,

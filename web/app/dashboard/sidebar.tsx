@@ -62,47 +62,28 @@ export default function Sidebar({
 
   // ── Derive completed steps from library state ────────────────
   function checkLibraryStatus() {
-    fetch("/api/library")
+    fetch("/api/readiness")
       .then((r) => r.json())
       .then((data) => {
-        const artists: Array<{ enriched: boolean; embedded: boolean }> =
-          data.artists ?? [];
         const done = new Set<number>();
         const steps = data.readiness?.steps;
-        if (steps) {
-          if (steps.imported) done.add(1);
-          if (steps.enriched) done.add(2);
-          if (steps.embedded) done.add(3);
-          if (steps.context) done.add(4);
-          if (steps.tracks) done.add(5);
-        } else {
-          const enrichedCount = artists.filter((a) => a.enriched).length;
-          const embeddedCount = artists.filter((a) => a.embedded).length;
-          const readyRatio = Math.max(5, Math.ceil(artists.length * 0.25));
-          if (artists.length > 0) done.add(1);
-          if (enrichedCount >= Math.min(artists.length, readyRatio)) done.add(2);
-          if (embeddedCount >= Math.min(artists.length, readyRatio)) done.add(3);
-          if ((data.stats?.mentionCount ?? 0) > 0) done.add(4);
-          if ((data.stats?.playableTrackCount ?? 0) >= Math.min(50, Math.max(10, Math.min(artists.length, readyRatio) * 3))) {
-            done.add(5);
-          }
-        }
+        if (steps?.imported) done.add(1);
+        if (steps?.enriched) done.add(2);
+        if (steps?.embedded) done.add(3);
+        if (steps?.context) done.add(4);
+        if (steps?.tracks) done.add(5);
         setCompletedSteps(done);
-      })
-      .catch(() => {});
 
-    fetch("/api/catalog/stats")
-      .then((r) => r.json())
-      .then((data) => {
+        const catalog = data.catalogStats;
         if (
-          typeof data?.library === "number" &&
-          typeof data?.discovered === "number" &&
-          typeof data?.embedded === "number"
+          typeof catalog?.library === "number" &&
+          typeof catalog?.discovered === "number" &&
+          typeof catalog?.embedded === "number"
         ) {
           setCatalogStats({
-            library: data.library,
-            discovered: data.discovered,
-            embedded: data.embedded,
+            library: catalog.library,
+            discovered: catalog.discovered,
+            embedded: catalog.embedded,
           });
         }
       })
