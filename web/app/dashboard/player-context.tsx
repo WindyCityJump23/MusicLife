@@ -453,11 +453,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     [transferToDevice]
   );
 
-  // ── Initial device discovery ─────────────────────────────────
-  useEffect(() => {
-    refreshDevices();
-  }, [refreshDevices]);
-
   // ── Poll now-playing while in connect mode so UI reflects the
   //    actual device (user may pause/skip from their phone). ────
   useEffect(() => {
