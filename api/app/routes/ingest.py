@@ -197,10 +197,19 @@ def ingest_sources(
 def _run_source_ingest(job_id: str):
     from app.services.source_ingest import run_source_ingest
 
+    def progress(msg: str):
+        update_job(job_id, JobStatus.RUNNING, msg[:500])
+
     update_job(job_id, JobStatus.RUNNING, "Crawling editorial sources...")
     try:
-        run_source_ingest()
-        update_job(job_id, JobStatus.SUCCESS, "Sources ingested")
+        summary = run_source_ingest(progress=progress)
+        sources = summary.get("sources_scanned", 0)
+        mentions = summary.get("mentions_found", 0)
+        tracks = summary.get("blog_tracks_added", 0)
+        msg = f"Scanned {sources} sources, found {mentions} mentions"
+        if tracks:
+            msg += f", added {tracks} tracks"
+        update_job(job_id, JobStatus.SUCCESS, msg[:500])
         print("source_ingest: completed")
     except Exception as exc:
         update_job(job_id, JobStatus.FAILED, str(exc)[:500])

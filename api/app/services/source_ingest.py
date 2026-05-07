@@ -85,16 +85,16 @@ def run_source_ingest(
     progress: Callable[[str], None] | None = None,
     spotify_client_id: str | None = None,
     spotify_client_secret: str | None = None,
-) -> None:
+) -> dict[str, int]:
     sources = _load_active_sources()
     if not sources:
         print("source_ingest: no active sources")
-        return
+        return {"sources_scanned": 0, "mentions_found": 0, "blog_tracks_added": 0}
 
     artist_index = _load_artist_index()
     if not artist_index:
         print("source_ingest: no artists in catalog yet — skipping mention extraction")
-        return
+        return {"sources_scanned": 0, "mentions_found": 0, "blog_tracks_added": 0}
 
     pattern = _build_artist_pattern(artist_index)
     total = len(sources)
@@ -129,10 +129,12 @@ def run_source_ingest(
             if is_reddit and skip_reddit:
                 print(f"source_ingest: {source['name']!r} — skipped (Reddit IP ban active this run)")
                 if progress:
-                    progress(f"Fetching editorial sources ({i + 1}/{total})")
+                    progress(f"Skipped {source['name']} ({i + 1}/{total}) — Reddit rate limited")
                 continue
 
             try:
+                if progress:
+                    progress(f"Fetching {source['name']} ({i + 1}/{total})")
                 entries = _fetch_feed(client, source["url"])
                 if is_reddit:
                     reddit_failures = 0  # successful Reddit request resets the counter
@@ -144,7 +146,7 @@ def run_source_ingest(
                         skip_reddit = True
                         print("source_ingest: Reddit IP rate-limited — skipping remaining Reddit sources this run")
                 if progress:
-                    progress(f"Fetching editorial sources ({i + 1}/{total})")
+                    progress(f"Skipped {source['name']} ({i + 1}/{total}) — feed unavailable")
                 continue
 
             # Level 1 — editorial mention extraction
@@ -164,10 +166,15 @@ def run_source_ingest(
                     print(f"source_ingest: {source['name']} — added {added} blog-sourced tracks")
 
             if progress:
-                progress(f"Fetching editorial sources ({i + 1}/{total})")
+                progress(
+                    f"Scanned {source['name']} ({i + 1}/{total}) — "
+                    f"{len(entries)} posts, {len(matched)} mentions"
+                )
 
     if not candidates:
         print("source_ingest: no mentions found")
+        if progress:
+            progress("No new source mentions found")
     else:
         if progress:
             progress(f"Fetching editorial sources (embedding {len(candidates)} mentions)")
@@ -177,6 +184,12 @@ def run_source_ingest(
     if spotify_token:
         print(f"source_ingest: blog track extraction — {blog_tracks_added} tracks upserted "
               f"({MAX_BLOG_TRACK_SEARCHES - blog_searches_remaining} Spotify searches)")
+
+    return {
+        "sources_scanned": total,
+        "mentions_found": len(candidates),
+        "blog_tracks_added": blog_tracks_added,
+    }
 
 
 # ---------------------------------------------------------------------------
