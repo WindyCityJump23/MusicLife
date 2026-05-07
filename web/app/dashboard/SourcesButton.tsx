@@ -25,7 +25,7 @@ export default function SourcesButton({
       <p className="text-[10px] text-neutral-500 leading-snug px-0.5">
         {disabled
           ? "Set up your music profile first so sources can match against your artists."
-          : "Updates blogs, Reddit, press mentions, and blog-discovered tracks without rebuilding your full profile."}
+          : "Updates blogs, Reddit, and press mentions without rebuilding your full profile."}
       </p>
 
       {isRunning && (
