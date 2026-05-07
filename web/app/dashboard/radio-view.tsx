@@ -96,7 +96,7 @@ export default function RadioView({
   }
 
   return (
-    <div className="max-w-4xl space-y-5">
+    <div className="max-w-none space-y-5">
       <RadioHero readiness={readiness} />
       <DiscoverView onNavigate={onNavigate} />
     </div>

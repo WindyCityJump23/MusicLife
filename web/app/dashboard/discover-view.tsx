@@ -44,6 +44,15 @@ type DiscoveryLane = {
   subtitle: string;
 };
 
+function emptyDiscoveryGroups(): Record<DiscoveryLaneId, SongRecommendation[]> {
+  return {
+    radio_hits: [],
+    popular: [],
+    deep_cuts: [],
+  };
+}
+
+
 const PRESETS: Preset[] = [
   { label: "Balanced",      desc: "Equal blend of all three signals",         weights: { affinity: 40, context: 40, editorial: 20 } },
   { label: "Pure Taste",    desc: "Closest to your saved listening history",   weights: { affinity: 75, context: 15, editorial: 10 } },
@@ -84,14 +93,79 @@ function laneForSong(song: SongRecommendation): DiscoveryLaneId {
   return "popular";
 }
 
+function targetLaneCounts(total: number): { radio_hits: number; deep_cuts: number } {
+  if (total <= 1) return { radio_hits: total, deep_cuts: 0 };
+  if (total === 2) return { radio_hits: 1, deep_cuts: 1 };
+
+  const radio_hits = Math.max(1, Math.round(total * 0.24));
+  const deep_cuts = Math.max(1, Math.round(total * 0.32));
+  const overflow = Math.max(0, radio_hits + deep_cuts - (total - 1));
+
+  return {
+    radio_hits,
+    deep_cuts: Math.max(1, deep_cuts - overflow),
+  };
+}
+
 function groupSongsByLane(songs: SongRecommendation[]): Record<DiscoveryLaneId, SongRecommendation[]> {
-  return songs.reduce<Record<DiscoveryLaneId, SongRecommendation[]>>(
-    (groups, song) => {
-      groups[laneForSong(song)].push(song);
-      return groups;
-    },
-    { radio_hits: [], popular: [], deep_cuts: [] }
+  if (songs.length === 0) {
+    return emptyDiscoveryGroups();
+  }
+
+  const assigned = songs.map((song, originalIndex) => ({
+    song,
+    originalIndex,
+    lane: null as DiscoveryLaneId | null,
+    preferredLane: laneForSong(song),
+    popularity: song.signals.track_popularity ?? 0.5,
+  }));
+  const targets = targetLaneCounts(songs.length);
+  const byRecognition = [...assigned].sort(
+    (a, b) => b.popularity - a.popularity || a.originalIndex - b.originalIndex
   );
+
+  assigned
+    .filter(({ preferredLane }) => preferredLane === "deep_cuts")
+    .forEach((item) => {
+      item.lane = "deep_cuts";
+    });
+
+  assigned
+    .filter(({ preferredLane, lane }) => preferredLane === "radio_hits" && lane === null)
+    .forEach((item) => {
+      item.lane = "radio_hits";
+    });
+
+  byRecognition
+    .filter(({ lane }) => lane === null)
+    .slice(0, Math.max(0, targets.radio_hits - assigned.filter(({ lane }) => lane === "radio_hits").length))
+    .forEach((item) => {
+      item.lane = "radio_hits";
+    });
+
+  [...byRecognition]
+    .reverse()
+    .filter(({ lane }) => lane === null)
+    .slice(0, Math.max(0, targets.deep_cuts - assigned.filter(({ lane }) => lane === "deep_cuts").length))
+    .forEach((item) => {
+      item.lane = "deep_cuts";
+    });
+
+  assigned
+    .filter(({ lane }) => lane === null)
+    .forEach((item) => {
+      item.lane = "popular";
+    });
+
+  return assigned
+    .sort((a, b) => a.originalIndex - b.originalIndex)
+    .reduce<Record<DiscoveryLaneId, SongRecommendation[]>>(
+      (groups, item) => {
+        groups[item.lane ?? "popular"].push(item.song);
+        return groups;
+      },
+      emptyDiscoveryGroups()
+    );
 }
 
 function interleaveForPlayback(songs: SongRecommendation[]): SongRecommendation[] {
@@ -725,7 +799,7 @@ export default function DiscoverView({
             </div>
           )}
 
-          <div className="grid gap-3 lg:grid-cols-3">
+          <div className="grid gap-4 2xl:grid-cols-3">
             {DISCOVERY_LANES.map((lane) => (
               <DiscoveryColumn
                 key={lane.id}
@@ -776,25 +850,25 @@ function DiscoveryColumn({
   onPlayColumn: (songs: SongRecommendation[]) => void;
 }) {
   return (
-    <section className="min-w-0 border border-neutral-200 rounded-lg overflow-hidden bg-white">
-      <div className="flex items-start justify-between gap-3 px-3 py-3 border-b border-neutral-100 bg-neutral-50/70">
+    <section className="min-w-0 border border-neutral-200 rounded-lg overflow-hidden bg-white shadow-sm shadow-neutral-100/70">
+      <div className="flex items-start justify-between gap-3 px-4 py-3.5 border-b border-neutral-100 bg-neutral-50/70">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-semibold text-neutral-900 truncate">
+            <h3 className="text-base font-semibold text-neutral-900 truncate">
               {lane.title}
             </h3>
-            <span className="text-[10px] tabular-nums text-neutral-400">
+            <span className="text-xs tabular-nums text-neutral-400">
               {songs.length}
             </span>
           </div>
-          <p className="text-[11px] text-neutral-400 mt-0.5 truncate">
+          <p className="text-xs text-neutral-500 mt-0.5 truncate">
             {lane.subtitle}
           </p>
         </div>
         <button
           onClick={() => onPlayColumn(songs)}
           disabled={songs.length === 0}
-          className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-neutral-900 text-white hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-25 disabled:cursor-not-allowed"
+          className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center bg-neutral-900 text-white hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-25 disabled:cursor-not-allowed"
           title={`Play ${lane.title}`}
         >
           <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
@@ -818,7 +892,7 @@ function DiscoveryColumn({
           ))}
         </div>
       ) : (
-        <div className="px-3 py-8 text-center">
+        <div className="px-4 py-10 text-center">
           <p className="text-xs text-neutral-400">
             No matches in this lane yet.
           </p>
@@ -919,9 +993,15 @@ function SongRow({
 
   return (
     <div className="group">
-      <div className="flex items-center gap-2 px-3 py-2.5 hover:bg-neutral-50 transition-colors">
+      <div
+        className={[
+          compact
+            ? "grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-2 px-4 py-3.5 hover:bg-neutral-50 transition-colors"
+            : "flex items-center gap-2 px-3 py-2.5 hover:bg-neutral-50 transition-colors",
+        ].join(" ")}
+      >
         {/* Rank — hidden on mobile */}
-        <span className={["hidden sm:block text-right text-xs tabular-nums text-neutral-300 font-medium shrink-0", compact ? "w-4" : "w-6"].join(" ")}>
+        <span className={["text-right text-xs tabular-nums text-neutral-300 font-medium shrink-0", compact ? "hidden" : "hidden sm:block w-6"].join(" ")}>
           {rank}
         </span>
 
@@ -930,7 +1010,10 @@ function SongRow({
           onClick={handlePlay}
           disabled={playState === "loading"}
           title={`Play ${song.track_name}`}
-          className="shrink-0 w-9 h-9 sm:w-8 sm:h-8 rounded-full flex items-center justify-center bg-neutral-900 text-white hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-40"
+          className={[
+            "shrink-0 rounded-full flex items-center justify-center bg-neutral-900 text-white hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-40",
+            compact ? "w-10 h-10" : "w-9 h-9 sm:w-8 sm:h-8",
+          ].join(" ")}
         >
           {playState === "loading" ? (
             <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -945,9 +1028,16 @@ function SongRow({
         </button>
 
         {/* Song info */}
-        <div className="flex-1 min-w-0">
+        <div className={["min-w-0", compact ? "pt-0.5" : "flex-1"].join(" ")}>
           <div className="flex items-center gap-1.5">
-            <span className="text-sm font-medium text-neutral-900 truncate">
+            <span
+              className={[
+                "text-neutral-900",
+                compact
+                  ? "block text-sm font-semibold leading-snug line-clamp-2 break-words"
+                  : "text-sm font-medium truncate",
+              ].join(" ")}
+            >
               {song.track_name}
             </span>
             {song.explicit && (
@@ -979,7 +1069,7 @@ function SongRow({
         <div
           className={[
             "shrink-0 rounded-full flex items-center justify-center text-[10px] font-bold",
-            compact ? "hidden xl:flex w-8 h-8" : "w-8 h-8 sm:w-10 sm:h-10 sm:text-xs",
+            compact ? "w-9 h-9 text-xs" : "w-8 h-8 sm:w-10 sm:h-10 sm:text-xs",
           ].join(" ")}
           style={{
             background:
@@ -996,7 +1086,12 @@ function SongRow({
         </div>
 
         {/* Action buttons — compact group */}
-        <div className="flex items-center gap-0 shrink-0">
+        <div
+          className={[
+            "flex items-center gap-0 shrink-0",
+            compact ? "col-start-2 col-span-2 row-start-2 justify-self-start" : "",
+          ].join(" ")}
+        >
           {/* Thumbs up */}
           <button
             onClick={() => handleFeedback(1)}
@@ -1088,7 +1183,10 @@ function SongRow({
         {(song.top_mention || song.reasons.length > 1 || song.genres.length > 0) && (
           <button
             onClick={() => setExpanded(!expanded)}
-            className="shrink-0 text-neutral-300 hover:text-neutral-500 transition-colors text-xs"
+            className={[
+              "shrink-0 text-neutral-300 hover:text-neutral-500 transition-colors text-xs",
+              compact ? "col-start-3 row-start-2 self-center justify-self-end" : "",
+            ].join(" ")}
             title="More info"
           >
             {expanded ? "\u25be" : "\u25b8"}
@@ -1098,7 +1196,7 @@ function SongRow({
 
       {/* Expanded details */}
       {expanded && (
-        <div className="px-3 pb-3 pl-12 space-y-2">
+        <div className={["px-3 pb-3 space-y-2", compact ? "sm:pl-[4.75rem]" : "pl-12"].join(" ")}>
           {/* Signal breakdown */}
           <div className="flex gap-3 text-[10px] flex-wrap">
             <SignalPill label="Taste" value={song.signals.affinity} color="emerald" />
