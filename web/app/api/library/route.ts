@@ -157,10 +157,10 @@ export async function GET(req: NextRequest) {
       playableTrackCount,
       steps: {
         imported: artistCount > 0,
-        enriched: enrichedCount >= requiredArtists,
-        embedded: embeddedCount >= requiredArtists,
+        enriched: artistCount > 0 && enrichedCount >= requiredArtists,
+        embedded: artistCount > 0 && embeddedCount >= requiredArtists,
         context: (mentionCount ?? 0) > 0,
-        tracks: playableTrackCount >= requiredPlayableTracks,
+        tracks: artistCount > 0 && playableTrackCount >= requiredPlayableTracks,
       },
     },
     artists,
