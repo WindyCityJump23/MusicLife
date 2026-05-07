@@ -81,6 +81,15 @@ const DISCOVERY_LANES: DiscoveryLane[] = [
 const TARGET_SONGS = 25;
 const FALLBACK_ARTIST_SEARCH_LIMIT = 10;
 const FALLBACK_TRACK_SEARCH_LIMIT = 6;
+const DISCOVER_CACHE_KEY = "musiclife:discover:last-results";
+const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
+
+type DiscoverCachePayload = {
+  savedAt: number;
+  prompt: string;
+  weights: Preset["weights"];
+  results: SongRecommendation[];
+};
 
 function laneForSong(song: SongRecommendation): DiscoveryLaneId {
   const popularity = song.signals.track_popularity ?? 0.5;
@@ -194,6 +203,53 @@ function interleaveForPlayback(songs: SongRecommendation[]): SongRecommendation[
   return mixed;
 }
 
+function toQueueTracks(songs: SongRecommendation[]): QueueTrack[] {
+  return interleaveForPlayback(songs)
+    .filter((s) => s.spotify_track_id)
+    .map((s) => ({
+      spotifyTrackId: s.spotify_track_id,
+      trackName: s.track_name,
+      artistName: s.artist_name,
+    }));
+}
+
+function sameWeights(a: Preset["weights"], b: Preset["weights"]): boolean {
+  return a.affinity === b.affinity && a.context === b.context && a.editorial === b.editorial;
+}
+
+function readDiscoverCache(prompt: string, weights: Preset["weights"]): SongRecommendation[] | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(DISCOVER_CACHE_KEY);
+    if (!raw) return null;
+    const cached = JSON.parse(raw) as DiscoverCachePayload;
+    const fresh = Date.now() - cached.savedAt < DISCOVER_CACHE_TTL_MS;
+    if (!fresh || cached.prompt !== prompt || !sameWeights(cached.weights, weights)) return null;
+    return Array.isArray(cached.results) ? cached.results : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDiscoverCache(
+  prompt: string,
+  weights: Preset["weights"],
+  results: SongRecommendation[]
+): void {
+  if (typeof window === "undefined") return;
+  try {
+    const payload: DiscoverCachePayload = {
+      savedAt: Date.now(),
+      prompt,
+      weights,
+      results,
+    };
+    window.sessionStorage.setItem(DISCOVER_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    /* Ignore storage quota/privacy-mode failures. */
+  }
+}
+
 function chooseFallbackTracks(tracks: any[]): any[] { // eslint-disable-line @typescript-eslint/no-explicit-any
   const seen = new Set<string>();
   const unique = tracks.filter((track) => {
@@ -247,9 +303,32 @@ export default function DiscoverView({
   useEffect(() => {
     if (autoLoadedRef.current) return;
     autoLoadedRef.current = true;
+    const cached = readDiscoverCache(prompt, weights);
+    if (cached) {
+      setResults(cached);
+      setQueue(toQueueTracks(cached));
+      void refreshTrackState(cached);
+      return;
+    }
     handleSubmit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function refreshTrackState(songs: SongRecommendation[]) {
+    const trackIds = songs.map((s) => s.spotify_track_id).filter(Boolean);
+    if (trackIds.length === 0) {
+      setFavoritedIds(new Set());
+      setFeedbackMap({});
+      return;
+    }
+
+    try {
+      const stateRes = await fetch(`/api/track-state?ids=${trackIds.join(",")}`);
+      const stateData = await stateRes.json().catch(() => ({}));
+      setFavoritedIds(new Set(stateData.favorited ?? []));
+      setFeedbackMap(stateData.feedback ?? {});
+    } catch {}
+  }
 
   async function handleSubmit() {
     setLoading(true);
@@ -443,27 +522,13 @@ export default function DiscoverView({
       }
 
       setResults(deduped);
+      writeDiscoverCache(prompt, weights, deduped);
 
       // Set the player queue so songs auto-advance
-      const queueTracks: QueueTrack[] = interleaveForPlayback(deduped)
-        .filter((s) => s.spotify_track_id)
-        .map((s) => ({
-          spotifyTrackId: s.spotify_track_id,
-          trackName: s.track_name,
-          artistName: s.artist_name,
-        }));
-      setQueue(queueTracks);
+      setQueue(toQueueTracks(deduped));
 
       // Fetch initial favorite and feedback state
-      const trackIds = deduped.map((s) => s.spotify_track_id).filter(Boolean);
-      if (trackIds.length > 0) {
-        try {
-          const stateRes = await fetch(`/api/track-state?ids=${trackIds.join(",")}`);
-          const stateData = await stateRes.json().catch(() => ({}));
-          setFavoritedIds(new Set(stateData.favorited ?? []));
-          setFeedbackMap(stateData.feedback ?? {});
-        } catch {}
-      }
+      await refreshTrackState(deduped);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
       setResults([]);
@@ -1501,14 +1566,13 @@ function EmptyNoResults() {
   >("loading");
 
   useEffect(() => {
-    fetch("/api/library")
+    fetch("/api/readiness")
       .then((r) => r.json())
       .then((data) => {
-        const artists: Array<{ enriched: boolean; embedded: boolean }> =
-          data.artists ?? [];
-        if (artists.length === 0) return setMissingStep("sync");
-        if (!artists.some((a) => a.enriched)) return setMissingStep("enrich");
-        if (!artists.some((a) => a.embedded)) return setMissingStep("embed");
+        const steps = data.readiness?.steps;
+        if (!steps?.imported) return setMissingStep("sync");
+        if (!steps?.enriched) return setMissingStep("enrich");
+        if (!steps?.embedded) return setMissingStep("embed");
         setMissingStep("ready");
       })
       .catch(() => setMissingStep("unknown"));
