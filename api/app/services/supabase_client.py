@@ -36,11 +36,7 @@ class _LazyAdminClient:
     def _get(self) -> Client:
         now = time.monotonic()
         if self._client is None or (now - self._created_at) > self._CLIENT_TTL_SECONDS:
-            from app.config import settings  # lazy: see module note above
-            self._client = create_client(
-                settings.supabase_url,
-                settings.supabase_service_role_key,
-            )
+            self._client = create_admin_client()
             self._created_at = now
         return self._client
 
@@ -63,6 +59,21 @@ admin_supabase: Client = _LazyAdminClient()  # type: ignore[assignment]
 
 
 T = TypeVar("T")
+
+
+def create_admin_client() -> Client:
+    """Create a service-role Supabase client.
+
+    Background jobs can use the cached lazy client above, but request-scoped
+    API calls should use a fresh client to avoid reusing stale HTTP/2
+    keep-alive connections after Supabase has closed them.
+    """
+    from app.config import settings  # lazy: see module note above
+
+    return create_client(
+        settings.supabase_url,
+        settings.supabase_service_role_key,
+    )
 
 
 def retry_on_disconnect(fn: Callable[[], T], *, attempts: int = 2) -> T:
@@ -95,8 +106,8 @@ def get_user_scoped_supabase(jwt: str) -> Client:
     """Create a per-request Supabase client constrained by the caller JWT.
 
     When the token is the service role key itself (server-to-server BFF calls)
-    we return the admin client directly — it already has full access and the
-    anon-key path would silently fail RLS for catalog-only tables.
+    we return a fresh admin client. It still has full access, but it does not
+    reuse a stale HTTP/2 keep-alive from a previous user-facing request.
 
     For real user JWTs, we use the anon key + Authorization header so Postgres
     RLS policies evaluate against `auth.uid()` of the caller.
@@ -104,7 +115,7 @@ def get_user_scoped_supabase(jwt: str) -> Client:
     from app.config import settings  # lazy: see module note above
 
     if jwt == settings.supabase_service_role_key:
-        return admin_supabase
+        return create_admin_client()
 
     options = ClientOptions(
         headers={"Authorization": f"Bearer {jwt}"},
