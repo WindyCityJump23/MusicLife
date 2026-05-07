@@ -21,7 +21,7 @@ from typing import Callable
 import httpx
 
 from app.config import settings
-from app.services.supabase_client import admin_supabase
+from app.services.supabase_client import admin_supabase, retry_on_disconnect
 
 
 # ---------------------------------------------------------------------------
@@ -32,13 +32,16 @@ from app.services.supabase_client import admin_supabase
 def run_artist_enrichment(
     progress: Callable[[str], None] | None = None,
 ) -> None:
-    result = (
-        admin_supabase.table("artists")
-        .select("id, name, spotify_artist_id")
-        .is_("musicbrainz_id", "null")
-        .is_("lastfm_url", "null")
-        .limit(200)
-        .execute()
+    result = retry_on_disconnect(
+        lambda: (
+            admin_supabase.table("artists")
+            .select("id, name, spotify_artist_id")
+            .is_("musicbrainz_id", "null")
+            .is_("lastfm_url", "null")
+            .limit(200)
+            .execute()
+        ),
+        attempts=3,
     )
 
     candidates = result.data or []
@@ -105,7 +108,15 @@ def _enrich_one(client: httpx.Client, artist: dict) -> None:
         print(f"artist_enrichment: Last.fm failed for {name!r}: {exc}")
 
     if update:
-        admin_supabase.table("artists").update(update).eq("id", artist_id).execute()
+        retry_on_disconnect(
+            lambda: (
+                admin_supabase.table("artists")
+                .update(update)
+                .eq("id", artist_id)
+                .execute()
+            ),
+            attempts=3,
+        )
         print(f"artist_enrichment: updated {name!r} — fields: {list(update.keys())}")
     else:
         print(f"artist_enrichment: no data found for {name!r}")
