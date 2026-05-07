@@ -10,7 +10,9 @@ type RadioReadiness = {
   artistCount: number;
   enrichedCount: number;
   embeddedCount: number;
-  catalogTrackCount: number;
+  playableTrackCount: number;
+  requiredArtistCount: number;
+  requiredPlayableTrackCount: number;
 };
 
 const EMPTY_READINESS: RadioReadiness = {
@@ -19,7 +21,9 @@ const EMPTY_READINESS: RadioReadiness = {
   artistCount: 0,
   enrichedCount: 0,
   embeddedCount: 0,
-  catalogTrackCount: 0,
+  playableTrackCount: 0,
+  requiredArtistCount: 0,
+  requiredPlayableTrackCount: 0,
 };
 
 export default function RadioView({
@@ -35,29 +39,36 @@ export default function RadioView({
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? "Could not check radio setup");
 
-      const artists: Array<{ enriched: boolean; embedded: boolean }> =
-        data.artists ?? [];
+      const artists: Array<{ enriched: boolean; embedded: boolean }> = data.artists ?? [];
       const artistCount = artists.length;
       const enrichedCount = artists.filter((a) => a.enriched).length;
       const embeddedCount = artists.filter((a) => a.embedded).length;
-      const catalogTrackCount = data.stats?.catalogTrackCount ?? 0;
-      const minimumReadyArtists = Math.min(
-        artistCount,
-        Math.max(5, Math.ceil(artistCount * 0.25))
-      );
+      const serverReadiness = data.readiness ?? {};
+      const requiredArtistCount =
+        serverReadiness.requiredArtistCount ??
+        Math.min(artistCount, Math.max(5, Math.ceil(artistCount * 0.25)));
+      const playableTrackCount =
+        serverReadiness.playableTrackCount ?? data.stats?.playableTrackCount ?? 0;
+      const requiredPlayableTrackCount =
+        serverReadiness.requiredPlayableTrackCount ??
+        Math.min(50, Math.max(10, requiredArtistCount * 3));
       const ready =
-        artistCount > 0 &&
-        enrichedCount >= minimumReadyArtists &&
-        embeddedCount >= minimumReadyArtists &&
-        catalogTrackCount >= Math.max(25, artistCount * 2);
+        typeof serverReadiness.radioReady === "boolean"
+          ? serverReadiness.radioReady
+          : artistCount > 0 &&
+            enrichedCount >= requiredArtistCount &&
+            embeddedCount >= requiredArtistCount &&
+            playableTrackCount >= requiredPlayableTrackCount;
 
       const next = {
         loading: false,
         ready,
         artistCount,
-        enrichedCount,
-        embeddedCount,
-        catalogTrackCount,
+        enrichedCount: serverReadiness.enrichedCount ?? enrichedCount,
+        embeddedCount: serverReadiness.embeddedCount ?? embeddedCount,
+        playableTrackCount,
+        requiredArtistCount,
+        requiredPlayableTrackCount,
       };
       setReadiness(next);
       return next;
@@ -135,7 +146,7 @@ function RadioHero({ readiness }: { readiness: RadioReadiness }) {
           <div className="grid grid-cols-3 gap-2 text-center shrink-0">
             <Metric value={readiness.artistCount} label="artists" />
             <Metric value={readiness.embeddedCount} label="modeled" />
-            <Metric value={readiness.catalogTrackCount} label="tracks" />
+            <Metric value={readiness.playableTrackCount} label="tracks" />
           </div>
         </div>
       </div>
@@ -152,10 +163,10 @@ function RadioSetupGate({
   onProgress: () => void;
   onComplete: () => void;
 }) {
-  const artistPct =
-    readiness.artistCount > 0
-      ? Math.round((readiness.embeddedCount / readiness.artistCount) * 100)
-      : 0;
+  const tracksNeeded = Math.max(
+    0,
+    readiness.requiredPlayableTrackCount - readiness.playableTrackCount
+  );
 
   return (
     <section className="max-w-4xl rounded-lg border border-neutral-200 bg-white overflow-hidden">
@@ -169,9 +180,8 @@ function RadioSetupGate({
               Build your first station.
             </h3>
             <p className="mt-2 text-sm text-neutral-500 leading-relaxed max-w-xl">
-              MusicLife needs enough Spotify history and taste modeling before
-              radio will feel useful. Run setup here, then come back to start a
-              station.
+              MusicLife builds a taste profile first, then prepares enough
+              playable tracks from your artists to make radio feel immediate.
             </p>
           </div>
 
@@ -186,13 +196,17 @@ function RadioSetupGate({
           />
           <ReadinessTile
             label="Taste modeled"
-            value={`${artistPct}%`}
-            ready={artistPct >= 25 || readiness.embeddedCount >= 5}
+            value={`${readiness.embeddedCount}/${readiness.requiredArtistCount}`}
+            ready={readiness.embeddedCount >= readiness.requiredArtistCount}
           />
           <ReadinessTile
             label="Playable tracks"
-            value={readiness.catalogTrackCount}
-            ready={readiness.catalogTrackCount >= 25}
+            value={
+              tracksNeeded > 0
+                ? `${readiness.playableTrackCount}/${readiness.requiredPlayableTrackCount}`
+                : readiness.playableTrackCount
+            }
+            ready={readiness.playableTrackCount >= readiness.requiredPlayableTrackCount}
           />
         </div>
       </div>
