@@ -134,7 +134,7 @@ function DashboardInner() {
           role="main"
           className="lg:overflow-y-auto lg:h-screen min-h-[calc(100vh-3.5rem)] lg:min-h-0"
         >
-          <div className="px-4 sm:px-6 lg:px-8 py-4 lg:py-6 max-w-5xl pb-24 lg:pb-20">
+          <div className="px-4 sm:px-6 lg:px-8 py-4 lg:py-6 max-w-[1400px] pb-24 lg:pb-20">
             <header className="mb-4 lg:mb-6 hidden lg:block">
               <h2 className="text-lg font-semibold tracking-tight">{TITLES[view]}</h2>
             </header>
