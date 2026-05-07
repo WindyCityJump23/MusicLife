@@ -197,7 +197,10 @@ function RadioSetupGate({
           <ReadinessTile
             label="Taste modeled"
             value={`${readiness.embeddedCount}/${readiness.requiredArtistCount}`}
-            ready={readiness.embeddedCount >= readiness.requiredArtistCount}
+            ready={
+              readiness.requiredArtistCount > 0 &&
+              readiness.embeddedCount >= readiness.requiredArtistCount
+            }
           />
           <ReadinessTile
             label="Playable tracks"
@@ -206,7 +209,10 @@ function RadioSetupGate({
                 ? `${readiness.playableTrackCount}/${readiness.requiredPlayableTrackCount}`
                 : readiness.playableTrackCount
             }
-            ready={readiness.playableTrackCount >= readiness.requiredPlayableTrackCount}
+            ready={
+              readiness.requiredPlayableTrackCount > 0 &&
+              readiness.playableTrackCount >= readiness.requiredPlayableTrackCount
+            }
           />
         </div>
       </div>
