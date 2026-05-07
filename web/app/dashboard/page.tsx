@@ -3,23 +3,21 @@
 import { useCallback, useEffect, useState } from "react";
 import Sidebar, { type View } from "./sidebar";
 import LibraryView from "./library-view";
-import DiscoverView from "./discover-view";
+import RadioView from "./radio-view";
 import PlaylistsView from "./playlists-view";
 import ActivityView from "./activity-view";
-import SavedView from "./saved-view";
 import Player from "./Player";
 import { PlayerProvider, usePlayer } from "./player-context";
 
 const TITLES: Record<View, string> = {
-  library: "Library",
-  discover: "Discover",
-  playlists: "Playlists",
-  activity: "Activity",
-  saved: "Saved views",
+  discover: "MusicLife Radio",
+  playlists: "Full Playlists",
+  library: "Taste Profile",
+  activity: "History",
 };
 
 function DashboardInner() {
-  const [view, setView] = useState<View>("library");
+  const [view, setView] = useState<View>("discover");
   const [navOpen, setNavOpen] = useState(false);
   const [playerOpen, setPlayerOpen] = useState(false);
   const { playingArtist, embedTrackId, queue, currentIndex } = usePlayer();
@@ -141,13 +139,12 @@ function DashboardInner() {
               <h2 className="text-lg font-semibold tracking-tight">{TITLES[view]}</h2>
             </header>
             <div className="view-fade-in" key={view}>
+              {view === "discover" && <RadioView onNavigate={(v) => setView(v as View)} />}
+              {view === "playlists" && <PlaylistsView />}
               {view === "library" && (
                 <LibraryView onSetupComplete={handleSetupComplete} />
               )}
-              {view === "discover" && <DiscoverView onNavigate={(v) => setView(v as View)} />}
-              {view === "playlists" && <PlaylistsView />}
               {view === "activity" && <ActivityView />}
-              {view === "saved" && <SavedView />}
             </div>
           </div>
         </main>
@@ -183,7 +180,7 @@ function DashboardInner() {
               <Player />
             </div>
           </aside>
-        ) : (
+        ) : playerOpen ? (
           /* Collapsed player — slim bar at bottom of main, desktop only */
           <aside
             role="complementary"
@@ -220,6 +217,18 @@ function DashboardInner() {
             <div className="hidden lg:flex items-center gap-3 text-white/60 text-xs">
               <span className="text-lg">🎵</span>
               <span>Play a song to open the player</span>
+            </div>
+          </aside>
+        ) : (
+          <aside
+            role="complementary"
+            aria-label="Player"
+            className="hidden lg:flex lg:fixed lg:bottom-0 lg:right-0 lg:left-[240px] lg:h-14 lg:items-center lg:justify-center lg:z-20"
+            style={{ background: "linear-gradient(90deg, #1a1a2e 0%, #16213e 100%)" }}
+          >
+            <div className="hidden lg:flex items-center gap-3 text-white/60 text-xs">
+              <span>▶</span>
+              <span>Start a station to open the player</span>
             </div>
           </aside>
         )}
