@@ -23,6 +23,7 @@ type SongRecommendation = {
   artist_id: string;
   artist_name: string;
   album_name: string;
+  release_date: string | null;
   duration_ms: number;
   explicit: boolean;
   spotify_track_id: string;
@@ -35,6 +36,13 @@ type SongRecommendation = {
 };
 
 type Preset = { label: string; desc: string; weights: { affinity: number; context: number; editorial: number } };
+type DiscoveryLaneId = "radio_hits" | "popular" | "deep_cuts";
+
+type DiscoveryLane = {
+  id: DiscoveryLaneId;
+  title: string;
+  subtitle: string;
+};
 
 const PRESETS: Preset[] = [
   { label: "Balanced",      desc: "Equal blend of all three signals",         weights: { affinity: 40, context: 40, editorial: 20 } },
@@ -42,6 +50,93 @@ const PRESETS: Preset[] = [
   { label: "Trending",      desc: "Artists getting press buzz right now",      weights: { affinity: 25, context: 15, editorial: 60 } },
   { label: "Match Search",  desc: "Type a prompt above to activate this mode", weights: { affinity: 20, context: 65, editorial: 15 } },
 ];
+
+const DISCOVERY_LANES: DiscoveryLane[] = [
+  {
+    id: "radio_hits",
+    title: "Radio hits",
+    subtitle: "High-recognition songs",
+  },
+  {
+    id: "popular",
+    title: "Popular",
+    subtitle: "Known, but less obvious",
+  },
+  {
+    id: "deep_cuts",
+    title: "Deep cuts / indie",
+    subtitle: "Lower-popularity finds",
+  },
+];
+
+function laneForSong(song: SongRecommendation): DiscoveryLaneId {
+  const popularity = song.signals.track_popularity ?? 0.5;
+  const reasons = song.reasons.join(" ").toLowerCase();
+  const genres = song.genres.join(" ").toLowerCase();
+  const hasDeepSignal =
+    reasons.includes("deep cut") ||
+    reasons.includes("obscure") ||
+    genres.includes("indie") ||
+    genres.includes("underground");
+
+  if (hasDeepSignal || popularity < 0.46) return "deep_cuts";
+  if (popularity >= 0.74) return "radio_hits";
+  return "popular";
+}
+
+function groupSongsByLane(songs: SongRecommendation[]): Record<DiscoveryLaneId, SongRecommendation[]> {
+  return songs.reduce<Record<DiscoveryLaneId, SongRecommendation[]>>(
+    (groups, song) => {
+      groups[laneForSong(song)].push(song);
+      return groups;
+    },
+    { radio_hits: [], popular: [], deep_cuts: [] }
+  );
+}
+
+function interleaveForPlayback(songs: SongRecommendation[]): SongRecommendation[] {
+  const groups = groupSongsByLane(songs);
+  const order: DiscoveryLaneId[] = ["deep_cuts", "popular", "radio_hits"];
+  const mixed: SongRecommendation[] = [];
+  let index = 0;
+
+  while (mixed.length < songs.length) {
+    let added = false;
+    for (const lane of order) {
+      const song = groups[lane][index];
+      if (song) {
+        mixed.push(song);
+        added = true;
+      }
+    }
+    if (!added) break;
+    index += 1;
+  }
+
+  return mixed;
+}
+
+function chooseFallbackTracks(tracks: any[]): any[] { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const seen = new Set<string>();
+  const unique = tracks.filter((track) => {
+    const key = `${track?.name ?? ""}|${track?.artists?.[0]?.name ?? ""}`.toLowerCase();
+    if (!key.trim() || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  const deep = unique.find((track) => (track.popularity ?? 50) < 46);
+  const mid = unique.find((track) => {
+    const popularity = track.popularity ?? 50;
+    return popularity >= 46 && popularity < 74;
+  });
+  const hit = unique.find((track) => (track.popularity ?? 50) >= 74);
+
+  return [deep, mid, hit, ...unique]
+    .filter(Boolean)
+    .filter((track, index, list) => list.findIndex((candidate) => candidate.id === track.id) === index)
+    .slice(0, 2);
+}
 
 export default function DiscoverView({
   onNavigate,
@@ -123,6 +218,7 @@ export default function DiscoverView({
             artist_id: r.artist_id ?? "",
             artist_name: r.artist_name ?? "",
             album_name: r.album_name ?? "",
+            release_date: r.release_date ?? null,
             duration_ms: r.duration_ms ?? 0,
             explicit: r.explicit ?? false,
             spotify_track_id: r.spotify_track_id ?? "",
@@ -204,22 +300,24 @@ export default function DiscoverView({
           missingArtists.slice(0, 20).map(async (artist: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
             try {
               const searchRes = await fetch(
-                `https://api.spotify.com/v1/search?q=${encodeURIComponent(`artist:${artist.artist_name}`)}&type=track&market=US&limit=5`,
+                `https://api.spotify.com/v1/search?q=${encodeURIComponent(`artist:${artist.artist_name}`)}&type=track&market=US&limit=10`,
                 { headers: spotifyHeaders }
               );
               if (!searchRes.ok) return [];
               const searchData = await searchRes.json();
-              const tracks = (searchData.tracks?.items ?? []).slice(0, 3);
+              const tracks = chooseFallbackTracks(searchData.tracks?.items ?? []);
 
               return tracks.map((track: any): SongRecommendation => { // eslint-disable-line @typescript-eslint/no-explicit-any
                 const trackPop = (track.popularity ?? 50) / 100;
-                const songScore = artist.score * (0.7 + 0.3 * trackPop);
+                const depthBoost = trackPop < 0.46 ? 1.08 : trackPop > 0.74 ? 0.88 : 1.0;
+                const songScore = artist.score * (0.78 + 0.18 * trackPop) * depthBoost;
                 return {
                   track_id: null,
                   track_name: track.name,
                   artist_id: artist.artist_id,
                   artist_name: track.artists?.[0]?.name ?? artist.artist_name,
                   album_name: track.album?.name ?? "",
+                  release_date: track.album?.release_date ?? null,
                   duration_ms: track.duration_ms ?? 0,
                   explicit: track.explicit ?? false,
                   spotify_track_id: track.id,
@@ -270,7 +368,7 @@ export default function DiscoverView({
       setResults(deduped);
 
       // Set the player queue so songs auto-advance
-      const queueTracks: QueueTrack[] = deduped
+      const queueTracks: QueueTrack[] = interleaveForPlayback(deduped)
         .filter((s) => s.spotify_track_id)
         .map((s) => ({
           spotifyTrackId: s.spotify_track_id,
@@ -373,7 +471,7 @@ export default function DiscoverView({
   }
 
   return (
-    <div className="max-w-2xl space-y-5">
+    <div className="max-w-6xl space-y-5">
       {/* Search */}
       <div className="space-y-2">
         <div className="flex gap-2">
@@ -516,6 +614,8 @@ export default function DiscoverView({
           const displayed = genreFilter
             ? results.filter((r) => r.genres.some((g) => g.toLowerCase() === genreFilter))
             : results;
+          const grouped = groupSongsByLane(displayed);
+          const mixedPlayback = interleaveForPlayback(displayed);
           return (
         <div className="space-y-3">
           <div className="flex items-center justify-between flex-wrap gap-2">
@@ -540,7 +640,7 @@ export default function DiscoverView({
             <div className="flex items-center gap-2">
               <button
                 onClick={() => {
-                  const tracks = (displayed ?? []).filter((s) => s.spotify_track_id);
+                  const tracks = mixedPlayback.filter((s) => s.spotify_track_id);
                   if (tracks.length > 0) {
                     const qTracks = tracks.map((s) => ({
                       spotifyTrackId: s.spotify_track_id,
@@ -552,7 +652,7 @@ export default function DiscoverView({
                   }
                 }}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-xs font-medium hover:bg-neutral-700 active:scale-95 transition-all"
-                title="Play all songs"
+                title="Play a balanced mix of all columns"
               >
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5v14l11-7z" />
@@ -625,16 +725,26 @@ export default function DiscoverView({
             </div>
           )}
 
-          {/* Song list */}
-          <div className="border border-neutral-200 rounded-lg overflow-hidden divide-y divide-neutral-100">
-            {displayed.map((song, i) => (
-              <SongRow
-                key={`${song.spotify_track_id}-${i}`}
-                song={song}
-                rank={i + 1}
-                initialFavorited={favoritedIds.has(song.spotify_track_id)}
-                initialFeedback={feedbackMap[song.spotify_track_id] ?? null}
+          <div className="grid gap-3 lg:grid-cols-3">
+            {DISCOVERY_LANES.map((lane) => (
+              <DiscoveryColumn
+                key={lane.id}
+                lane={lane}
+                songs={grouped[lane.id]}
+                favoritedIds={favoritedIds}
+                feedbackMap={feedbackMap}
                 currentPrompt={prompt}
+                onPlayColumn={(songs) => {
+                  const tracks = songs.filter((s) => s.spotify_track_id);
+                  if (tracks.length === 0) return;
+                  const qTracks = tracks.map((s) => ({
+                    spotifyTrackId: s.spotify_track_id,
+                    trackName: s.track_name,
+                    artistName: s.artist_name,
+                  }));
+                  setQueue(qTracks);
+                  playFromQueue(0);
+                }}
               />
             ))}
           </div>
@@ -647,8 +757,78 @@ export default function DiscoverView({
 }
 
 /* \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550 */
-/*  Song Row                                                      */
+/*  Discovery Columns                                             */
 /* \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550 */
+
+function DiscoveryColumn({
+  lane,
+  songs,
+  favoritedIds,
+  feedbackMap,
+  currentPrompt,
+  onPlayColumn,
+}: {
+  lane: DiscoveryLane;
+  songs: SongRecommendation[];
+  favoritedIds: Set<string>;
+  feedbackMap: Record<string, 1 | -1>;
+  currentPrompt: string;
+  onPlayColumn: (songs: SongRecommendation[]) => void;
+}) {
+  return (
+    <section className="min-w-0 border border-neutral-200 rounded-lg overflow-hidden bg-white">
+      <div className="flex items-start justify-between gap-3 px-3 py-3 border-b border-neutral-100 bg-neutral-50/70">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-neutral-900 truncate">
+              {lane.title}
+            </h3>
+            <span className="text-[10px] tabular-nums text-neutral-400">
+              {songs.length}
+            </span>
+          </div>
+          <p className="text-[11px] text-neutral-400 mt-0.5 truncate">
+            {lane.subtitle}
+          </p>
+        </div>
+        <button
+          onClick={() => onPlayColumn(songs)}
+          disabled={songs.length === 0}
+          className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-neutral-900 text-white hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-25 disabled:cursor-not-allowed"
+          title={`Play ${lane.title}`}
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        </button>
+      </div>
+
+      {songs.length > 0 ? (
+        <div className="divide-y divide-neutral-100">
+          {songs.map((song, i) => (
+            <SongRow
+              key={`${lane.id}-${song.spotify_track_id || song.track_name}-${i}`}
+              song={song}
+              rank={i + 1}
+              initialFavorited={favoritedIds.has(song.spotify_track_id)}
+              initialFeedback={feedbackMap[song.spotify_track_id] ?? null}
+              currentPrompt={currentPrompt}
+              compact
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="px-3 py-8 text-center">
+          <p className="text-xs text-neutral-400">
+            No matches in this lane yet.
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/*  Song Row                                                      */
 
 function SongRow({
   song,
@@ -656,12 +836,14 @@ function SongRow({
   initialFavorited = false,
   initialFeedback = null,
   currentPrompt = "",
+  compact = false,
 }: {
   song: SongRecommendation;
   rank: number;
   initialFavorited?: boolean;
   initialFeedback?: 1 | -1 | null;
   currentPrompt?: string;
+  compact?: boolean;
 }) {
   const { playSingle, playFromQueue, queue } = usePlayer();
   const [playState, setPlayState] = useState<"idle" | "loading">("idle");
@@ -737,9 +919,9 @@ function SongRow({
 
   return (
     <div className="group">
-      <div className="flex items-center gap-2 sm:gap-3 px-3 py-2.5 hover:bg-neutral-50 transition-colors">
+      <div className="flex items-center gap-2 px-3 py-2.5 hover:bg-neutral-50 transition-colors">
         {/* Rank — hidden on mobile */}
-        <span className="hidden sm:block w-6 text-right text-xs tabular-nums text-neutral-300 font-medium shrink-0">
+        <span className={["hidden sm:block text-right text-xs tabular-nums text-neutral-300 font-medium shrink-0", compact ? "w-4" : "w-6"].join(" ")}>
           {rank}
         </span>
 
@@ -787,7 +969,7 @@ function SongRow({
         </div>
 
         {/* Duration — desktop only */}
-        {duration && (
+        {duration && !compact && (
           <span className="shrink-0 text-[11px] tabular-nums text-neutral-300 hidden md:block">
             {duration}
           </span>
@@ -795,7 +977,10 @@ function SongRow({
 
         {/* Match score badge */}
         <div
-          className="shrink-0 w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-[10px] sm:text-xs font-bold"
+          className={[
+            "shrink-0 rounded-full flex items-center justify-center text-[10px] font-bold",
+            compact ? "hidden xl:flex w-8 h-8" : "w-8 h-8 sm:w-10 sm:h-10 sm:text-xs",
+          ].join(" ")}
           style={{
             background:
               matchPct > 70
