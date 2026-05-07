@@ -40,6 +40,12 @@ export default function Sidebar({
   } | null>(null);
   const allDone = completedSteps.size >= 5;
   const [setupOpen,      setSetupOpen]      = useState(!allDone);
+  const setupStatusLabel = allDone ? "Ready" : completedSteps.size > 0 ? "In progress" : "Needs setup";
+  const setupStatusClass = allDone
+    ? "bg-emerald-50 text-emerald-700 border-emerald-100"
+    : completedSteps.size > 0
+      ? "bg-amber-50 text-amber-700 border-amber-100"
+      : "bg-neutral-100 text-neutral-600 border-neutral-200";
 
   // Auto-collapse when all steps complete
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -167,28 +173,43 @@ export default function Sidebar({
       <div className="px-3 pb-3 flex-1">
         <button
           onClick={() => setSetupOpen(!setupOpen)}
-          className="w-full flex items-center justify-between px-1 pt-1 pb-2 group"
+          className="w-full flex items-start justify-between gap-2 px-1 pt-1 pb-2 group text-left"
           aria-expanded={setupOpen}
         >
+          <span className="min-w-0">
             <p className="text-[10px] uppercase tracking-widest text-neutral-400 font-medium">
-              Radio Setup
-          </p>
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={[
-              "text-neutral-400 transition-transform duration-200",
-              setupOpen ? "rotate-180" : "",
-            ].join(" ")}
-          >
-            <path d="M6 9l6 6 6-6" />
-          </svg>
+              Music Profile
+            </p>
+            <p className="mt-1 text-xs text-neutral-500 leading-snug">
+              {allDone
+                ? "Ready for radio and playlists. Refresh only when your Spotify taste changes."
+                : "One setup run teaches MusicLife what to recommend."}
+            </p>
+          </span>
+          <span className="flex items-center gap-1.5 pt-0.5">
+            <span className={[
+              "rounded-full border px-2 py-0.5 text-[10px] font-medium",
+              setupStatusClass,
+            ].join(" ")}>
+              {setupStatusLabel}
+            </span>
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className={[
+                "text-neutral-400 transition-transform duration-200",
+                setupOpen ? "rotate-180" : "",
+              ].join(" ")}
+            >
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </span>
         </button>
 
         {setupOpen && <div className="space-y-3">
@@ -211,7 +232,11 @@ export default function Sidebar({
           </p>
         )}
 
-        <SetupAllButton onProgress={checkLibraryStatus} onComplete={onSetupComplete} />
+        <SetupAllButton
+          isReady={allDone}
+          onProgress={checkLibraryStatus}
+          onComplete={onSetupComplete}
+        />
 
         <div className="space-y-2 pt-1">
           {STEP_META.map((s) => (
