@@ -78,6 +78,10 @@ const DISCOVERY_LANES: DiscoveryLane[] = [
   },
 ];
 
+const TARGET_SONGS = 25;
+const FALLBACK_ARTIST_SEARCH_LIMIT = 10;
+const FALLBACK_TRACK_SEARCH_LIMIT = 6;
+
 function laneForSong(song: SongRecommendation): DiscoveryLaneId {
   const popularity = song.signals.track_popularity ?? 0.5;
   const reasons = song.reasons.join(" ").toLowerCase();
@@ -209,7 +213,7 @@ function chooseFallbackTracks(tracks: any[]): any[] { // eslint-disable-line @ty
   return [deep, mid, hit, ...unique]
     .filter(Boolean)
     .filter((track, index, list) => list.findIndex((candidate) => candidate.id === track.id) === index)
-    .slice(0, 2);
+    .slice(0, 3);
 }
 
 export default function DiscoverView({
@@ -325,7 +329,6 @@ export default function DiscoverView({
       // If DB returned fewer than the target, fill remaining slots with live
       // Spotify results from high-scoring artists. This also runs as a full
       // fallback when the DB has no songs at all.
-      const TARGET_SONGS = 25;
       if (deduped.length < TARGET_SONGS) {
         setLoadingStage(
           deduped.length > 0
@@ -371,10 +374,10 @@ export default function DiscoverView({
         const existingArtists = new Set(deduped.map(s => s.artist_name.toLowerCase()));
         const missingArtists = artists.filter((a: any) => !existingArtists.has(a.artist_name.toLowerCase())); // eslint-disable-line @typescript-eslint/no-explicit-any
         const songArrays = await Promise.all(
-          missingArtists.slice(0, 20).map(async (artist: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+          missingArtists.slice(0, FALLBACK_ARTIST_SEARCH_LIMIT).map(async (artist: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
             try {
               const searchRes = await fetch(
-                `https://api.spotify.com/v1/search?q=${encodeURIComponent(`artist:${artist.artist_name}`)}&type=track&market=US&limit=10`,
+                `https://api.spotify.com/v1/search?q=${encodeURIComponent(`artist:${artist.artist_name}`)}&type=track&market=US&limit=${FALLBACK_TRACK_SEARCH_LIMIT}`,
                 { headers: spotifyHeaders }
               );
               if (!searchRes.ok) return [];
