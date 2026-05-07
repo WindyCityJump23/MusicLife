@@ -126,13 +126,12 @@ function PlaylistCard({ playlist }: { playlist: Playlist }) {
       .filter(Boolean) as string[];
     if (trackIds.length === 0) return;
     const idsParam = trackIds.join(",");
-    fetch(`/api/favorites-check?ids=${idsParam}`)
+    fetch(`/api/track-state?ids=${idsParam}`)
       .then((r) => r.json())
-      .then((d) => setFavoritedIds(new Set(d.favorited ?? [])))
-      .catch(() => {});
-    fetch(`/api/feedback-check?ids=${idsParam}`)
-      .then((r) => r.json())
-      .then((d) => setFeedbackMap(d.feedback ?? {}))
+      .then((d) => {
+        setFavoritedIds(new Set(d.favorited ?? []));
+        setFeedbackMap(d.feedback ?? {});
+      })
       .catch(() => {});
   }, [expanded, playlist.tracks]);
 

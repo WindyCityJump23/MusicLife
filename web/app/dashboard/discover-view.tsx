@@ -458,15 +458,10 @@ export default function DiscoverView({
       const trackIds = deduped.map((s) => s.spotify_track_id).filter(Boolean);
       if (trackIds.length > 0) {
         try {
-          const favRes = await fetch(`/api/favorites-check?ids=${trackIds.join(",")}`);
-          const favData = await favRes.json().catch(() => ({}));
-          setFavoritedIds(new Set(favData.favorited ?? []));
-        } catch {}
-
-        try {
-          const fbRes = await fetch(`/api/feedback-check?ids=${trackIds.join(",")}`);
-          const fbData = await fbRes.json().catch(() => ({}));
-          setFeedbackMap(fbData.feedback ?? {});
+          const stateRes = await fetch(`/api/track-state?ids=${trackIds.join(",")}`);
+          const stateData = await stateRes.json().catch(() => ({}));
+          setFavoritedIds(new Set(stateData.favorited ?? []));
+          setFeedbackMap(stateData.feedback ?? {});
         } catch {}
       }
     } catch (err) {
