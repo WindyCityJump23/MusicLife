@@ -61,14 +61,25 @@ export default function Sidebar({
         const artists: Array<{ enriched: boolean; embedded: boolean }> =
           data.artists ?? [];
         const done = new Set<number>();
-        const enrichedCount = artists.filter((a) => a.enriched).length;
-        const embeddedCount = artists.filter((a) => a.embedded).length;
-        const readyRatio = Math.max(5, Math.ceil(artists.length * 0.25));
-        if (artists.length > 0) done.add(1);
-        if (enrichedCount >= Math.min(artists.length, readyRatio)) done.add(2);
-        if (embeddedCount >= Math.min(artists.length, readyRatio)) done.add(3);
-        if ((data.stats?.mentionCount ?? 0) > 0) done.add(4);
-        if ((data.stats?.catalogTrackCount ?? 0) >= Math.max(25, artists.length * 2)) done.add(5);
+        const steps = data.readiness?.steps;
+        if (steps) {
+          if (steps.imported) done.add(1);
+          if (steps.enriched) done.add(2);
+          if (steps.embedded) done.add(3);
+          if (steps.context) done.add(4);
+          if (steps.tracks) done.add(5);
+        } else {
+          const enrichedCount = artists.filter((a) => a.enriched).length;
+          const embeddedCount = artists.filter((a) => a.embedded).length;
+          const readyRatio = Math.max(5, Math.ceil(artists.length * 0.25));
+          if (artists.length > 0) done.add(1);
+          if (enrichedCount >= Math.min(artists.length, readyRatio)) done.add(2);
+          if (embeddedCount >= Math.min(artists.length, readyRatio)) done.add(3);
+          if ((data.stats?.mentionCount ?? 0) > 0) done.add(4);
+          if ((data.stats?.playableTrackCount ?? 0) >= Math.min(50, Math.max(10, Math.min(artists.length, readyRatio) * 3))) {
+            done.add(5);
+          }
+        }
         setCompletedSteps(done);
       })
       .catch(() => {});
@@ -159,8 +170,8 @@ export default function Sidebar({
           className="w-full flex items-center justify-between px-1 pt-1 pb-2 group"
           aria-expanded={setupOpen}
         >
-          <p className="text-[10px] uppercase tracking-widest text-neutral-400 font-medium">
-            Radio Setup
+            <p className="text-[10px] uppercase tracking-widest text-neutral-400 font-medium">
+              Radio Setup
           </p>
           <svg
             width="12"

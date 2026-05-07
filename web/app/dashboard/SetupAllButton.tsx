@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 type JobStatusResponse = {
   status: "queued" | "running" | "success" | "failed" | "unknown";
   message: string;
+  step?: number;
+  total_steps?: number | null;
 };
 
 type RunState = "idle" | "running" | "success" | "error";
@@ -55,7 +57,11 @@ export default function SetupAllButton({
         setState("running");
         setMessage(data.message || "Working…");
         const parsed = parseStep(data.message || "");
-        if (parsed) setStep(parsed.step);
+        if (typeof data.step === "number" && data.step > 0) {
+          setStep(data.step);
+        } else if (parsed) {
+          setStep(parsed.step);
+        }
         if (data.message && data.message !== lastMessageRef.current) {
           lastMessageRef.current = data.message;
           onProgressRef.current?.();
@@ -67,7 +73,7 @@ export default function SetupAllButton({
         try { localStorage.removeItem(STORAGE_KEY); } catch {}
         setState("success");
         setStep(TOTAL_STEPS);
-        setMessage(data.message || "Library is ready");
+        setMessage(data.message || "Setup complete");
         onProgressRef.current?.();
         if (!completedRef.current) {
           completedRef.current = true;
@@ -181,7 +187,7 @@ export default function SetupAllButton({
           </div>
           <p className="text-[10px] text-neutral-600 leading-snug">{message}</p>
           <p className="text-[10px] text-neutral-400 leading-snug">
-            Runs on our servers — safe to close this tab. Steps will keep ticking off when you return.
+            Runs on our servers. You can come back here to check progress or re-run setup if it stalls.
           </p>
         </div>
       )}

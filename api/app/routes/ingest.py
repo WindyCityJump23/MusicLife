@@ -419,6 +419,126 @@ def _refresh_spotify_token(
     return None
 
 
+def _chunked(items: list, size: int = 200):
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
+def _radio_readiness_message(user_id: str, ready_message: str) -> str:
+    """Return a user-facing setup completion message based on actual readiness."""
+    try:
+        readiness = _compute_radio_readiness(user_id)
+    except Exception as exc:
+        print(f"setup_all: could not compute radio readiness: {exc}", flush=True)
+        return ready_message
+
+    if readiness["radio_ready"]:
+        return ready_message
+
+    missing: list[str] = []
+    if readiness["artist_count"] == 0:
+        missing.append("Spotify artists")
+    if readiness["embedded_count"] < readiness["required_artist_count"]:
+        missing.append(
+            f"{readiness['required_artist_count'] - readiness['embedded_count']} more taste-modeled artists"
+        )
+    if readiness["playable_track_count"] < readiness["required_playable_track_count"]:
+        missing.append(
+            f"{readiness['required_playable_track_count'] - readiness['playable_track_count']} more playable tracks"
+        )
+    if not missing:
+        return ready_message
+    return f"Taste profile is ready. Radio needs {', '.join(missing)}."
+
+
+def _compute_radio_readiness(user_id: str) -> dict:
+    from app.services.supabase_client import admin_supabase
+
+    user_tracks = (
+        admin_supabase.table("user_tracks")
+        .select("track_id, tracks(artist_id)")
+        .eq("user_id", user_id)
+        .execute()
+    ).data or []
+
+    artist_ids = sorted({
+        row.get("tracks", {}).get("artist_id")
+        for row in user_tracks
+        if isinstance(row.get("tracks"), dict)
+        and isinstance(row.get("tracks", {}).get("artist_id"), int)
+    })
+    artist_count = len(artist_ids)
+    required_artist_count = _required_artist_count(artist_count)
+
+    enriched_count = 0
+    embedded_count = 0
+    playable_track_count = 0
+
+    for chunk in _chunked(artist_ids):
+        rows = (
+            admin_supabase.table("artists")
+            .select("id, genres, musicbrainz_id, lastfm_url, embedding_source")
+            .in_("id", chunk)
+            .execute()
+        ).data or []
+        embedded_rows = (
+            admin_supabase.table("artists")
+            .select("id")
+            .in_("id", chunk)
+            .not_.is_("embedding", "null")
+            .execute()
+        ).data or []
+        embedded_ids = {r["id"] for r in embedded_rows}
+        for row in rows:
+            genres = row.get("genres") or []
+            if (
+                row.get("musicbrainz_id")
+                or row.get("lastfm_url")
+                or row.get("embedding_source")
+                or len(genres) > 0
+            ):
+                enriched_count += 1
+            if row["id"] in embedded_ids:
+                embedded_count += 1
+
+        track_rows = (
+            admin_supabase.table("tracks")
+            .select("id")
+            .in_("artist_id", chunk)
+            .not_.is_("spotify_track_id", "null")
+            .execute()
+        ).data or []
+        playable_track_count += len(track_rows)
+
+    required_playable_track_count = _required_playable_track_count(artist_count, required_artist_count)
+    return {
+        "artist_count": artist_count,
+        "enriched_count": enriched_count,
+        "embedded_count": embedded_count,
+        "playable_track_count": playable_track_count,
+        "required_artist_count": required_artist_count,
+        "required_playable_track_count": required_playable_track_count,
+        "radio_ready": (
+            artist_count > 0
+            and enriched_count >= required_artist_count
+            and embedded_count >= required_artist_count
+            and playable_track_count >= required_playable_track_count
+        ),
+    }
+
+
+def _required_artist_count(artist_count: int) -> int:
+    if artist_count <= 0:
+        return 0
+    return min(artist_count, max(5, (artist_count + 3) // 4))
+
+
+def _required_playable_track_count(artist_count: int, required_artist_count: int) -> int:
+    if artist_count <= 0:
+        return 0
+    return min(50, max(10, required_artist_count * 3))
+
+
 @router.post("/setup-all")
 def setup_all(
     req: SetupAllRequest,
@@ -429,13 +549,13 @@ def setup_all(
 
     Sequentially runs sync → enrich → embed → sources → populate-tracks
     server-side, reporting unified progress via the standard /status/{job_id}
-    endpoint. The chain survives page close / sleep because it lives in the
-    API process, not the browser.
+    endpoint. Progress state is persisted for dashboard polling; if the process
+    loses the running task, stale status checks tell the user to re-run setup.
     """
     token = require_bearer_token(credentials)
     ensure_valid_bearer_token(token)
     job_id = str(uuid.uuid4())
-    create_job(job_id, "setup-all")
+    create_job(job_id, "setup-all", user_id=req.user_id, total_steps=5)
     bg.add_task(
         _run_setup_all,
         job_id,
@@ -527,10 +647,9 @@ def _run_setup_all(
         if not active_token:
             active_token = fresh_token()
 
-        # Step 5 is non-fatal: Spotify dev-mode rate limits are per-app and
-        # can lock out the entire app for hours. If track population fails for
-        # any reason, steps 1–4 are already complete and Discover works with
-        # existing tracks. Surface a soft-success so the user isn't blocked.
+        # Step 5 is allowed to soft-fail because Spotify dev-mode rate limits
+        # can lock out the app. The message must not claim Radio is ready until
+        # the user's own playable track slice meets readiness.
         try:
             track_summary = run_track_population(active_token, progress=progress_for(5))
             track_error = track_summary.get("error") if isinstance(track_summary, dict) else None
@@ -538,19 +657,23 @@ def _run_setup_all(
             added = track_summary.get("tracks_added", 0) if isinstance(track_summary, dict) else 0
             if track_error:
                 print(f"setup_all: track population failed (non-fatal): {track_error}", flush=True)
-                update_job(job_id, JobStatus.SUCCESS,
-                           f"Library is ready (track catalog will update later: {track_error})"[:500])
+                note = _radio_readiness_message(user_id, "Taste profile is ready")
+                update_job(job_id, JobStatus.SUCCESS, f"{note} Track catalog will update later: {track_error}"[:500])
             elif errors > 0 and added == 0:
                 last_err = (track_summary.get("last_error") or "") if isinstance(track_summary, dict) else ""
                 note = "rate-limited" if "429" in last_err or "rate" in last_err.lower() else "will retry later"
+                ready_note = _radio_readiness_message(user_id, "Taste profile is ready")
                 update_job(job_id, JobStatus.SUCCESS,
-                           f"Library is ready (track catalog will update later — {note})")
+                           f"{ready_note} Track catalog will update later — {note}"[:500])
             else:
-                update_job(job_id, JobStatus.SUCCESS, f"Library is ready ({added} new tracks added)")
+                update_job(job_id, JobStatus.SUCCESS, _radio_readiness_message(
+                    user_id,
+                    f"Radio setup complete ({added} new tracks added)",
+                ))
         except Exception as step5_exc:
             print(f"setup_all: step 5 non-fatal error — {step5_exc}", flush=True)
             update_job(job_id, JobStatus.SUCCESS,
-                       "Library is ready (track catalog will update later)")
+                       f"{_radio_readiness_message(user_id, 'Taste profile is ready')} Track catalog will update later"[:500])
 
         print(f"setup_all: completed for user {user_id}")
     except Exception as exc:
@@ -570,7 +693,12 @@ def job_status(
     job = get_job(job_id)
     if not job:
         return {"status": "unknown", "message": "Job not found or expired"}
-    return {"status": job.status.value, "message": job.message}
+    return {
+        "status": job.status.value,
+        "message": job.message,
+        "step": job.step,
+        "total_steps": job.total_steps,
+    }
 
 
 @router.get("/status")
