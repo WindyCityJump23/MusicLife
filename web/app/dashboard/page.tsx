@@ -1,13 +1,23 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import Sidebar, { type View } from "./sidebar";
-import LibraryView from "./library-view";
-import RadioView from "./radio-view";
-import PlaylistsView from "./playlists-view";
-import ActivityView from "./activity-view";
 import Player from "./Player";
 import { PlayerProvider, usePlayer } from "./player-context";
+
+const RadioView = dynamic(() => import("./radio-view"), {
+  loading: () => <ViewLoading label="Loading radio" />,
+});
+const PlaylistsView = dynamic(() => import("./playlists-view"), {
+  loading: () => <ViewLoading label="Loading playlists" />,
+});
+const LibraryView = dynamic(() => import("./library-view"), {
+  loading: () => <ViewLoading label="Loading taste profile" />,
+});
+const ActivityView = dynamic(() => import("./activity-view"), {
+  loading: () => <ViewLoading label="Loading history" />,
+});
 
 const TITLES: Record<View, string> = {
   discover: "MusicLife Radio",
@@ -15,6 +25,25 @@ const TITLES: Record<View, string> = {
   library: "Taste Profile",
   activity: "History",
 };
+
+function ViewLoading({ label }: { label: string }) {
+  return (
+    <div className="rounded-lg border border-neutral-200 bg-white p-5 space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="space-y-2">
+          <div className="h-4 w-36 rounded bg-neutral-100 animate-pulse" />
+          <div className="h-3 w-64 max-w-full rounded bg-neutral-100 animate-pulse" />
+        </div>
+        <span className="text-xs text-neutral-400">{label}</span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-3">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="h-20 rounded-md bg-neutral-50 border border-neutral-100 animate-pulse" />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function DashboardInner() {
   const [view, setView] = useState<View>("discover");
