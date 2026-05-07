@@ -103,6 +103,10 @@ function toSpotifyTrackUri(value: string): string {
   return value.startsWith("spotify:track:") ? value : `spotify:track:${value}`;
 }
 
+const NOW_PLAYING_POLL_MS = 5_000;
+const NOW_PLAYING_IDLE_POLL_MS = 15_000;
+const NOW_PLAYING_HIDDEN_POLL_MS = 30_000;
+
 /**
  * Open a Spotify URI in the native app. Uses the spotify: scheme
  * which deep-links on iOS/Android. Falls back to the web URL.
@@ -170,6 +174,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const indexRef = useRef(-1);
   const modeRef = useRef<PlayMode>("embed");
   const deviceIdRef = useRef<string | null>(null);
+  const isPlayingRef = useRef(false);
 
   // Keep refs in sync so async handlers see latest values.
   useEffect(() => {
@@ -178,6 +183,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     deviceIdRef.current = selectedDeviceId;
   }, [selectedDeviceId]);
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
 
   const setQueue = useCallback((tracks: QueueTrack[]) => {
     queueRef.current = tracks;
@@ -460,7 +468,21 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
+    const schedule = (delay: number) => {
+      if (!cancelled) timer = setTimeout(tick, delay);
+    };
+
     const tick = async () => {
+      if (typeof document !== "undefined" && document.hidden) {
+        schedule(NOW_PLAYING_HIDDEN_POLL_MS);
+        return;
+      }
+
+      if (indexRef.current < 0 && !isPlayingRef.current) {
+        schedule(NOW_PLAYING_IDLE_POLL_MS);
+        return;
+      }
+
       try {
         const res = await fetch("/api/now-playing", { cache: "no-store" });
         if (!cancelled && res.ok) {
@@ -486,12 +508,22 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       } catch {
         /* ignore transient errors */
       }
-      if (!cancelled) timer = setTimeout(tick, 5000);
+      schedule(NOW_PLAYING_POLL_MS);
     };
+
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && !document.hidden) {
+        if (timer) clearTimeout(timer);
+        void tick();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     tick();
 
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       if (timer) clearTimeout(timer);
     };
   }, [mode, selectedDeviceId]);
