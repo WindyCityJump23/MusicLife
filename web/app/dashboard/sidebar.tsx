@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import SetupAllButton from "./SetupAllButton";
+import SourcesButton from "./SourcesButton";
 
 export type View = "discover" | "playlists" | "library" | "activity";
 
@@ -236,6 +237,11 @@ export default function Sidebar({
           isReady={allDone}
           onProgress={checkLibraryStatus}
           onComplete={onSetupComplete}
+        />
+
+        <SourcesButton
+          disabled={!completedSteps.has(1)}
+          onComplete={checkLibraryStatus}
         />
 
         <div className="space-y-2 pt-1">
