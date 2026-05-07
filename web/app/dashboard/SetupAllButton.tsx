@@ -22,9 +22,11 @@ function parseStep(message: string): { step: number; label: string } | null {
 }
 
 export default function SetupAllButton({
+  isReady = false,
   onProgress,
   onComplete,
 }: {
+  isReady?: boolean;
   onProgress?: () => void;
   onComplete?: () => void;
 }) {
@@ -159,8 +161,8 @@ export default function SetupAllButton({
 
   const buttonLabel =
     state === "running" ? (step > 0 ? `Setting up… (${step}/${TOTAL_STEPS})` : "Starting…")
-    : state === "success" ? "Re-run setup"
-    : "Set up my library";
+    : isReady || state === "success" ? "Refresh music profile"
+    : "Set up music profile";
 
   const progressPct =
     state === "success" ? 100
@@ -177,6 +179,14 @@ export default function SetupAllButton({
         {buttonLabel}
       </button>
 
+      {state === "idle" && (
+        <p className="text-[10px] text-neutral-500 leading-snug px-0.5">
+          {isReady
+            ? "Discovery uses your saved profile. Refresh after your Spotify taste changes or if results look stale."
+            : "Run once to import Spotify, learn your taste, and prepare playable tracks."}
+        </p>
+      )}
+
       {state === "running" && (
         <div className="space-y-1 px-0.5">
           <div className="w-full h-2 bg-neutral-100 rounded-full overflow-hidden">
@@ -187,7 +197,7 @@ export default function SetupAllButton({
           </div>
           <p className="text-[10px] text-neutral-600 leading-snug">{message}</p>
           <p className="text-[10px] text-neutral-400 leading-snug">
-            Runs on our servers. You can come back here to check progress or re-run setup if it stalls.
+            Runs on our servers. You can come back here to check progress.
           </p>
         </div>
       )}
