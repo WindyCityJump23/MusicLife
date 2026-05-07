@@ -15,9 +15,18 @@ export async function POST(req: NextRequest) {
   if (!serviceRoleKey) {
     return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY not configured" }, { status: 500 });
   }
+  const spotifyClientId = process.env.SPOTIFY_CLIENT_ID ?? "";
+  const spotifyClientSecret = process.env.SPOTIFY_CLIENT_SECRET ?? "";
   const upstream = await fetch(`${apiUrl}/ingest/sources`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${serviceRoleKey}` },
+    headers: {
+      Authorization: `Bearer ${serviceRoleKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      spotify_client_id: spotifyClientId || undefined,
+      spotify_client_secret: spotifyClientSecret || undefined,
+    }),
   });
   const data = await upstream.json().catch(() => ({}));
   return NextResponse.json(data, { status: upstream.status });
