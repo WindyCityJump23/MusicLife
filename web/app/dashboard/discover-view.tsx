@@ -40,6 +40,8 @@ type SongRecommendation = {
 
 type Preset = { label: string; desc: string; weights: { affinity: number; context: number; editorial: number } };
 
+type DiscoveryLaneId = "radio_hits" | "popular" | "deep_cuts";
+
 type DiscoveryLane = {
   id: DiscoveryLaneId;
   title: string;
