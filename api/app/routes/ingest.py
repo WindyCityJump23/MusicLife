@@ -9,7 +9,7 @@ TODO order (matches the week-by-week build plan):
 """
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Body, Depends
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
@@ -181,34 +181,122 @@ def _run_embed_tracks(job_id: str):
         print(f"embed_tracks: FAILED: {exc}")
 
 
+class SourceIngestRequest(BaseModel):
+    spotify_client_id: str | None = None
+    spotify_client_secret: str | None = None
+
+
 @router.post("/sources")
 def ingest_sources(
     bg: BackgroundTasks,
+    req: SourceIngestRequest = Body(default_factory=SourceIngestRequest),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ):
     token = require_bearer_token(credentials)
     ensure_valid_bearer_token(token)
     job_id = str(uuid.uuid4())
     create_job(job_id, "sources")
-    bg.add_task(_run_source_ingest, job_id)
+    bg.add_task(
+        _run_source_ingest,
+        job_id,
+        req.spotify_client_id,
+        req.spotify_client_secret,
+    )
     return {"status": "queued", "job_id": job_id}
 
 
-def _run_source_ingest(job_id: str):
+def _coerce_int_ids(value: object) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    ids: list[int] = []
+    for item in value:
+        try:
+            ids.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def _run_source_ingest(
+    job_id: str,
+    spotify_client_id: str | None = None,
+    spotify_client_secret: str | None = None,
+):
+    from app.services.artist_embeddings import run_artist_embeddings
+    from app.services.artist_enrichment import run_artist_enrichment
     from app.services.source_ingest import run_source_ingest
+    from app.services.track_embeddings import run_track_embeddings
 
     def progress(msg: str):
         update_job(job_id, JobStatus.RUNNING, msg[:500])
 
     update_job(job_id, JobStatus.RUNNING, "Crawling editorial sources...")
     try:
-        summary = run_source_ingest(progress=progress)
+        summary = run_source_ingest(
+            progress=progress,
+            spotify_client_id=spotify_client_id,
+            spotify_client_secret=spotify_client_secret,
+        )
         sources = summary.get("sources_scanned", 0)
         mentions = summary.get("mentions_found", 0)
         tracks = summary.get("blog_tracks_added", 0)
+        source_artist_ids = _coerce_int_ids(summary.get("source_artist_ids"))
+        blog_track_ids = _coerce_int_ids(summary.get("blog_track_ids"))
+
+        embedded_artists = 0
+        embedded_tracks = 0
+        followup_notes: list[str] = []
+
+        if source_artist_ids:
+            try:
+                progress(f"Finalizing {len(source_artist_ids)} source artists...")
+                # A small targeted enrichment pass improves genre/similar-artist
+                # context without turning the daily source refresh into full setup.
+                run_artist_enrichment(
+                    progress=progress,
+                    limit=min(25, len(source_artist_ids)),
+                    artist_ids=source_artist_ids,
+                )
+                artist_summary = run_artist_embeddings(
+                    batch_size=32,
+                    progress=progress,
+                    artist_ids=source_artist_ids,
+                    max_total=max(32, len(source_artist_ids)),
+                )
+                embedded_artists = artist_summary.get("embedded", 0)
+                last_error = artist_summary.get("last_error")
+                if last_error:
+                    followup_notes.append(f"artist embedding warning: {last_error}")
+            except Exception as exc:
+                followup_notes.append(f"artist finalization skipped: {exc}")
+                print(f"source_ingest: artist finalization failed: {exc}")
+
+        if blog_track_ids:
+            try:
+                progress(f"Finalizing {len(blog_track_ids)} source tracks...")
+                track_summary = run_track_embeddings(
+                    batch_size=64,
+                    track_ids=blog_track_ids,
+                    max_total=max(64, len(blog_track_ids)),
+                    progress=progress,
+                )
+                embedded_tracks = track_summary.get("embedded", 0)
+                last_error = track_summary.get("last_error")
+                if last_error:
+                    followup_notes.append(f"track embedding warning: {last_error}")
+            except Exception as exc:
+                followup_notes.append(f"track finalization skipped: {exc}")
+                print(f"source_ingest: track finalization failed: {exc}")
+
         msg = f"Scanned {sources} sources, found {mentions} mentions"
         if tracks:
             msg += f", added {tracks} tracks"
+        if embedded_artists:
+            msg += f", modeled {embedded_artists} artists"
+        if embedded_tracks:
+            msg += f", modeled {embedded_tracks} tracks"
+        if followup_notes:
+            msg += f" — {'; '.join(followup_notes)}"
         update_job(job_id, JobStatus.SUCCESS, msg[:500])
         print("source_ingest: completed")
     except Exception as exc:

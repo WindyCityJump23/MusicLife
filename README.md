@@ -96,7 +96,7 @@ export DATABASE_URL=postgres://postgres:[password]@[host]:5432/postgres
 make migrate
 ```
 
-Or paste each file in **Supabase → SQL Editor** in order (`db/migrations/001_init.sql` through `017_discover_history_artists.sql`), then seed data with `db/seed/sources.sql`.
+Or paste each file in **Supabase → SQL Editor** in order (`db/migrations/001_init.sql` through `019_discover_history_artists.sql`), then seed data with `db/seed/sources.sql`.
 
 ### 5. Install dependencies and start
 
@@ -167,7 +167,7 @@ song_score = (w_affinity × track_affinity + w_context × track_context + w_edit
 | `POST /ingest/spotify-library` | Pull Spotify library and listens |
 | `POST /ingest/enrich-artists` | MusicBrainz + Last.fm enrichment |
 | `POST /ingest/embed-artists` | Generate artist embeddings |
-| `POST /ingest/sources` | Crawl RSS + Reddit feeds, create new artists |
+| `POST /ingest/sources` | Crawl RSS + Reddit feeds, create new artists/tracks, and model fresh source finds |
 | `POST /playlist-from-tracks` | Export discover session to Spotify playlist |
 
 ---

@@ -11,6 +11,7 @@ Uses admin_supabase (service role) to bypass RLS — trusted backend job.
 from __future__ import annotations
 
 import time
+from typing import Callable
 
 from app.services.embedding import embedder
 from app.services.supabase_client import admin_supabase
@@ -21,8 +22,16 @@ BATCH_SIZE = 128
 MAX_TOTAL = 20000
 
 
-def run_track_embeddings(batch_size: int = BATCH_SIZE) -> dict:
+def run_track_embeddings(
+    batch_size: int = BATCH_SIZE,
+    track_ids: list[int] | None = None,
+    max_total: int = MAX_TOTAL,
+    progress: Callable[[str], None] | None = None,
+) -> dict:
     """Process all un-embedded tracks in batches. Returns summary stats."""
+    if track_ids is not None and len(track_ids) == 0:
+        return {"embedded": 0, "skipped": 0, "batches": 0, "last_error": None}
+
     total_embedded = 0
     total_skipped = 0
     batch_num = 0
@@ -31,17 +40,20 @@ def run_track_embeddings(batch_size: int = BATCH_SIZE) -> dict:
 
     MAX_CONSECUTIVE_FAILURES = 2
 
-    while total_embedded + total_skipped < MAX_TOTAL:
+    max_total = max(1, max_total)
+
+    while total_embedded + total_skipped < max_total:
         batch_num += 1
 
-        result = (
+        query = (
             admin_supabase.table("tracks")
             .select("id, name, spotify_track_id, embedding_source")
             .not_.is_("embedding_source", "null")
             .is_("embedding", "null")
-            .limit(batch_size)
-            .execute()
         )
+        if track_ids is not None:
+            query = query.in_("id", track_ids)
+        result = query.limit(batch_size).execute()
 
         candidates = result.data or []
         if not candidates:
@@ -119,6 +131,8 @@ def run_track_embeddings(batch_size: int = BATCH_SIZE) -> dict:
                 f"track_embeddings: batch {batch_num} done — "
                 f"{total_embedded} total so far"
             )
+            if progress:
+                progress(f"Generating track embeddings ({total_embedded} embedded)")
         except Exception as exc:
             err = f"DB write error: {type(exc).__name__}: {exc}"
             print(f"track_embeddings: batch {batch_num} {err}")
