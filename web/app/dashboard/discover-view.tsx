@@ -875,7 +875,7 @@ export default function DiscoverView({
                   className="px-3 py-1.5 rounded-lg bg-[#1DB954] text-white text-xs font-medium hover:bg-[#1aa34a] transition-colors flex items-center gap-1.5"
                 >
                   <SpotifyIcon size={14} />
-                  Open in Spotify
+                  Open saved playlist
                 </a>
               </div>
             </div>
@@ -1025,12 +1025,6 @@ function SongRow({
     song.duration_ms > 0
       ? `${minutes}:${seconds.toString().padStart(2, "0")}`
       : "";
-
-  const spotifyTrackUrl = song.spotify_track_id
-    ? `https://open.spotify.com/track/${song.spotify_track_id}`
-    : `https://open.spotify.com/search/${encodeURIComponent(
-        `${song.track_name} ${song.artist_name}`
-      )}`;
 
   async function handlePlay() {
     if (!song.spotify_track_id) return;
@@ -1257,17 +1251,6 @@ function SongRow({
               </svg>
             )}
           </button>
-
-          {/* Spotify link — desktop only */}
-          <a
-            href={spotifyTrackUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Open in Spotify"
-            className="hidden sm:flex w-7 h-7 rounded-full items-center justify-center text-neutral-300 hover:text-[#1DB954] transition-colors"
-          >
-            <SpotifyIcon size={14} />
-          </a>
         </div>
 
         {/* Expand toggle */}
@@ -1300,17 +1283,6 @@ function SongRow({
               <SignalPill label="Discovery" value={song.signals.novelty} color="emerald" />
             )}
           </div>
-
-          {/* Spotify link for mobile (hidden on desktop where it's inline) */}
-          <a
-            href={spotifyTrackUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="sm:hidden inline-flex items-center gap-1.5 text-[11px] text-[#1DB954] hover:underline"
-          >
-            <SpotifyIcon size={12} />
-            Open in Spotify
-          </a>
 
           {/* All reasons */}
           {song.reasons.length > 1 && (

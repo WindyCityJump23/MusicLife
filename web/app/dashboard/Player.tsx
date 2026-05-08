@@ -1,20 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { usePlayer } from "./player-context";
 
 /**
  * Player panel.
  *
  * Two modes:
- *  - "connect" — remote-control a Spotify Connect device (phone, desktop app,
- *    speaker). Audio plays on that device, so it survives screen lock and
- *    backgrounding. This is the primary path.
- *  - "embed"   — Spotify iframe in this page. Used as a fallback when no
- *    Connect device is online (and for free-tier 30s previews).
- *
- * The Player auto-selects connect mode when a device is detected, defaulting
- * to the user's phone if available so the gym scenario "just works".
+ *  - "embed"   — Spotify iframe in this page. This is the default path; the
+ *    listening experience stays inside MusicLife.
+ *  - "connect" — optional remote-control of a Spotify Connect device when the
+ *    user explicitly picks one from the device selector.
  */
 export default function Player() {
   const {
@@ -37,16 +33,6 @@ export default function Player() {
     clearPlaybackError,
   } = usePlayer();
 
-  // Detect mobile ONLY on the client to avoid hydration mismatches.
-  // Server always renders as non-mobile; client updates after mount.
-  const [isMobile, setIsMobile] = useState(false);
-  useEffect(() => {
-    const ua = navigator.userAgent;
-    const iPadOSDesktopUA =
-      /Macintosh/i.test(ua) && navigator.maxTouchPoints > 1;
-    setIsMobile(/iPhone|iPad|iPod|Android/i.test(ua) || iPadOSDesktopUA);
-  }, []);
-
   const currentTrack =
     currentIndex >= 0 && currentIndex < queue.length ? queue[currentIndex] : null;
 
@@ -57,13 +43,10 @@ export default function Player() {
   const selectedDevice =
     usableDevices.find((d) => d.id === selectedDeviceId) ?? null;
   const isConnectMode = mode === "connect" && Boolean(selectedDevice);
-  const useMobileSpotify = isMobile && currentTrack !== null && !isConnectMode;
   const playbackLabel = isConnectMode
     ? `Remote on ${selectedDevice?.name ?? "Spotify device"}`
-    : useMobileSpotify
-    ? "Spotify app"
-    : "Browser preview";
-  const playbackTone = isConnectMode ? "connect" : useMobileSpotify ? "spotify" : "preview";
+    : "Browser player";
+  const playbackTone = isConnectMode ? "connect" : "preview";
 
   return (
     <div
@@ -90,18 +73,14 @@ export default function Player() {
             background:
               playbackTone === "connect"
                 ? "rgba(76, 217, 100, 0.16)"
-                : playbackTone === "spotify"
-                ? "rgba(29, 185, 84, 0.18)"
                 : "rgba(255,255,255,0.08)",
             color:
               playbackTone === "connect"
                 ? "rgba(140, 255, 170, 0.95)"
-                : playbackTone === "spotify"
-                ? "rgba(130, 245, 170, 0.95)"
                 : "rgba(255,255,255,0.62)",
           }}
         >
-          {isConnectMode ? "Connect" : useMobileSpotify ? "App" : "Preview"}
+          {isConnectMode ? "Connect" : "Browser"}
         </span>
       </div>
 
@@ -152,7 +131,6 @@ export default function Player() {
         mode={mode}
         hasDevice={Boolean(selectedDevice)}
         deviceName={selectedDevice?.name ?? null}
-        isMobile={isMobile}
         devicesLoading={devicesLoading}
         deviceCount={usableDevices.length}
       />
@@ -177,22 +155,6 @@ export default function Player() {
         </div>
       )}
 
-      {/* Mobile: use the native Spotify app for reliable full-track playback. */}
-      {useMobileSpotify && currentTrack && (
-        <a
-          href={`https://open.spotify.com/track/${toSpotifyTrackId(currentTrack.spotifyTrackId)}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-white text-sm font-medium active:scale-95 transition-all"
-          style={{ background: "#1DB954" }}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z" />
-          </svg>
-          Open in Spotify
-        </a>
-      )}
-
       {/* Mode-specific player */}
       {isConnectMode ? (
         <ConnectControls
@@ -204,8 +166,6 @@ export default function Player() {
           onTogglePause={togglePause}
           deviceName={selectedDevice?.name ?? "device"}
         />
-      ) : useMobileSpotify ? (
-        <MobileSpotifyStatus />
       ) : (
         <EmbedPlayer trackId={embedTrackId} onTrackEnd={playNext} />
       )}
@@ -297,9 +257,7 @@ export default function Player() {
       >
         {mode === "connect" && selectedDeviceId
           ? "Audio plays on your device — keeps going through screen lock."
-          : isMobile
-          ? "Tap play to open in Spotify for full tracks."
-          : "Open Spotify on this device for full tracks beyond previews."}
+          : "Playback stays in MusicLife. Save a playlist when you want to export it."}
       </p>
     </div>
   );
@@ -309,32 +267,27 @@ function PlaybackStatus({
   mode,
   hasDevice,
   deviceName,
-  isMobile,
   devicesLoading,
   deviceCount,
 }: {
   mode: "connect" | "embed";
   hasDevice: boolean;
   deviceName: string | null;
-  isMobile: boolean;
   devicesLoading: boolean;
   deviceCount: number;
 }) {
-  let title = "Browser preview";
-  let detail = "Open Spotify on this device for full tracks and native queue playback.";
+  let title = "Browser player";
+  let detail = "Songs load in the embedded player so the experience stays in MusicLife.";
 
   if (mode === "connect" && hasDevice) {
     title = "Queue ready";
     detail = `Playing through ${deviceName ?? "your Spotify device"} with native queue handoff.`;
   } else if (devicesLoading) {
     title = "Finding devices";
-    detail = "Checking for open Spotify apps on your phone, computer, or speakers.";
-  } else if (isMobile) {
-    title = "Spotify app handoff";
-    detail = "Tap Open in Spotify for full-track playback on this phone.";
+    detail = "Checking for optional Connect devices. Browser playback remains available.";
   } else if (deviceCount === 0) {
-    title = "No Spotify device found";
-    detail = "Open Spotify on this device, then refresh devices.";
+    title = "Ready in browser";
+    detail = "No Connect device is selected, so playback will stay in MusicLife.";
   }
 
   return (
@@ -353,26 +306,6 @@ function PlaybackStatus({
     >
       <p className="text-xs font-medium text-white">{title}</p>
       <p className="mt-0.5 text-[11px] leading-relaxed text-white/45">{detail}</p>
-    </div>
-  );
-}
-
-function MobileSpotifyStatus() {
-  return (
-    <div
-      className="rounded-xl px-4 py-4 text-center"
-      style={{
-        background: "rgba(255,255,255,0.06)",
-        border: "1px solid rgba(255,255,255,0.1)",
-      }}
-    >
-      <p className="text-sm font-medium text-white">Continue in Spotify</p>
-      <p
-        className="text-xs mt-1 leading-relaxed"
-        style={{ color: "rgba(255,255,255,0.5)" }}
-      >
-        Full-track playback is handled by Spotify on mobile.
-      </p>
     </div>
   );
 }
@@ -404,7 +337,7 @@ function DevicePicker({
       ? "Finding devices"
       : mode === "connect" && selectedDevice
       ? selectedDevice.name
-      : "Browser preview";
+      : "This browser";
 
   return (
     <div
@@ -440,7 +373,7 @@ function DevicePicker({
               {d.is_active ? " · active" : ""}
             </option>
           ))}
-          <option value="__embed__">▷ This browser (preview)</option>
+          <option value="__embed__">▷ This browser</option>
         </select>
         <button
           onClick={onRefresh}
@@ -486,10 +419,6 @@ function iconForType(type: string): string {
   if (t === "tv") return "📺";
   if (t === "tablet") return "📱";
   return "🎵";
-}
-
-function toSpotifyTrackId(value: string): string {
-  return value.startsWith("spotify:track:") ? value.replace("spotify:track:", "") : value;
 }
 
 function toSpotifyTrackUri(value: string): string {
