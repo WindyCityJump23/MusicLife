@@ -87,6 +87,8 @@ def _assign_lane(
         return "popular"
     if track_pop <= 0.35 and not is_library_artist:
         return "deep_cut"
+    if is_library_artist and track_pop > 0.40:
+        return "popular"
     if editorial > 0.3:
         return "popular"
     return "deep_cut"

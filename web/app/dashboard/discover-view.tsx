@@ -268,17 +268,11 @@ function chooseFallbackTracks(tracks: any[]): any[] { // eslint-disable-line @ty
     return true;
   });
 
-  const deep = unique.find((track) => (track.popularity ?? 50) < 46);
-  const mid = unique.find((track) => {
-    const popularity = track.popularity ?? 50;
-    return popularity >= 46 && popularity < 74;
-  });
-  const hit = unique.find((track) => (track.popularity ?? 50) >= 74);
-
-  return [deep, mid, hit, ...unique]
-    .filter(Boolean)
-    .filter((track, index, list) => list.findIndex((candidate) => candidate.id === track.id) === index)
-    .slice(0, 3);
+  // Sort so deep cuts come first, then mid-popularity, then hits.
+  // This counteracts Spotify's default popularity ordering and ensures
+  // the fallback path contributes genuine discoveries.
+  const sorted = [...unique].sort((a, b) => (a.popularity ?? 50) - (b.popularity ?? 50));
+  return sorted.slice(0, 5);
 }
 
 export default function DiscoverView({
