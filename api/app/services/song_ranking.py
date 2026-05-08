@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from supabase import Client
 
 from app.services.ranking import (
+    _get_user_library_artist_ids,
     _get_previously_recommended_artist_ids,
     _get_user_artist_weights,
     _get_user_feedback,
@@ -187,7 +188,7 @@ def recommend_songs(
     """
 
     artist_weights = _get_user_artist_weights(client, user_id)
-    library_artist_ids = set(artist_weights.keys())
+    library_artist_ids = _get_user_library_artist_ids(client, user_id)
     previously_recommended = _get_previously_recommended_artist_ids(client, user_id)
     feedback_scores = _get_user_feedback(client, user_id)
 
@@ -1158,7 +1159,17 @@ def _lane_aware_rerank(scored: list[dict], limit: int) -> list[dict]:
                 used,
                 artist_counts,
                 genre_counts,
-                strict_artist_cap=2,
+            )
+        )
+
+    if len(selected) < limit:
+        selected.extend(
+            _pick_lane_candidates(
+                scored,
+                limit - len(selected),
+                used,
+                artist_counts,
+                genre_counts,
             )
         )
 
