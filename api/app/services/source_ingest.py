@@ -573,16 +573,16 @@ def _create_artist_from_spotify(
 
     genres = data.get("genres") or []
     popularity = data.get("popularity")
-    images = data.get("images") or []
-    image_url = images[0]["url"] if images else None
-
     row = {
         "name": name,
         "spotify_artist_id": spotify_artist_id,
         "genres": genres,
         "popularity": popularity,
-        "image_url": image_url,
-        "source": "editorial_ingest",
+        "embedding_source": (
+            f"{name} surfaced from editorial music-source ingestion. "
+            f"Spotify genres: {', '.join(genres[:8])}" if genres
+            else f"{name} surfaced from editorial music-source ingestion."
+        ),
     }
 
     try:

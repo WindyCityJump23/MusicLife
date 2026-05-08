@@ -22,14 +22,26 @@ def set_hash_from_sorted(track_ids: list[str]) -> str:
 
 
 def load_recent_history(client, user_id: str, history_window_runs: int = 50) -> list[dict]:
-    resp = (
-        client.table("discover_history")
-        .select("id,run_id,created_at,track_ids,list_signature,artist_ids")
-        .eq("user_id", user_id)
-        .order("created_at", desc=True)
-        .limit(max(1, min(history_window_runs, 500)))
-        .execute()
-    )
+    try:
+        resp = (
+            client.table("discover_history")
+            .select("id,run_id,created_at,track_ids,list_signature,artist_ids")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .limit(max(1, min(history_window_runs, 500)))
+            .execute()
+        )
+    except Exception:
+        # Keep recommendations working if the artist-history migration has
+        # not landed yet. Track-level novelty still works with the old shape.
+        resp = (
+            client.table("discover_history")
+            .select("id,run_id,created_at,track_ids,list_signature")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .limit(max(1, min(history_window_runs, 500)))
+            .execute()
+        )
     return resp.data or []
 
 
@@ -127,5 +139,10 @@ def persist_discover_run(
         "list_signature": signature_from_ordered(ordered),
         "lane_distribution": lane_distribution or {},
     }
-    resp = client.table("discover_history").insert(payload).execute()
+    try:
+        resp = client.table("discover_history").insert(payload).execute()
+    except Exception:
+        payload.pop("artist_ids", None)
+        payload.pop("lane_distribution", None)
+        resp = client.table("discover_history").insert(payload).execute()
     return (resp.data or [payload])[0]
