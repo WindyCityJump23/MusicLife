@@ -41,7 +41,10 @@ export default function Player() {
   // Server always renders as non-mobile; client updates after mount.
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
-    setIsMobile(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
+    const ua = navigator.userAgent;
+    const iPadOSDesktopUA =
+      /Macintosh/i.test(ua) && navigator.maxTouchPoints > 1;
+    setIsMobile(/iPhone|iPad|iPod|Android/i.test(ua) || iPadOSDesktopUA);
   }, []);
 
   const currentTrack =

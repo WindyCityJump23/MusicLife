@@ -92,7 +92,15 @@ type PlaybackResult = {
 /** Detect mobile browsers where Web Playback SDK won't work. */
 function isMobileBrowser(): boolean {
   if (typeof navigator === "undefined") return false;
-  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  return (
+    /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) ||
+    isIPadOSDesktopUA()
+  );
+}
+
+function isIPadOSDesktopUA(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1;
 }
 
 function toSpotifyTrackId(value: string): string {
@@ -117,7 +125,11 @@ function preferredDeviceForCurrentBrowser(
   const typeMatches = (types: string[]) =>
     usable.find((d) => types.includes(d.type.toLowerCase()));
 
-  if (/iPad|Tablet/i.test(ua) || (/Android/i.test(ua) && !/Mobile/i.test(ua))) {
+  if (
+    isIPadOSDesktopUA() ||
+    /iPad|Tablet/i.test(ua) ||
+    (/Android/i.test(ua) && !/Mobile/i.test(ua))
+  ) {
     return typeMatches(["tablet"]);
   }
   if (/iPhone|iPod|Android/i.test(ua)) return typeMatches(["smartphone"]);
