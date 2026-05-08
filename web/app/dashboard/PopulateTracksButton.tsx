@@ -12,7 +12,7 @@ export default function PopulateTracksButton({ onComplete }: { onComplete?: () =
         disabled={state === "running"}
         className="w-full px-2.5 py-1.5 rounded border border-neutral-200 bg-white text-xs text-neutral-700 hover:bg-neutral-50 hover:border-neutral-300 disabled:opacity-50 disabled:cursor-not-allowed text-left"
       >
-        {state === "running" ? "Populating…" : "Populate track catalog"}
+        {state === "running" ? "Preparing songs…" : "Prepare song catalog"}
       </button>
 
       {state === "running" && (

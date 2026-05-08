@@ -107,6 +107,7 @@ export default function LibraryView({
             { n: 3, title: "Generate Embeddings",    desc: "Build AI taste vectors for smart matching" },
             { n: 4, title: "Sync Sources",           desc: "Add editorial content & reviews" },
             { n: 5, title: "Populate Tracks",        desc: "Fetch songs for Discover" },
+            { n: 6, title: "Model Songs",            desc: "Build song-level context for fresher lanes" },
           ].map(({ n, title, desc }) => (
             <div key={n} className="flex items-start gap-2.5">
               <div className="shrink-0 w-5 h-5 rounded-full bg-neutral-200 flex items-center justify-center text-[10px] font-bold text-neutral-500 mt-0.5">
