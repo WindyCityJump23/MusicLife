@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
     if (reason === "NO_ACTIVE_DEVICE" || res.status === 404) {
       return applySpotifyTokenCookies(
         NextResponse.json(
-          { error: "No active Spotify device. Open Spotify on your phone or pick a device." },
+          { error: "No active Connect device. Browser playback is still available." },
           { status: 404 }
         ),
         token

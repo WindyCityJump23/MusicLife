@@ -300,6 +300,7 @@ export default function DiscoverView({
     added: number;
     failed: string[];
   } | null>(null);
+  const [playAllState, setPlayAllState] = useState<"idle" | "loading">("idle");
   const autoLoadedRef = useRef(false);
 
   // Auto-load recommendations on first mount
@@ -336,6 +337,7 @@ export default function DiscoverView({
   async function handleSubmit() {
     setLoading(true);
     setError(null);
+    setPlayAllState("idle");
     setPlaylistState("idle");
     setPlaylistUrl(null);
     setPlaylistError(null);
@@ -544,6 +546,29 @@ export default function DiscoverView({
     } finally {
       setLoading(false);
       setLoadingStage("");
+    }
+  }
+
+  async function playSongs(songs: SongRecommendation[]) {
+    const tracks = songs.filter((s) => s.spotify_track_id);
+    if (tracks.length === 0) return;
+
+    const qTracks: QueueTrack[] = tracks.map((s) => ({
+      spotifyTrackId: s.spotify_track_id,
+      trackName: s.track_name,
+      artistName: s.artist_name,
+    }));
+    setQueue(qTracks);
+    await playFromQueue(0);
+  }
+
+  async function handlePlayAll(songs: SongRecommendation[]) {
+    if (playAllState === "loading") return;
+    setPlayAllState("loading");
+    try {
+      await playSongs(songs);
+    } finally {
+      setPlayAllState("idle");
     }
   }
 
@@ -762,6 +787,7 @@ export default function DiscoverView({
             : results;
           const grouped = groupSongsByLane(displayed);
           const mixedPlayback = interleaveForPlayback(displayed);
+          const playableCount = mixedPlayback.filter((s) => s.spotify_track_id).length;
           return (
         <div className="space-y-3">
           <div className="flex items-center justify-between flex-wrap gap-2">
@@ -785,25 +811,26 @@ export default function DiscoverView({
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => {
-                  const tracks = mixedPlayback.filter((s) => s.spotify_track_id);
-                  if (tracks.length > 0) {
-                    const qTracks = tracks.map((s) => ({
-                      spotifyTrackId: s.spotify_track_id,
-                      trackName: s.track_name,
-                      artistName: s.artist_name,
-                    }));
-                    setQueue(qTracks);
-                    playFromQueue(0);
-                  }
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-xs font-medium hover:bg-neutral-700 active:scale-95 transition-all"
-                title="Play a balanced mix of all columns"
+                onClick={() => void handlePlayAll(mixedPlayback)}
+                disabled={playAllState === "loading" || playableCount === 0}
+                className="flex items-center gap-1.5 px-3 py-1.5 min-h-[32px] rounded-lg bg-neutral-900 text-white text-xs font-medium hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                title={
+                  playableCount > 0
+                    ? `Play ${playableCount} songs as a balanced queue`
+                    : "No playable Spotify tracks in this view"
+                }
               >
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-                Play all
+                {playAllState === "loading" ? (
+                  <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
+                    <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
+                  </svg>
+                ) : (
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                )}
+                {playAllState === "loading" ? "Starting" : "Play all"}
               </button>
               <SavePlaylistButton
                 state={playlistState}
@@ -848,7 +875,7 @@ export default function DiscoverView({
                   className="px-3 py-1.5 rounded-lg bg-[#1DB954] text-white text-xs font-medium hover:bg-[#1aa34a] transition-colors flex items-center gap-1.5"
                 >
                   <SpotifyIcon size={14} />
-                  Open in Spotify
+                  Open saved playlist
                 </a>
               </div>
             </div>
@@ -881,15 +908,7 @@ export default function DiscoverView({
                 feedbackMap={feedbackMap}
                 currentPrompt={prompt}
                 onPlayColumn={(songs) => {
-                  const tracks = songs.filter((s) => s.spotify_track_id);
-                  if (tracks.length === 0) return;
-                  const qTracks = tracks.map((s) => ({
-                    spotifyTrackId: s.spotify_track_id,
-                    trackName: s.track_name,
-                    artistName: s.artist_name,
-                  }));
-                  setQueue(qTracks);
-                  playFromQueue(0);
+                  void playSongs(songs);
                 }}
               />
             ))}
@@ -1006,12 +1025,6 @@ function SongRow({
     song.duration_ms > 0
       ? `${minutes}:${seconds.toString().padStart(2, "0")}`
       : "";
-
-  const spotifyTrackUrl = song.spotify_track_id
-    ? `https://open.spotify.com/track/${song.spotify_track_id}`
-    : `https://open.spotify.com/search/${encodeURIComponent(
-        `${song.track_name} ${song.artist_name}`
-      )}`;
 
   async function handlePlay() {
     if (!song.spotify_track_id) return;
@@ -1238,17 +1251,6 @@ function SongRow({
               </svg>
             )}
           </button>
-
-          {/* Spotify link — desktop only */}
-          <a
-            href={spotifyTrackUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Open in Spotify"
-            className="hidden sm:flex w-7 h-7 rounded-full items-center justify-center text-neutral-300 hover:text-[#1DB954] transition-colors"
-          >
-            <SpotifyIcon size={14} />
-          </a>
         </div>
 
         {/* Expand toggle */}
@@ -1281,17 +1283,6 @@ function SongRow({
               <SignalPill label="Discovery" value={song.signals.novelty} color="emerald" />
             )}
           </div>
-
-          {/* Spotify link for mobile (hidden on desktop where it's inline) */}
-          <a
-            href={spotifyTrackUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="sm:hidden inline-flex items-center gap-1.5 text-[11px] text-[#1DB954] hover:underline"
-          >
-            <SpotifyIcon size={12} />
-            Open in Spotify
-          </a>
 
           {/* All reasons */}
           {song.reasons.length > 1 && (

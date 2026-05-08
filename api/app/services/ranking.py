@@ -198,6 +198,46 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
     return dict(artist_weights)
 
 
+def _get_user_library_artist_ids(client: Client, user_id: str) -> set[int]:
+    """Return artist IDs represented by tracks in the user's library.
+
+    Taste weights also include top artists and explicit feedback, but those
+    are preference signals, not proof that an artist is in the saved/listened
+    library. Keeping this separate prevents feedback-only artists from being
+    accidentally penalized or labeled as "From your library."
+    """
+    try:
+        tracks_resp = (
+            client.table("user_tracks")
+            .select("track_id")
+            .eq("user_id", user_id)
+            .range(0, 9999)
+            .execute()
+        )
+        track_ids = [
+            row.get("track_id")
+            for row in (tracks_resp.data or [])
+            if row.get("track_id") is not None
+        ]
+        if not track_ids:
+            return set()
+
+        tracks_map_resp = (
+            client.table("tracks")
+            .select("id,artist_id")
+            .in_("id", track_ids)
+            .range(0, 9999)
+            .execute()
+        )
+        return {
+            int(row["artist_id"])
+            for row in (tracks_map_resp.data or [])
+            if row.get("artist_id") is not None
+        }
+    except Exception:
+        return set()
+
+
 def _get_user_feedback(client: Client, user_id: str) -> dict[int, int]:
     """Return {artist_id: net_feedback_score} from user_feedback.
 
@@ -392,7 +432,7 @@ def rank_candidates(
     hard_genre_cap: bool = False,
 ) -> list[dict]:
     artist_weights = _get_user_artist_weights(client, user_id)
-    library_artist_ids = set(artist_weights.keys())
+    library_artist_ids = _get_user_library_artist_ids(client, user_id)
     previously_recommended = _get_previously_recommended_artist_ids(client, user_id)
     feedback_scores = _get_user_feedback(client, user_id)
 

@@ -126,7 +126,7 @@ export async function POST(request: NextRequest) {
 
     if (playRes.status === 403 || reason === "PREMIUM_REQUIRED") {
       return NextResponse.json(
-        { error: "Spotify Premium required for in-browser playback. Open the artist in your Spotify app instead." },
+        { error: "Spotify Premium required for remote playback. Try another song in the browser player." },
         { status: 403 }
       );
     }
