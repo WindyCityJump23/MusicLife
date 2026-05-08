@@ -81,13 +81,13 @@ def _assign_lane(
     is_library_artist: bool,
     editorial: float,
 ) -> str:
-    if in_library:
-        return "familiar"
-    if track_pop >= 0.55:
+    if track_pop >= 0.72 and not in_library:
+        return "radio_hit"
+    if track_pop >= 0.48:
         return "popular"
     if track_pop <= 0.35 and not is_library_artist:
         return "deep_cut"
-    if is_library_artist and track_pop > 0.40:
+    if is_library_artist and track_pop > 0.42:
         return "popular"
     if editorial > 0.3:
         return "popular"
@@ -752,6 +752,8 @@ def recommend_songs(
             # valuable discoveries even from artists you already know).
             in_library = track_id in user_track_map if track_id else False
             is_library_artist = aid in library_artist_ids
+            if exclude_library and in_library:
+                continue
             if in_library:
                 # Time-decay: a track not played in 6+ months is a rediscovery,
                 # not a repeat. Penalty relaxes from 0.45 (recent) → 0.80 (stale).
@@ -882,7 +884,7 @@ def recommend_songs(
 _LANE_QUOTAS = {
     "deep_cut": 0.45,
     "popular": 0.35,
-    "familiar": 0.20,
+    "radio_hit": 0.20,
 }
 
 
@@ -921,7 +923,7 @@ def _lane_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
     MAX_ARTIST_SONGS = 1
 
     # Round-robin across lanes in priority order
-    lane_order = ["deep_cut", "popular", "familiar"]
+    lane_order = ["deep_cut", "popular", "radio_hit"]
     lane_cursors: dict[str, int] = {l: 0 for l in lane_order}
 
     rounds_without_progress = 0
@@ -977,21 +979,44 @@ def _lane_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
         else:
             rounds_without_progress = 0
 
-    # Top-up pass: if lane constraints left us short, fill from any lane
-    if len(selected) < limit:
+    distinct_artist_count = len({
+        (str(candidate.get("artist_id") or "") or candidate["artist_name"]).lower()
+        for candidate in pool
+    })
+    unique_artist_target = min(limit, distinct_artist_count)
+
+    def top_up(max_artist_songs: int) -> None:
+        """Fill open slots while preserving artist spread as long as possible."""
+        nonlocal selected
         for candidate in pool:
             if len(selected) >= limit:
                 break
             key = f"{candidate['track_name']}|{candidate['artist_name']}".lower()
             if key in used:
                 continue
-            artist = candidate["artist_name"].lower()
-            if artist_counts.get(artist, 0) >= 2:
+            artist = (str(candidate.get("artist_id") or "") or candidate["artist_name"]).lower()
+            # Do not add a second song by any artist until every possible slot
+            # that can be filled by a unique artist has been filled. This keeps
+            # artists from appearing across multiple UI lanes when the catalog
+            # has enough breadth.
+            if len(selected) < unique_artist_target and artist_counts.get(artist, 0) >= 1:
+                continue
+            if artist_counts.get(artist, 0) >= max_artist_songs:
                 continue
             selected.append(candidate)
             used.add(key)
+            lane_counts[candidate.get("lane", "deep_cut")] += 1
             artist_counts[artist] += 1
+
+    # Top-up pass: first preserve one artist per result; only then relax for
+    # genuinely sparse catalogs where duplicates are better than empty slots.
+    if len(selected) < limit:
+        top_up(1)
+    if len(selected) < limit:
+        top_up(2)
 
     print(f"song_ranking: lane distribution — {dict(lane_counts)}")
     return selected
 
+
+_song_diversity_rerank = _lane_diversity_rerank

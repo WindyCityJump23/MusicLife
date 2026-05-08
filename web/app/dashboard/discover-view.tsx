@@ -99,7 +99,7 @@ function laneForSong(song: SongRecommendation): DiscoveryLaneId {
   // Prefer backend-assigned lane when available
   if (song.lane) {
     if (song.lane === "deep_cut") return "deep_cuts";
-    if (song.lane === "familiar") return "radio_hits";
+    if (song.lane === "radio_hit" || song.lane === "familiar") return "radio_hits";
     if (song.lane === "popular") return "popular";
   }
 
@@ -212,6 +212,48 @@ function interleaveForPlayback(songs: SongRecommendation[]): SongRecommendation[
   }
 
   return mixed;
+}
+
+function trackIdentity(song: SongRecommendation): string {
+  return (
+    song.spotify_track_id ||
+    `${song.track_name.toLowerCase()}|${song.artist_name.toLowerCase()}`
+  );
+}
+
+function artistIdentity(song: SongRecommendation): string {
+  return (song.artist_id || song.artist_name).toLowerCase();
+}
+
+function spreadArtistsForDisplay(
+  songs: SongRecommendation[],
+  target: number
+): SongRecommendation[] {
+  const selected: SongRecommendation[] = [];
+  const seenTracks = new Set<string>();
+  const artistCounts = new Map<string, number>();
+
+  function addPass(maxPerArtist: number, requireUniqueArtist: boolean) {
+    for (const song of songs) {
+      if (selected.length >= target) break;
+      const trackKey = trackIdentity(song);
+      if (seenTracks.has(trackKey)) continue;
+
+      const artistKey = artistIdentity(song);
+      const count = artistCounts.get(artistKey) ?? 0;
+      if (requireUniqueArtist && count > 0) continue;
+      if (count >= maxPerArtist) continue;
+
+      selected.push(song);
+      seenTracks.add(trackKey);
+      artistCounts.set(artistKey, count + 1);
+    }
+  }
+
+  addPass(1, true);
+  if (selected.length < target) addPass(2, false);
+
+  return selected;
 }
 
 function toQueueTracks(songs: SongRecommendation[]): QueueTrack[] {
@@ -364,6 +406,7 @@ export default function DiscoverView({
             prompt: prompt || null,
             weights: normalized,
             limit: 30,
+            exclude_library: true,
             discover_run_id: crypto.randomUUID(),
             exclude_previously_shown: true,
             history_window_runs: 50,
@@ -475,7 +518,7 @@ export default function DiscoverView({
                 const trackPop = (track.popularity ?? 50) / 100;
                 const depthBoost = trackPop < 0.46 ? 1.08 : trackPop > 0.74 ? 0.88 : 1.0;
                 const songScore = artist.score * (0.78 + 0.18 * trackPop) * depthBoost;
-                const lane = trackPop < 0.35 ? "deep_cut" : trackPop >= 0.55 ? "popular" : "deep_cut";
+                const lane = trackPop >= 0.72 ? "radio_hit" : trackPop >= 0.48 ? "popular" : "deep_cut";
                 return {
                   track_id: null,
                   track_name: track.name,
@@ -533,14 +576,16 @@ export default function DiscoverView({
         }
       }
 
-      setResults(deduped);
-      writeDiscoverCache(prompt, weights, deduped);
+      const finalResults = spreadArtistsForDisplay(deduped, TARGET_SONGS);
+
+      setResults(finalResults);
+      writeDiscoverCache(prompt, weights, finalResults);
 
       // Set the player queue so songs auto-advance
-      setQueue(toQueueTracks(deduped));
+      setQueue(toQueueTracks(finalResults));
 
       // Fetch initial favorite and feedback state
-      await refreshTrackState(deduped);
+      await refreshTrackState(finalResults);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
       setResults([]);
@@ -1136,9 +1181,9 @@ function SongRow({
             <span className={`inline-block text-[9px] font-medium rounded-full px-1.5 py-0.5 mt-0.5 ${
               song.lane === "deep_cut" ? "bg-violet-50 text-violet-600" :
               song.lane === "popular" ? "bg-amber-50 text-amber-600" :
-              "bg-neutral-100 text-neutral-500"
+              "bg-emerald-50 text-emerald-600"
             }`}>
-              {song.lane === "deep_cut" ? "Deep cut" : song.lane === "popular" ? "Popular" : "Familiar"}
+              {song.lane === "deep_cut" ? "Deep cut" : song.lane === "popular" ? "Popular" : "Radio hit"}
             </span>
           )}
         </div>

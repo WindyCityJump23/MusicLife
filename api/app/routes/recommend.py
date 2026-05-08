@@ -114,13 +114,6 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
         excluded_track_ids = build_excluded_track_ids(history_rows)
         excluded_artist_ids = build_excluded_artist_ids(history_rows)
 
-    # For prompted searches, use lighter exclusion: still exclude exact
-    # tracks shown recently, but allow artist repeats. The old code cleared
-    # exclusion entirely for prompts, which meant the same genre search
-    # returned identical results every time.
-    if req.prompt:
-        excluded_artist_ids = set()
-
     from app.services.song_ranking import recommend_songs as _recommend_songs
 
     request_base_seed = _std_random.randint(0, 2**31)
