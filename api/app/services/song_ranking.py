@@ -54,6 +54,38 @@ _CONTEXT_WORDS = frozenset({
 })
 
 
+def _chunked(items: list[int], size: int) -> list[list[int]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def _fetch_mentions_for_artist_ids(client: Client, artist_ids: list[int]) -> list[dict]:
+    mentions: list[dict] = []
+    for chunk in _chunked(artist_ids, 150):
+        resp = (
+            client.table("mentions")
+            .select("artist_id,source_id,published_at,sentiment,excerpt,url")
+            .in_("artist_id", chunk)
+            .range(0, 9999)
+            .execute()
+        )
+        mentions.extend(resp.data or [])
+    return mentions
+
+
+def _fetch_tracks_for_artist_ids(client: Client, artist_ids: list[int]) -> list[dict]:
+    tracks: list[dict] = []
+    for chunk in _chunked(artist_ids, 150):
+        resp = (
+            client.table("tracks")
+            .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness")
+            .in_("artist_id", chunk)
+            .range(0, 9999)
+            .execute()
+        )
+        tracks.extend(resp.data or [])
+    return tracks
+
+
 def classify_prompt(prompt_text: str) -> str:
     """Classify a prompt as 'genre', 'mood', or 'semantic'.
 
@@ -154,7 +186,10 @@ def recommend_songs(
     excluded_artist_ids = excluded_artist_ids or set()
 
     # ── Candidate pool via pgvector RPC ──────────────────────────
-    POOL_SIZE = max(limit * 20, 500)
+    # Discovery cannot feel fresh if every click only considers the same top
+    # few hundred taste-nearest artists. Pull a wider frontier, then sample
+    # below the obvious head of the list later.
+    POOL_SIZE = max(limit * 50, 1500)
 
     # Classify prompt to decide filtering strategy
     prompt_kind = classify_prompt(prompt_text) if prompt_text else None
@@ -279,17 +314,11 @@ def recommend_songs(
     if candidate_ids:
         # No embedding column — context similarity is computed in SQL via
         # max_mention_similarity_per_artist RPC below.
-        mention_resp = (
-            client.table("mentions")
-            .select("artist_id,source_id,published_at,sentiment,excerpt,url")
-            .in_("artist_id", candidate_ids)
-            .range(0, 9999)
-            .execute()
-        )
+        mention_rows = _fetch_mentions_for_artist_ids(client, candidate_ids)
     else:
-        mention_resp = type("_R", (), {"data": []})()  # type: ignore
+        mention_rows = []
     mentions_by_artist: dict[int, list[dict]] = defaultdict(list)
-    for m in (mention_resp.data or []):
+    for m in mention_rows:
         aid = m.get("artist_id")
         if aid is not None:
             mentions_by_artist[int(aid)].append(m)
@@ -357,11 +386,26 @@ def recommend_songs(
     # Instead, we apply a softer penalty to library-artist songs later.
     # Affinity comes from the RPC's `similarity` field — pgvector cosine
     # against taste_vector — so no embedding column is fetched here.
-    raw_affinities: list[tuple[dict, float]] = [
-        (a, float(a.get("similarity") or 0.0))
+    non_recent_artist_count = sum(
+        1
         for a in all_artists
-        if a.get("id") is not None
-    ]
+        if a.get("id") is not None and int(a["id"]) not in excluded_artist_ids
+    )
+    hard_exclude_recent_artists = bool(excluded_artist_ids) and non_recent_artist_count >= max(limit * 3, 30)
+    if hard_exclude_recent_artists:
+        print(
+            f"song_ranking: hard-excluding {len(excluded_artist_ids)} recent artists; "
+            f"{non_recent_artist_count} alternatives available"
+        )
+
+    raw_affinities: list[tuple[dict, float]] = []
+    for a in all_artists:
+        if a.get("id") is None:
+            continue
+        aid = int(a["id"])
+        if hard_exclude_recent_artists and aid in excluded_artist_ids:
+            continue
+        raw_affinities.append((a, float(a.get("similarity") or 0.0)))
 
     raw_vals = [r for _, r in raw_affinities]
     pct_ranks = _percentile_rank(raw_vals)
@@ -468,10 +512,10 @@ def recommend_songs(
         )
 
         if aid in previously_recommended:
-            base_score *= 0.65
+            base_score *= 0.45
 
         if aid in excluded_artist_ids:
-            base_score *= 0.40
+            base_score *= 0.15
 
         # Artist-level feedback adjustment
         artist_fb = feedback_scores.get(aid, 0)
@@ -503,11 +547,18 @@ def recommend_songs(
     # tracks) limiting to top-N misses user-specific deep cuts. We fetch
     # tracks for ALL scored artists and let the per-track scoring + diversity
     # reranking do the filtering.
-    top_artist_ids = sorted(
+    ranked_artist_ids = sorted(
         artist_scores.keys(),
         key=lambda a: artist_scores[a]["base_score"],
         reverse=True,
-    )[: max(limit * 20, 500)]  # Wider frontier than before to pull from more artists
+    )
+    top_artist_ids = _select_artist_frontier(
+        ranked_artist_ids,
+        artist_scores,
+        rng,
+        limit,
+        has_explicit_prompt=has_explicit_prompt,
+    )
 
     if not top_artist_ids:
         return []
@@ -515,14 +566,7 @@ def recommend_songs(
     # Track metadata only — no embedding column. Per-track similarity
     # against prompt and taste vectors is fetched via RPC below so we
     # never pull tracks.embedding (vector(1024)) over HTTPS.
-    tracks_resp = (
-        client.table("tracks")
-        .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness")
-        .in_("artist_id", top_artist_ids)
-        .range(0, 9999)
-        .execute()
-    )
-    all_tracks = tracks_resp.data or []
+    all_tracks = _fetch_tracks_for_artist_ids(client, top_artist_ids)
 
 
     # If the result pool is still shallow, widen artist frontier using
@@ -555,14 +599,7 @@ def recommend_songs(
                     break
 
             if extra_artist_ids:
-                extra_tracks_resp = (
-                    client.table("tracks")
-                    .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness")
-                    .in_("artist_id", extra_artist_ids)
-                    .range(0, 9999)
-                    .execute()
-                )
-                extra_tracks = extra_tracks_resp.data or []
+                extra_tracks = _fetch_tracks_for_artist_ids(client, extra_artist_ids)
                 all_tracks.extend(extra_tracks)
 
                 # Score expansion artists so Phase 3 can rank their tracks.
@@ -886,6 +923,73 @@ _LANE_QUOTAS = {
     "popular": 0.35,
     "radio_hit": 0.20,
 }
+
+
+def _select_artist_frontier(
+    ranked_artist_ids: list[int],
+    artist_scores: dict[int, dict],
+    rng: random.Random,
+    limit: int,
+    *,
+    has_explicit_prompt: bool,
+) -> list[int]:
+    """Choose the artist frontier to fetch tracks for.
+
+    Keep the strongest matches, but intentionally include a rotating slice from
+    the long tail of viable matches. Without this, novelty filtering only
+    reshuffles the same high-affinity artists and Discover feels static.
+    """
+    if not ranked_artist_ids:
+        return []
+
+    frontier_size = min(len(ranked_artist_ids), max(limit * 28, 700))
+    head_size = min(len(ranked_artist_ids), max(limit * 4, 100))
+    head = ranked_artist_ids[:head_size]
+
+    remaining_slots = max(0, frontier_size - len(head))
+    if remaining_slots == 0:
+        return head
+
+    # Prompted searches should stay more on-intent, but still rotate below the
+    # obvious top matches. Unprompted discovery can range wider.
+    candidate_multiplier = 3 if has_explicit_prompt else 6
+    frontier_pool = ranked_artist_ids[head_size : head_size + remaining_slots * candidate_multiplier]
+    if not frontier_pool:
+        return head
+
+    weighted_pool: list[int] = []
+    for idx, aid in enumerate(frontier_pool):
+        score = max(float(artist_scores.get(aid, {}).get("base_score") or 0.0), 0.0)
+        # Higher ranked artists get more tickets, but everyone in the pool has
+        # a chance. This creates meaningful session-to-session movement without
+        # ignoring taste.
+        tickets = max(1, int(score * 6) + max(0, 4 - idx // max(limit, 1)))
+        weighted_pool.extend([aid] * tickets)
+
+    sampled: list[int] = []
+    seen = set(head)
+    while weighted_pool and len(sampled) < remaining_slots:
+        aid = rng.choice(weighted_pool)
+        weighted_pool = [candidate for candidate in weighted_pool if candidate != aid]
+        if aid in seen:
+            continue
+        seen.add(aid)
+        sampled.append(aid)
+
+    if len(sampled) < remaining_slots:
+        for aid in frontier_pool:
+            if aid in seen:
+                continue
+            sampled.append(aid)
+            seen.add(aid)
+            if len(sampled) >= remaining_slots:
+                break
+
+    sampled.sort(
+        key=lambda aid: artist_scores.get(aid, {}).get("base_score", 0.0),
+        reverse=True,
+    )
+    return head + sampled
 
 
 def _lane_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
