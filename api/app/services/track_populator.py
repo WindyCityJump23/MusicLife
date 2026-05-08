@@ -18,7 +18,7 @@ from typing import Callable
 
 import httpx
 
-from app.services.supabase_client import admin_supabase
+from app.services.supabase_client import admin_supabase, retry_on_disconnect
 
 
 TRACKS_PER_ARTIST = 50  # Fetch deep into each artist's catalog
@@ -82,12 +82,25 @@ def run_track_population(
         # Validate token — retry on 429 (rate limit) with exponential backoff
         print(f"track_populator: validating Spotify token (len={len(access_token)})", flush=True)
         MAX_RETRY_WAIT = 60  # Never wait more than 60s per retry
+        test_resp: httpx.Response | None = None
         for attempt in range(5):
-            test_resp = client.get(
-                "https://api.spotify.com/v1/search",
-                params={"q": "test", "type": "track", "limit": 1},
-                headers=headers,
-            )
+            try:
+                test_resp = client.get(
+                    "https://api.spotify.com/v1/search",
+                    params={"q": "test", "type": "track", "limit": 1},
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                wait = min(2 ** attempt, MAX_RETRY_WAIT)
+                print(
+                    f"track_populator: token test transport error "
+                    f"({type(exc).__name__}: {exc}), waiting {wait}s",
+                    flush=True,
+                )
+                if progress:
+                    progress(f"Spotify connection dropped — retrying in {wait}s...")
+                time.sleep(wait)
+                continue
             print(f"track_populator: token test HTTP {test_resp.status_code} (attempt {attempt+1})", flush=True)
             if test_resp.status_code == 429:
                 retry_after = int(test_resp.headers.get("Retry-After", "5"))
@@ -107,6 +120,13 @@ def run_track_population(
                 time.sleep(wait)
                 continue
             break
+
+        if test_resp is None:
+            msg = "Spotify connection dropped during token validation. Please retry."
+            print(f"track_populator: {msg}", flush=True)
+            if progress:
+                progress(msg)
+            return {"artists_total": before_skip, "artists_processed": 0, "tracks_added": 0, "error": msg}
 
         if test_resp.status_code in (401, 403):
             msg = f"Spotify token expired or invalid (HTTP {test_resp.status_code}). Please sign out and back in."
@@ -203,12 +223,15 @@ def _get_artist_track_counts() -> dict[int, int]:
     page_size = 1000
 
     while True:
-        resp = (
-            admin_supabase.table("tracks")
-            .select("artist_id")
-            .not_.is_("artist_id", "null")
-            .range(offset, offset + page_size - 1)
-            .execute()
+        resp = retry_on_disconnect(
+            lambda: (
+                admin_supabase.table("tracks")
+                .select("artist_id")
+                .not_.is_("artist_id", "null")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            ),
+            attempts=3,
         )
         rows = resp.data or []
         for row in rows:
@@ -229,12 +252,15 @@ def _fetch_all_artists() -> list[dict]:
     page_size = 1000
 
     while True:
-        resp = (
-            admin_supabase.table("artists")
-            .select("id,name,spotify_artist_id")
-            .not_.is_("spotify_artist_id", "null")
-            .range(offset, offset + page_size - 1)
-            .execute()
+        resp = retry_on_disconnect(
+            lambda: (
+                admin_supabase.table("artists")
+                .select("id,name,spotify_artist_id")
+                .not_.is_("spotify_artist_id", "null")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            ),
+            attempts=3,
         )
         rows = resp.data or []
         all_rows.extend(rows)
@@ -314,9 +340,23 @@ def _retry_429(
     headers: dict[str, str],
     params: dict | None = None,
 ) -> httpx.Response:
-    """Make an HTTP request with automatic 429 retry (up to 2 retries, capped at 60s)."""
+    """Make an HTTP request with retry for 429 and transient disconnects."""
+    last_transport_error: httpx.TransportError | None = None
+    resp: httpx.Response | None = None
     for attempt in range(3):
-        resp = client.request(method, url, params=params, headers=headers)
+        try:
+            resp = client.request(method, url, params=params, headers=headers)
+        except httpx.TransportError as exc:
+            last_transport_error = exc
+            wait = min(2 * (attempt + 1), 8)
+            print(
+                f"track_populator: transport error on {url.split('/')[-1]} "
+                f"({type(exc).__name__}: {exc}), waiting {wait}s "
+                f"(attempt {attempt + 1})",
+                flush=True,
+            )
+            time.sleep(wait)
+            continue
         if resp.status_code != 429:
             return resp
         retry_after = int(resp.headers.get("Retry-After", "5"))
@@ -325,7 +365,9 @@ def _retry_429(
         wait = min(max(retry_after, 5 * (attempt + 1)), 60)
         print(f"track_populator: 429 on {url.split('/')[-1]}, waiting {wait}s (attempt {attempt+1})", flush=True)
         time.sleep(wait)
-    return resp  # Return last response even if still 429
+    if resp is not None:
+        return resp  # Return last response even if still 429
+    raise last_transport_error or httpx.TransportError("Spotify request failed")
 
 
 def _search_and_upsert_tracks(
@@ -456,8 +498,13 @@ def _search_and_upsert_tracks(
     if not rows:
         return 0, None
 
-    admin_supabase.table("tracks").upsert(
-        rows, on_conflict="spotify_track_id"
-    ).execute()
+    retry_on_disconnect(
+        lambda: (
+            admin_supabase.table("tracks")
+            .upsert(rows, on_conflict="spotify_track_id")
+            .execute()
+        ),
+        attempts=3,
+    )
 
     return len(rows), None
