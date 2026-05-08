@@ -431,7 +431,10 @@ def _extract_and_upsert_blog_tracks(
             print(f"source_ingest: Spotify rate-limited during blog track extraction — stopping")
             break
 
-        # Match the Spotify artist to our catalog by Spotify artist ID
+        # Match the Spotify artist to our catalog by Spotify artist ID.
+        # If the artist doesn't exist yet, create them — this is how
+        # editorial feeds expand the discovery universe beyond the
+        # user's existing library.
         spotify_artists = track_obj.get("artists") or []
         artist_db_id: int | None = None
         for sa in spotify_artists:
@@ -440,7 +443,16 @@ def _extract_and_upsert_blog_tracks(
                 artist_db_id = spotify_artist_index[sid]
                 break
 
-        # Only upsert tracks where we can link to a catalog artist
+        if artist_db_id is None:
+            primary_artist = spotify_artists[0] if spotify_artists else None
+            if primary_artist and primary_artist.get("id"):
+                artist_db_id = _create_artist_from_spotify(
+                    client, spotify_headers,
+                    primary_artist["id"], primary_artist.get("name", ""),
+                )
+                if artist_db_id:
+                    spotify_artist_index[primary_artist["id"]] = artist_db_id
+
         if artist_db_id is None:
             continue
 
@@ -527,6 +539,67 @@ def _upsert_blog_track(track_obj: dict, artist_db_id: int) -> bool:
     except Exception as exc:
         print(f"source_ingest: failed to upsert blog track {spotify_track_id}: {exc}")
         return False
+
+
+# ---------------------------------------------------------------------------
+# New artist creation from Spotify
+# ---------------------------------------------------------------------------
+
+
+def _create_artist_from_spotify(
+    client: httpx.Client,
+    headers: dict[str, str],
+    spotify_artist_id: str,
+    fallback_name: str,
+) -> int | None:
+    """Fetch artist metadata from Spotify and insert into public.artists.
+
+    Returns the new DB artist ID, or None on failure.
+    """
+    try:
+        resp = client.get(
+            f"https://api.spotify.com/v1/artists/{spotify_artist_id}",
+            headers=headers,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+    except Exception:
+        return None
+
+    name = data.get("name") or fallback_name
+    if not name or len(name) < MIN_ARTIST_NAME_LEN:
+        return None
+
+    genres = data.get("genres") or []
+    popularity = data.get("popularity")
+    images = data.get("images") or []
+    image_url = images[0]["url"] if images else None
+
+    row = {
+        "name": name,
+        "spotify_artist_id": spotify_artist_id,
+        "genres": genres,
+        "popularity": popularity,
+        "image_url": image_url,
+        "source": "editorial_ingest",
+    }
+
+    try:
+        result = (
+            admin_supabase.table("artists")
+            .upsert(row, on_conflict="spotify_artist_id")
+            .execute()
+        )
+        rows = result.data or []
+        if rows:
+            new_id = rows[0].get("id")
+            print(f"source_ingest: created new artist '{name}' (id={new_id}) from editorial feed")
+            return int(new_id) if new_id else None
+    except Exception as exc:
+        print(f"source_ingest: failed to create artist '{name}': {exc}")
+
+    return None
 
 
 # ---------------------------------------------------------------------------

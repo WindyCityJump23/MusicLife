@@ -1,19 +1,20 @@
 # MusicLife
 
-A personal music discovery dashboard powered by Spotify, editorial sources (music blogs, Reddit, Bandcamp), and AI recommendations.
+Pandora-style personal radio with playlist export and daily editorial discovery refresh.
 
-**Stack:** Next.js 14 · FastAPI · Supabase (Postgres + pgvector) · Anthropic Claude · Voyage AI
+**Stack:** Next.js 14 · FastAPI · Supabase (Postgres + pgvector) · Voyage AI · Spotify Web Playback SDK
 
 ---
 
 ## What it does
 
-- Syncs your Spotify library, top artists, and recent plays
-- Enriches artists with MusicBrainz + Last.fm metadata
-- Embeds artist profiles as vectors for taste-aware similarity
-- Crawls editorial RSS feeds and Reddit to find mention heat
-- Recommends artists you haven't heard yet, blending personal affinity, prompt context, and editorial momentum
-- Lets you save, name, and revisit discovery views
+- **Personal radio:** Syncs your Spotify library, builds a taste profile from your listening history, and generates personalized song recommendations you can play in-browser
+- **Discovery engine:** Blends personal taste affinity, editorial momentum from music blogs/Reddit, and prompt context to surface music you wouldn't find yourself
+- **Lane-aware results:** Backend enforces quotas across three lanes — deep cuts (45%), popular picks (35%), and familiar comfort (20%) — so every session has genuine discoveries
+- **Novelty guardrails:** Tracks discovery history at both track and artist level, ensuring you don't get the same recommendations twice
+- **Editorial ingest:** Crawls RSS feeds and Reddit for artist mentions, and creates new artist candidates from blog-sourced tracks to expand the discovery universe
+- **Playlist export:** Save any Discover session as a Spotify playlist with one click
+- **Playback:** Built-in Spotify Web Playback SDK player with queue management
 
 ---
 
@@ -75,7 +76,6 @@ make env        # copies .env.local.example → web/.env.local and api/.env.exam
 | `SUPABASE_URL` | Same as above |
 | `SUPABASE_SERVICE_ROLE_KEY` | Same as above |
 | `SUPABASE_ANON_KEY` | Same as above |
-| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) |
 | `VOYAGE_API_KEY` | [dash.voyageai.com](https://dash.voyageai.com) *(or use OpenAI below)* |
 | `EMBEDDING_PROVIDER` | `voyage` or `openai` |
 | `EMBEDDING_MODEL` | `voyage-3` *(Voyage)* or `text-embedding-3-large` *(OpenAI)* |
@@ -96,15 +96,7 @@ export DATABASE_URL=postgres://postgres:[password]@[host]:5432/postgres
 make migrate
 ```
 
-Or paste each file manually in **Supabase → SQL Editor**:
-
-1. `db/migrations/001_init.sql`
-2. `db/migrations/002_playlists.sql`
-3. `db/migrations/003_rls.sql`
-4. `db/migrations/004_ingest_constraints.sql`
-5. `db/migrations/005_mentions_dedup.sql`
-6. `db/migrations/006_triggers_and_indexes.sql`
-7. `db/seed/sources.sql`
+Or paste each file in **Supabase → SQL Editor** in order (`db/migrations/001_init.sql` through `017_discover_history_artists.sql`), then seed data with `db/seed/sources.sql`.
 
 ### 5. Install dependencies and start
 
@@ -124,55 +116,59 @@ make api   # FastAPI only
 make web   # Next.js only
 ```
 
-### 6. Populate your library
+### 6. Set up your radio
 
-In the dashboard sidebar (bottom section):
+In the dashboard sidebar:
 
-1. **Sync Spotify library** — imports your saved tracks, top artists, and recent plays
-2. **Enrich artists** — fetches MusicBrainz + Last.fm metadata and bios (takes a few minutes; runs 1 req/s to respect MusicBrainz rate limits)
-3. **Embed artists** — generates taste vectors (requires Voyage or OpenAI key)
-4. **Fetch sources** — crawls editorial RSS feeds for mention heat
+1. **Sync Library** — imports your saved tracks, top artists, and recent plays
+2. **Enrich Artists** — fetches MusicBrainz + Last.fm metadata (runs at 1 req/s)
+3. **Generate Embeddings** — creates taste vectors (requires Voyage or OpenAI key)
+4. **Populate Tracks** — builds the track catalog for song-level recommendations
+5. **Refresh Sources** — crawls editorial feeds for mention heat and new artist candidates
 
-Once all four steps are complete, the **Discover** tab will return real recommendations.
+Once all steps are complete, the **Discover** tab generates personalized radio sessions.
 
 ---
 
 ## Architecture
 
 ```
-web/          Next.js 14 frontend (App Router, Tailwind, Spotify SDK)
-api/          FastAPI ingestion + ranking + synthesis service
+web/          Next.js 14 frontend (App Router, Tailwind, Spotify Web Playback SDK)
+api/          FastAPI ranking + ingestion + discovery service
 db/           SQL migrations and seed data
-docs/         Design notes, architecture decisions, API references
 ```
 
-Three-signal recommendation model:
+### Recommendation model
 
 ```
-score = w_affinity * affinity + w_context * context + w_editorial * editorial
+song_score = (w_affinity × track_affinity + w_context × track_context + w_editorial × editorial) × track_boost
 ```
 
-- **Affinity** — cosine similarity between candidate artist embedding and your taste centroid
-- **Context** — cosine similarity between your prompt embedding and editorial mention embeddings
-- **Editorial** — recency × trust weight × sentiment from crawled sources
+- **Affinity** — cosine(taste_vector, track/artist embedding), blended with genre preference weights
+- **Context** — cosine(prompt_embedding, track/mention embedding), with prompt classification (genre vs mood vs semantic)
+- **Editorial** — recency × trust_weight × sentiment from crawled sources
+- **Track boost** — popularity, recency, audio feature alignment, familiarity penalty, obscurity bonus, feedback
 
-Weights are controlled by the sliders in the Discover view.
+### Discovery pipeline
 
----
+1. **Prompt classifier** distinguishes genre queries ("alternative rock") from mood queries ("sad night drive") from semantic queries ("new Chicago indie") — genre queries filter the artist pool, mood/semantic queries rely on embedding similarity
+2. **Lane assignment** happens in the backend: each track is assigned to `deep_cut`, `popular`, or `familiar` based on popularity, library overlap, and editorial signal
+3. **Lane quotas** enforce a mix (45% deep cuts, 35% popular, 20% familiar) during diversity reranking
+4. **Novelty tracking** persists both track IDs and artist IDs per discover run; subsequent requests exclude recently shown artists (not just tracks)
+5. **Editorial ingest** creates new artist records from blog-sourced tracks, expanding the catalog beyond the user's existing library
 
-## API reference
-
-Full interactive docs at [http://localhost:8000/docs](http://localhost:8000/docs) once the API is running.
+### Key endpoints
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /health` | Liveness + DB connectivity check |
+| `GET /health` | Liveness + readiness check |
+| `POST /recommend` | Artist-level taste recommendations |
+| `POST /recommend/songs` | Song-level recommendations with lanes, novelty, and history |
 | `POST /ingest/spotify-library` | Pull Spotify library and listens |
 | `POST /ingest/enrich-artists` | MusicBrainz + Last.fm enrichment |
 | `POST /ingest/embed-artists` | Generate artist embeddings |
-| `POST /ingest/sources` | Crawl RSS + Reddit feeds |
-| `POST /recommend` | Get taste-aware recommendations |
-| `POST /synthesize/for-artist` | Generate "Why this?" explanation via Claude |
+| `POST /ingest/sources` | Crawl RSS + Reddit feeds, create new artists |
+| `POST /playlist-from-tracks` | Export discover session to Spotify playlist |
 
 ---
 

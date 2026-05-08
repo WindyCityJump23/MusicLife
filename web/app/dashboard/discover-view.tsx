@@ -28,6 +28,9 @@ type SongRecommendation = {
   explicit: boolean;
   spotify_track_id: string;
   score: number;
+  lane?: string;
+  novelty_score?: number;
+  familiarity_score?: number;
   signals: SignalBreakdown;
   reasons: string[];
   genres: string[];
@@ -36,7 +39,6 @@ type SongRecommendation = {
 };
 
 type Preset = { label: string; desc: string; weights: { affinity: number; context: number; editorial: number } };
-type DiscoveryLaneId = "radio_hits" | "popular" | "deep_cuts";
 
 type DiscoveryLane = {
   id: DiscoveryLaneId;
@@ -79,8 +81,8 @@ const DISCOVERY_LANES: DiscoveryLane[] = [
 ];
 
 const TARGET_SONGS = 25;
-const FALLBACK_ARTIST_SEARCH_LIMIT = 10;
-const FALLBACK_TRACK_SEARCH_LIMIT = 6;
+const FALLBACK_ARTIST_SEARCH_LIMIT = 15;
+const FALLBACK_TRACK_SEARCH_LIMIT = 20;
 const DISCOVER_CACHE_KEY = "musiclife:discover:last-results";
 const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -92,6 +94,13 @@ type DiscoverCachePayload = {
 };
 
 function laneForSong(song: SongRecommendation): DiscoveryLaneId {
+  // Prefer backend-assigned lane when available
+  if (song.lane) {
+    if (song.lane === "deep_cut") return "deep_cuts";
+    if (song.lane === "familiar") return "radio_hits";
+    if (song.lane === "popular") return "popular";
+  }
+
   const popularity = song.signals.track_popularity ?? 0.5;
   const reasons = song.reasons.join(" ").toLowerCase();
   const genres = song.genres.join(" ").toLowerCase();
@@ -380,6 +389,9 @@ export default function DiscoverView({
             explicit: r.explicit ?? false,
             spotify_track_id: r.spotify_track_id ?? "",
             score: r.score ?? 0,
+            lane: r.lane,
+            novelty_score: r.novelty_score,
+            familiarity_score: r.familiarity_score,
             signals: {
               affinity: r.signals?.affinity ?? 0,
               context: r.signals?.context ?? 0,
@@ -467,6 +479,7 @@ export default function DiscoverView({
                 const trackPop = (track.popularity ?? 50) / 100;
                 const depthBoost = trackPop < 0.46 ? 1.08 : trackPop > 0.74 ? 0.88 : 1.0;
                 const songScore = artist.score * (0.78 + 0.18 * trackPop) * depthBoost;
+                const lane = trackPop < 0.35 ? "deep_cut" : trackPop >= 0.55 ? "popular" : "deep_cut";
                 return {
                   track_id: null,
                   track_name: track.name,
@@ -478,6 +491,9 @@ export default function DiscoverView({
                   explicit: track.explicit ?? false,
                   spotify_track_id: track.id,
                   score: songScore,
+                  lane,
+                  novelty_score: 1.0,
+                  familiarity_score: 0.0,
                   signals: {
                     affinity: artist.signals.affinity,
                     context: artist.signals.context,
@@ -1118,6 +1134,16 @@ function SongRow({
           {/* Source badge — shown when this song has editorial coverage */}
           {song.top_mention?.source && (
             <SourceBadge mention={song.top_mention} />
+          )}
+          {/* Lane pill */}
+          {song.lane && (
+            <span className={`inline-block text-[9px] font-medium rounded-full px-1.5 py-0.5 mt-0.5 ${
+              song.lane === "deep_cut" ? "bg-violet-50 text-violet-600" :
+              song.lane === "popular" ? "bg-amber-50 text-amber-600" :
+              "bg-neutral-100 text-neutral-500"
+            }`}>
+              {song.lane === "deep_cut" ? "Deep cut" : song.lane === "popular" ? "Popular" : "Familiar"}
+            </span>
           )}
         </div>
 

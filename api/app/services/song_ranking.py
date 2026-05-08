@@ -38,6 +38,60 @@ from app.services.vector_rpc import (
 )
 
 
+_MOOD_WORDS = frozenset({
+    "sad", "happy", "chill", "mellow", "upbeat", "energetic", "angry",
+    "melancholy", "dreamy", "dark", "bright", "intense", "relaxing",
+    "romantic", "nostalgic", "euphoric", "moody", "peaceful", "aggressive",
+    "soothing", "hype", "calm", "somber", "joyful", "bittersweet",
+    "anxious", "hopeful", "lonely", "party", "workout", "focus", "sleep",
+    "study", "driving", "running", "cooking", "morning", "night", "rainy",
+    "summer", "winter", "autumn", "spring", "beach", "road trip",
+})
+
+_CONTEXT_WORDS = frozenset({
+    "new", "recent", "latest", "fresh", "upcoming", "underground",
+    "obscure", "unknown", "local", "indie", "deep", "rare", "hidden",
+})
+
+
+def classify_prompt(prompt_text: str) -> str:
+    """Classify a prompt as 'genre', 'mood', or 'semantic'.
+
+    genre  = matches known genre tokens, use genre filter + embedding
+    mood   = mood/activity words, rely on embedding similarity only
+    semantic = mixed or unclear, use embedding only
+    """
+    words = set(prompt_text.strip().lower().replace("-", " ").split())
+    mood_hits = words & _MOOD_WORDS
+    context_hits = words & _CONTEXT_WORDS
+    non_stop = words - {"the", "a", "an", "and", "or", "for", "my", "me", "some", "like", "with", "in", "on", "of"}
+
+    if not non_stop:
+        return "semantic"
+
+    mood_ratio = len(mood_hits | context_hits) / len(non_stop)
+    if mood_ratio >= 0.5:
+        return "mood"
+    return "genre"
+
+
+def _assign_lane(
+    track_pop: float,
+    in_library: bool,
+    is_library_artist: bool,
+    editorial: float,
+) -> str:
+    if in_library:
+        return "familiar"
+    if track_pop >= 0.55:
+        return "popular"
+    if track_pop <= 0.35 and not is_library_artist:
+        return "deep_cut"
+    if editorial > 0.3:
+        return "popular"
+    return "deep_cut"
+
+
 def recommend_songs(
     client: Client,
     user_id: str,
@@ -48,6 +102,7 @@ def recommend_songs(
     limit: int,
     prompt_text: str | None = None,
     excluded_track_ids: set[str] | None = None,
+    excluded_artist_ids: set[int] | None = None,
     exploration_seed: int | None = None,
 ) -> list[dict]:
     """Return a ranked list of song-level recommendations.
@@ -94,19 +149,21 @@ def recommend_songs(
     except Exception:
         track_feedback = {}
 
+    excluded_artist_ids = excluded_artist_ids or set()
+
     # ── Candidate pool via pgvector RPC ──────────────────────────
-    # Migration 017 pushes cosine similarity into Postgres so we don't
-    # stream every artists.embedding vector(1024) over HTTPS — which used
-    # to time out the Render→Supabase connection on Discover requests.
-    # The RPC returns metadata + similarity; embeddings stay in Postgres.
     POOL_SIZE = max(limit * 20, 500)
 
-    # Genre tokens: when the prompt looks like a genre, restrict the pool
-    # to artists with matching genres (fuzzy substring on each genre). The
-    # SQL filter is permissive (any token matches any genre); we fall back
-    # to no genre filter if the result is too thin.
+    # Classify prompt to decide filtering strategy
+    prompt_kind = classify_prompt(prompt_text) if prompt_text else None
+    if prompt_kind:
+        print(f"song_ranking: prompt '{prompt_text}' classified as '{prompt_kind}'")
+
+    # Genre tokens: only apply genre filter when the prompt is actually
+    # about a genre. Mood prompts ("sad night drive") and semantic prompts
+    # rely on embedding similarity instead of genre substring matching.
     genre_tokens: list[str] | None = None
-    if prompt_text:
+    if prompt_text and prompt_kind == "genre":
         _norm = prompt_text.strip().lower().replace("-", " ").strip()
         _toks = [w for w in _norm.split() if len(w) >= 2]
         if _toks:
@@ -329,6 +386,7 @@ def recommend_songs(
     EXPLORATION_STRENGTH = 0.04 if has_explicit_prompt else 0.12
     rng = random.Random(exploration_seed) if exploration_seed is not None else random
     excluded_track_ids = excluded_track_ids or set()
+    excluded_artist_ids = excluded_artist_ids or set()
     # Artist-level jitter: add a small random perturbation to each artist's
     # base score so that artists near the score boundary rotate in/out each
     # request. Without this, the same N artists always win Phase 1 and results
@@ -409,6 +467,9 @@ def recommend_songs(
 
         if aid in previously_recommended:
             base_score *= 0.65
+
+        if aid in excluded_artist_ids:
+            base_score *= 0.40
 
         # Artist-level feedback adjustment
         artist_fb = feedback_scores.get(aid, 0)
@@ -735,6 +796,19 @@ def recommend_songs(
 
             final_score = track_base * track_boost + exploration
 
+            # ── Lane + novelty/familiarity assignment ──────────────
+            lane = _assign_lane(track_pop, in_library, is_library_artist, a_info["editorial"])
+
+            familiarity_score = 0.0
+            if in_library:
+                familiarity_score = 1.0
+            elif is_library_artist:
+                familiarity_score = 0.6
+            elif aid in previously_recommended:
+                familiarity_score = 0.3
+
+            novelty_score = 1.0 - familiarity_score
+
             # Build reasons
             reasons = []
             if track_affinity > 0.55:
@@ -776,6 +850,9 @@ def recommend_songs(
                 "explicit": track.get("explicit") or False,
                 "spotify_track_id": spotify_track_id,
                 "score": round(max(0.0, final_score), 4),
+                "lane": lane,
+                "novelty_score": round(novelty_score, 4),
+                "familiarity_score": round(familiarity_score, 4),
                 "signals": {
                     "affinity": round(track_affinity, 4),
                     "context": round(track_context, 4),
@@ -792,82 +869,113 @@ def recommend_songs(
     # Sort by score
     song_results.sort(key=lambda s: s["score"], reverse=True)
 
-    # ── Genre diversity re-ranking ───────────────────────────────
-    diverse = _song_diversity_rerank(song_results, max(limit, 0))
+    # ── Lane-aware diversity re-ranking ─────────────────────────
+    diverse = _lane_diversity_rerank(song_results, max(limit, 0))
 
     return diverse
 
 
-def _song_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
-    """Re-rank songs for genre + artist diversity.
+# Lane quotas as fractions of the total result set.
+# deep_cut gets the largest share — the whole point is discovery.
+_LANE_QUOTAS = {
+    "deep_cut": 0.45,
+    "popular": 0.35,
+    "familiar": 0.20,
+}
 
-    The artist cap is enforced unconditionally — even when the input pool
-    is smaller than `limit`, we still need to drop near-duplicate songs
-    from the same artist (e.g. multiple radio edits of the same track).
+
+def _lane_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
+    """Re-rank songs for genre + artist + lane diversity.
+
+    Enforces lane quotas so the result always has a healthy mix of
+    deep cuts, popular picks, and familiar comfort picks.
     """
     if not scored or limit <= 0:
         return []
 
-    # Give the greedy selector a wide pool so it can find diverse candidates,
-    # but cap it to avoid O(n²) slowdown on very large catalogs.
     pool = scored if len(scored) <= limit * 15 else scored[: limit * 15]
+
+    # Pre-sort each lane's candidates by score
+    lane_pools: dict[str, list[dict]] = defaultdict(list)
+    for s in pool:
+        lane_pools[s.get("lane", "deep_cut")].append(s)
+
+    lane_targets = {
+        lane: max(1, int(limit * frac))
+        for lane, frac in _LANE_QUOTAS.items()
+    }
+    # Distribute any rounding remainder to deep_cut
+    assigned = sum(lane_targets.values())
+    if assigned < limit:
+        lane_targets["deep_cut"] += limit - assigned
+
     selected: list[dict] = []
+    lane_counts: Counter[str] = Counter()
     genre_counts: Counter[str] = Counter()
     artist_counts: Counter[str] = Counter()
     used: set[str] = set()
 
     MAX_GENRE_FRACTION = 0.3
-    MAX_ARTIST_SONGS = 1  # One song per artist — maximize diversity
+    MAX_ARTIST_SONGS = 1
 
-    while len(selected) < limit and pool:
-        best_idx = -1
-        best_adjusted = -1.0
+    # Round-robin across lanes in priority order
+    lane_order = ["deep_cut", "popular", "familiar"]
+    lane_cursors: dict[str, int] = {l: 0 for l in lane_order}
 
-        for i, candidate in enumerate(pool):
-            key = f"{candidate['track_name']}|{candidate['artist_name']}".lower()
-            if key in used:
+    rounds_without_progress = 0
+    while len(selected) < limit and rounds_without_progress < 3:
+        progress_this_round = False
+        for lane in lane_order:
+            if len(selected) >= limit:
+                break
+            if lane_counts[lane] >= lane_targets.get(lane, 0):
                 continue
 
-            base = candidate["score"]
-            genres = candidate.get("genres") or []
-            all_genres = [g.lower() for g in genres] or ["__none__"]
-            artist = candidate["artist_name"].lower()
+            candidates = lane_pools.get(lane, [])
+            cursor = lane_cursors[lane]
+            picked = False
 
-            # Artist cap
-            if artist_counts.get(artist, 0) >= MAX_ARTIST_SONGS:
-                continue
+            while cursor < len(candidates):
+                candidate = candidates[cursor]
+                cursor += 1
 
-            # Genre diversity penalty: check saturation across ALL genres, not
-            # just genres[0] (Spotify's ordering is arbitrary).
-            max_genre_share = max(
-                genre_counts.get(g, 0.0) / max(len(selected), 1) for g in all_genres
-            )
-            penalty = 0.7 if max_genre_share >= MAX_GENRE_FRACTION else 1.0
+                key = f"{candidate['track_name']}|{candidate['artist_name']}".lower()
+                if key in used:
+                    continue
 
-            adjusted = base * penalty
-            if adjusted > best_adjusted:
-                best_adjusted = adjusted
-                best_idx = i
+                artist = candidate["artist_name"].lower()
+                if artist_counts.get(artist, 0) >= MAX_ARTIST_SONGS:
+                    continue
 
-        if best_idx < 0:
-            break
+                genres = [g.lower() for g in (candidate.get("genres") or [])] or ["__none__"]
+                max_genre_share = max(
+                    genre_counts.get(g, 0.0) / max(len(selected), 1) for g in genres
+                )
+                if max_genre_share >= MAX_GENRE_FRACTION and len(selected) > 5:
+                    continue
 
-        pick = pool[best_idx]
-        key = f"{pick['track_name']}|{pick['artist_name']}".lower()
-        selected.append(pick)
-        used.add(key)
+                selected.append(candidate)
+                used.add(key)
+                lane_counts[lane] += 1
+                artist_counts[artist] += 1
+                for g in genres:
+                    genre_counts[g] += 1.0 / len(genres)
+                picked = True
+                progress_this_round = True
+                break
 
-        pick_genres = [g.lower() for g in (pick.get("genres") or [])] or ["__none__"]
-        n_pick_genres = len(pick_genres)
-        for g in pick_genres:
-            genre_counts[g] += 1.0 / n_pick_genres  # distribute across all genres equally
-        artist_counts[pick["artist_name"].lower()] += 1
+            lane_cursors[lane] = cursor
 
-    # ── Top-up pass ──────────────────────────────────────────────
-    # If the strict 1-per-artist cap left us short of the target (sparse
-    # catalog), relax the cap to 2 and fill from remaining candidates.
-    # This is preferable to returning a near-empty result set when the
-    # user's library is small or track population is still in progress.
+            if not picked:
+                # This lane is exhausted — allow overflow into other lanes
+                lane_targets[lane] = lane_counts[lane]
+
+        if not progress_this_round:
+            rounds_without_progress += 1
+        else:
+            rounds_without_progress = 0
+
+    # Top-up pass: if lane constraints left us short, fill from any lane
     if len(selected) < limit:
         for candidate in pool:
             if len(selected) >= limit:
@@ -882,5 +990,6 @@ def _song_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
             used.add(key)
             artist_counts[artist] += 1
 
+    print(f"song_ranking: lane distribution — {dict(lane_counts)}")
     return selected
 

@@ -2,7 +2,7 @@
 The taste model.
 """
 import random as _std_random
-import time
+from collections import Counter
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends
@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.deps.auth import bearer_scheme, ensure_valid_bearer_token, require_bearer_token
 from app.services.discover_novelty import (
+    artist_overlap_ratio,
+    build_excluded_artist_ids,
     build_excluded_track_ids,
     has_signature_collision,
     load_recent_history,
@@ -105,21 +107,22 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             print(f"recommend_songs: prompt embedding failed — {e}. Continuing without prompt vector.")
 
     history_rows = load_recent_history(user_client, req.user_id, req.history_window_runs)
-    excluded_track_ids = set()
+
+    excluded_track_ids: set[str] = set()
+    excluded_artist_ids: set[int] = set()
     if req.exclude_previously_shown:
         excluded_track_ids = build_excluded_track_ids(history_rows)
+        excluded_artist_ids = build_excluded_artist_ids(history_rows)
 
-    # Genre/mood prompts are intentional searches — the user wants the best
-    # matching songs, not just ones they haven't seen. Don't exclude history
-    # for explicit prompts; save exclusion for unprompted browsing where
-    # "show me something new" is the implicit intent.
+    # For prompted searches, use lighter exclusion: still exclude exact
+    # tracks shown recently, but allow artist repeats. The old code cleared
+    # exclusion entirely for prompts, which meant the same genre search
+    # returned identical results every time.
     if req.prompt:
-        excluded_track_ids = set()
+        excluded_artist_ids = set()
 
     from app.services.song_ranking import recommend_songs as _recommend_songs
 
-    # Unique seed per request — without this, seed=0 always gives identical
-    # track ordering and results feel the same on every load.
     request_base_seed = _std_random.randint(0, 2**31)
 
     best_results: list[dict] = []
@@ -129,9 +132,12 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
 
     for attempt in range(5):
         attempts = attempt + 1
-        local_excluded = excluded_track_ids
+        local_excluded_tracks = excluded_track_ids
+        local_excluded_artists = excluded_artist_ids
+
         if not req.prompt and req.novelty_mode == "graceful" and attempt >= 2:
-            local_excluded = build_excluded_track_ids(history_rows, older_than_days=30)
+            local_excluded_tracks = build_excluded_track_ids(history_rows, older_than_days=30)
+            local_excluded_artists = build_excluded_artist_ids(history_rows, older_than_days=30)
 
         attempt_results = _recommend_songs(
             client=user_client,
@@ -142,49 +148,69 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             exclude_library=req.exclude_library,
             limit=req.limit,
             prompt_text=req.prompt,
-            excluded_track_ids=local_excluded,
+            excluded_track_ids=local_excluded_tracks,
+            excluded_artist_ids=local_excluded_artists,
             exploration_seed=request_base_seed + attempt,
         )
 
-        # Keep whichever attempt produced the most songs — use as fallback
         if len(attempt_results) > len(best_results):
             best_results = attempt_results
 
         track_ids = [r.get("spotify_track_id") for r in attempt_results if r.get("spotify_track_id")]
+        result_artist_ids = [int(r["artist_id"]) for r in attempt_results if r.get("artist_id")]
         signature = signature_from_ordered(track_ids)
         overlap = overlap_ratio(track_ids, excluded_track_ids)
+        a_overlap = artist_overlap_ratio(result_artist_ids, excluded_artist_ids)
 
         if has_signature_collision(user_client, req.user_id, signature):
             continue
-        # For prompted searches exclusion is already cleared above, so overlap
-        # is always 0 — skip the strict check to avoid unnecessary retries.
-        if not req.prompt and req.novelty_mode == "strict" and req.exclude_previously_shown and overlap > 0:
-            continue
+        if not req.prompt and req.novelty_mode == "strict" and req.exclude_previously_shown:
+            if overlap > 0 or a_overlap > 0.3:
+                continue
         if not req.prompt and req.novelty_mode == "graceful" and overlap > req.max_allowed_overlap:
             continue
 
-        persist_discover_run(user_client, req.user_id, track_ids, req.prompt, req.weights, run_id=run_id)
+        lane_dist = _count_lanes(attempt_results)
+        persist_discover_run(
+            user_client, req.user_id, track_ids, result_artist_ids,
+            req.prompt, req.weights, lane_distribution=lane_dist, run_id=run_id,
+        )
         return {
             "results": attempt_results,
             "run_id": run_id,
             "list_signature": signature,
             "novelty_attempts": attempts,
             "overlap_ratio": round(overlap, 4),
+            "artist_overlap_ratio": round(a_overlap, 4),
             "novelty_mode_used": req.novelty_mode,
         }
 
     # All attempts failed novelty checks — return the best result we found
     track_ids = [r.get("spotify_track_id") for r in best_results if r.get("spotify_track_id")]
+    result_artist_ids = [int(r["artist_id"]) for r in best_results if r.get("artist_id")]
     signature = signature_from_ordered(track_ids)
-    persist_discover_run(user_client, req.user_id, track_ids, req.prompt, req.weights, run_id=run_id)
+    lane_dist = _count_lanes(best_results)
+    persist_discover_run(
+        user_client, req.user_id, track_ids, result_artist_ids,
+        req.prompt, req.weights, lane_distribution=lane_dist, run_id=run_id,
+    )
     return {
         "results": best_results,
         "run_id": run_id,
         "list_signature": signature,
         "novelty_attempts": attempts,
         "overlap_ratio": round(overlap, 4),
+        "artist_overlap_ratio": round(artist_overlap_ratio(result_artist_ids, excluded_artist_ids), 4),
         "novelty_mode_used": "graceful",
     }
+
+
+def _count_lanes(results: list[dict]) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for r in results:
+        lane = r.get("lane", "unknown")
+        counts[lane] += 1
+    return dict(counts)
 
 
 def _build_taste_vector(client, user_id: str) -> list[float]:
