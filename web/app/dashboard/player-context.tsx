@@ -107,6 +107,23 @@ const NOW_PLAYING_POLL_MS = 5_000;
 const NOW_PLAYING_IDLE_POLL_MS = 15_000;
 const NOW_PLAYING_HIDDEN_POLL_MS = 30_000;
 
+function preferredDeviceForCurrentBrowser(
+  devices: ConnectDevice[]
+): ConnectDevice | undefined {
+  if (typeof navigator === "undefined") return undefined;
+
+  const ua = navigator.userAgent;
+  const usable = devices.filter((d) => !d.is_restricted);
+  const typeMatches = (types: string[]) =>
+    usable.find((d) => types.includes(d.type.toLowerCase()));
+
+  if (/iPad|Tablet/i.test(ua) || (/Android/i.test(ua) && !/Mobile/i.test(ua))) {
+    return typeMatches(["tablet"]);
+  }
+  if (/iPhone|iPod|Android/i.test(ua)) return typeMatches(["smartphone"]);
+  return typeMatches(["computer"]);
+}
+
 /**
  * Open a Spotify URI in the native app. Uses the spotify: scheme
  * which deep-links on iOS/Android. Falls back to the web URL.
@@ -204,21 +221,20 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       const list: ConnectDevice[] = data.devices ?? [];
       setDevices(list);
 
-      // Auto-pick: keep current selection if it's still online; else prefer
-      // the active device, then a phone, then anything.
+      // Auto-pick: keep current selection if it's still online; otherwise
+      // choose only a Spotify device that matches the browser's device type.
+      // Other devices remain available in the picker, but are not surprising
+      // defaults.
       const current = deviceIdRef.current;
-      const stillOnline = current && list.some((d) => d.id === current);
+      const stillOnline = current && list.some((d) => d.id === current && !d.is_restricted);
       if (!stillOnline) {
-        const active = list.find((d) => d.is_active && !d.is_restricted);
-        const phone = list.find(
-          (d) => d.type.toLowerCase() === "smartphone" && !d.is_restricted
-        );
-        const any = list.find((d) => !d.is_restricted);
-        const picked = (active ?? phone ?? any)?.id ?? null;
+        const browserDevice = preferredDeviceForCurrentBrowser(list);
+        const picked = browserDevice?.id ?? null;
         deviceIdRef.current = picked;
         setSelectedDeviceId(picked);
-        // If any usable Connect device exists, default to connect mode.
+        // If a same-device Connect target exists, default to connect mode.
         if (picked) setModeState("connect");
+        else if (modeRef.current === "connect") setModeState("embed");
       }
     } catch {
       setDevices([]);
@@ -234,6 +250,16 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const setEmbedTrackId = useCallback((id: string | null) => {
     setEmbedTrackIdState(id);
   }, []);
+
+  useEffect(() => {
+    void refreshDevices();
+
+    const onVisibilityChange = () => {
+      if (!document.hidden) void refreshDevices();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [refreshDevices]);
 
   const transferToDevice = useCallback(
     async (deviceId: string): Promise<PlaybackResult> => {
