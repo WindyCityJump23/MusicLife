@@ -8,6 +8,8 @@ type SignalBreakdown = {
   context: number;
   editorial: number;
   track_popularity?: number;
+  novelty?: number;
+  familiarity?: number;
 };
 type TopMention = {
   source: string;
@@ -28,6 +30,7 @@ type SongRecommendation = {
   explicit: boolean;
   spotify_track_id: string;
   score: number;
+  lane?: DiscoveryLaneId;
   signals: SignalBreakdown;
   reasons: string[];
   genres: string[];
@@ -80,7 +83,7 @@ const DISCOVERY_LANES: DiscoveryLane[] = [
 
 const TARGET_SONGS = 25;
 const FALLBACK_ARTIST_SEARCH_LIMIT = 10;
-const FALLBACK_TRACK_SEARCH_LIMIT = 6;
+const FALLBACK_TRACK_SEARCH_LIMIT = 20;
 const DISCOVER_CACHE_KEY = "musiclife:discover:last-results";
 const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -129,7 +132,7 @@ function groupSongsByLane(songs: SongRecommendation[]): Record<DiscoveryLaneId, 
     song,
     originalIndex,
     lane: null as DiscoveryLaneId | null,
-    preferredLane: laneForSong(song),
+    preferredLane: song.lane ?? laneForSong(song),
     popularity: song.signals.track_popularity ?? 0.5,
   }));
   const targets = targetLaneCounts(songs.length);
@@ -141,7 +144,7 @@ function groupSongsByLane(songs: SongRecommendation[]): Record<DiscoveryLaneId, 
     .filter(({ preferredLane }) => preferredLane === "deep_cuts")
     .forEach((item) => {
       item.lane = "deep_cuts";
-    });
+              });
 
   assigned
     .filter(({ preferredLane, lane }) => preferredLane === "radio_hits" && lane === null)
@@ -385,7 +388,10 @@ export default function DiscoverView({
               context: r.signals?.context ?? 0,
               editorial: r.signals?.editorial ?? 0,
               track_popularity: r.signals?.track_popularity,
+              novelty: r.signals?.novelty,
+              familiarity: r.signals?.familiarity,
             },
+            lane: r.lane,
             genres: r.genres ?? [],
             reasons: r.reasons ?? [],
             mention_count: r.mention_count ?? 0,
@@ -466,8 +472,8 @@ export default function DiscoverView({
               return tracks.map((track: any): SongRecommendation => { // eslint-disable-line @typescript-eslint/no-explicit-any
                 const trackPop = (track.popularity ?? 50) / 100;
                 const depthBoost = trackPop < 0.46 ? 1.08 : trackPop > 0.74 ? 0.88 : 1.0;
-                const songScore = artist.score * (0.78 + 0.18 * trackPop) * depthBoost;
-                return {
+                const songScore = artist.score * (0.74 + 0.14 * trackPop) * depthBoost;
+                const fallbackSong: SongRecommendation = {
                   track_id: null,
                   track_name: track.name,
                   artist_id: artist.artist_id,
@@ -483,12 +489,15 @@ export default function DiscoverView({
                     context: artist.signals.context,
                     editorial: artist.signals.editorial,
                     track_popularity: trackPop,
+                    novelty: Math.max(0, Math.min(1, 1 - trackPop + (artist.signals.editorial ?? 0) * 0.2)),
                   },
                   genres: artist.genres ?? [],
                   reasons: [...(artist.reasons ?? [])],
                   mention_count: artist.mention_count ?? 0,
                   top_mention: artist.top_mention ?? null,
                 };
+                fallbackSong.lane = laneForSong(fallbackSong);
+                return fallbackSong;
               });
             } catch {
               return [];
@@ -1267,6 +1276,9 @@ function SongRow({
             <SignalPill label="Buzz" value={song.signals.editorial} color="amber" />
             {song.signals.track_popularity !== undefined && (
               <SignalPill label="Popularity" value={song.signals.track_popularity} color="purple" />
+            )}
+            {song.signals.novelty !== undefined && (
+              <SignalPill label="Discovery" value={song.signals.novelty} color="emerald" />
             )}
           </div>
 

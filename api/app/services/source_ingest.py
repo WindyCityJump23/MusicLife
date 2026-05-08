@@ -116,6 +116,8 @@ def run_source_ingest(
     # ── Main loop ────────────────────────────────────────────────────────────
     candidates: list[dict] = []
     blog_tracks_added = 0
+    source_artists_added = 0
+    artist_embedding_sources: dict[int, str] = {}
     blog_searches_remaining = MAX_BLOG_TRACK_SEARCHES
 
     with httpx.Client(timeout=20, follow_redirects=True) as client:
@@ -156,12 +158,15 @@ def run_source_ingest(
 
             # Level 2 — blog track catalog population (RSS sources only)
             if spotify_token and source.get("kind") == "rss" and blog_searches_remaining > 0:
-                added, searched = _extract_and_upsert_blog_tracks(
-                    client, spotify_headers, entries, source["name"],
+                added, searched, blog_mentions, artist_sources, new_artists = _extract_and_upsert_blog_tracks(
+                    client, spotify_headers, entries, source,
                     spotify_artist_index, blog_searches_remaining,
                 )
                 blog_tracks_added += added
+                source_artists_added += new_artists
                 blog_searches_remaining -= searched
+                candidates.extend(blog_mentions)
+                artist_embedding_sources.update(artist_sources)
                 if added > 0:
                     print(f"source_ingest: {source['name']} — added {added} blog-sourced tracks")
 
@@ -181,6 +186,10 @@ def run_source_ingest(
         _embed_and_upsert(candidates)
         print(f"source_ingest: done — wrote {len(candidates)} mention candidates")
 
+    if artist_embedding_sources:
+        _embed_new_source_artists(artist_embedding_sources)
+        print(f"source_ingest: embedded {len(artist_embedding_sources)} source-discovered artists")
+
     if spotify_token:
         print(f"source_ingest: blog track extraction — {blog_tracks_added} tracks upserted "
               f"({MAX_BLOG_TRACK_SEARCHES - blog_searches_remaining} Spotify searches)")
@@ -189,6 +198,7 @@ def run_source_ingest(
         "sources_scanned": total,
         "mentions_found": len(candidates),
         "blog_tracks_added": blog_tracks_added,
+        "source_artists_added": source_artists_added,
     }
 
 
@@ -398,16 +408,20 @@ def _extract_and_upsert_blog_tracks(
     client: httpx.Client,
     spotify_headers: dict[str, str],
     entries: list[dict],
-    source_name: str,
+    source: dict,
     spotify_artist_index: dict[str, int],
     search_budget: int,
-) -> tuple[int, int]:
+) -> tuple[int, int, list[dict], dict[int, str], int]:
     """Parse track pairs from feed entries and upsert matched tracks.
 
-    Returns (tracks_added, searches_used).
+    Returns (tracks_added, searches_used, mention_candidates, artist_sources, new_artists).
     """
     added = 0
     searched = 0
+    source_name = source["name"]
+    mention_candidates: list[dict] = []
+    artist_sources: dict[int, str] = {}
+    new_artists = 0
 
     for entry in entries:
         if searched >= search_budget:
@@ -431,25 +445,158 @@ def _extract_and_upsert_blog_tracks(
             print(f"source_ingest: Spotify rate-limited during blog track extraction — stopping")
             break
 
-        # Match the Spotify artist to our catalog by Spotify artist ID
-        spotify_artists = track_obj.get("artists") or []
-        artist_db_id: int | None = None
-        for sa in spotify_artists:
-            sid = sa.get("id")
-            if sid and sid in spotify_artist_index:
-                artist_db_id = spotify_artist_index[sid]
-                break
-
-        # Only upsert tracks where we can link to a catalog artist
+        artist_db_id, created_artist, embedding_source = _find_or_create_track_artist(
+            track_obj,
+            artist_name,
+            track_name,
+            source_name,
+            spotify_artist_index,
+        )
         if artist_db_id is None:
             continue
 
+        if created_artist:
+            new_artists += 1
+        if embedding_source:
+            artist_sources[artist_db_id] = embedding_source
+
         if _upsert_blog_track(track_obj, artist_db_id):
             added += 1
+            mention = _blog_track_mention_candidate(entry, source, artist_db_id, artist_name)
+            if mention:
+                mention_candidates.append(mention)
 
         time.sleep(TRACK_SEARCH_DELAY_S)
 
-    return added, searched
+    return added, searched, mention_candidates, artist_sources, new_artists
+
+
+def _normalize_name(value: str | None) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+
+def _primary_spotify_artist(track_obj: dict, requested_artist: str) -> dict | None:
+    spotify_artists = track_obj.get("artists") or []
+    if not spotify_artists:
+        return None
+
+    requested = _normalize_name(requested_artist)
+    for artist in spotify_artists:
+        if _normalize_name(artist.get("name")) == requested:
+            return artist
+    return spotify_artists[0]
+
+
+def _find_or_create_track_artist(
+    track_obj: dict,
+    requested_artist: str,
+    track_name: str,
+    source_name: str,
+    spotify_artist_index: dict[str, int],
+) -> tuple[int | None, bool, str | None]:
+    spotify_artist = _primary_spotify_artist(track_obj, requested_artist)
+    if not spotify_artist:
+        return None, False, None
+
+    spotify_artist_id = (spotify_artist.get("id") or "").strip()
+    artist_name = (spotify_artist.get("name") or requested_artist).strip()
+    if not artist_name:
+        return None, False, None
+
+    if spotify_artist_id and spotify_artist_id in spotify_artist_index:
+        return spotify_artist_index[spotify_artist_id], False, None
+
+    embedding_source = (
+        f"{artist_name} surfaced by {source_name}. "
+        f"Featured track: {track_name}. Source signal: music blog discovery."
+    )
+
+    if spotify_artist_id:
+        try:
+            existing = (
+                admin_supabase.table("artists")
+                .select("id,embedding_source,embedding")
+                .eq("spotify_artist_id", spotify_artist_id)
+                .limit(1)
+                .execute()
+            )
+            rows = existing.data or []
+            if rows:
+                artist_id = int(rows[0]["id"])
+                if not rows[0].get("embedding_source"):
+                    admin_supabase.table("artists").update(
+                        {"embedding_source": embedding_source}
+                    ).eq("id", artist_id).execute()
+                spotify_artist_index[spotify_artist_id] = artist_id
+                needs_embedding = not rows[0].get("embedding")
+                return artist_id, False, embedding_source if needs_embedding else None
+        except Exception:
+            pass
+
+    try:
+        by_name = (
+            admin_supabase.table("artists")
+            .select("id,spotify_artist_id,embedding_source,embedding")
+            .eq("name", artist_name)
+            .limit(1)
+            .execute()
+        )
+        rows = by_name.data or []
+        if rows:
+            artist_id = int(rows[0]["id"])
+            update: dict = {}
+            if spotify_artist_id and not rows[0].get("spotify_artist_id"):
+                update["spotify_artist_id"] = spotify_artist_id
+            if not rows[0].get("embedding_source"):
+                update["embedding_source"] = embedding_source
+            if update:
+                admin_supabase.table("artists").update(update).eq("id", artist_id).execute()
+            if spotify_artist_id:
+                spotify_artist_index[spotify_artist_id] = artist_id
+            needs_embedding = not rows[0].get("embedding")
+            return artist_id, False, embedding_source if needs_embedding else None
+    except Exception:
+        pass
+
+    row = {
+        "name": artist_name,
+        "spotify_artist_id": spotify_artist_id or None,
+        "genres": [],
+        "embedding_source": embedding_source,
+    }
+    try:
+        inserted = admin_supabase.table("artists").insert(row).execute()
+        data = inserted.data or []
+        if not data:
+            return None, False, None
+        artist_id = int(data[0]["id"])
+        if spotify_artist_id:
+            spotify_artist_index[spotify_artist_id] = artist_id
+        return artist_id, True, embedding_source
+    except Exception as exc:
+        print(f"source_ingest: failed to create source artist {artist_name!r}: {exc}")
+        return None, False, None
+
+
+def _blog_track_mention_candidate(
+    entry: dict,
+    source: dict,
+    artist_id: int,
+    artist_name: str,
+) -> dict | None:
+    excerpt = _build_excerpt(entry)
+    url = (entry.get("link") or "").strip()
+    if not excerpt or not url:
+        return None
+    return {
+        "source_id": source["id"],
+        "artist_id": artist_id,
+        "artist_name_raw": artist_name,
+        "title": (entry.get("title") or "").strip() or None,
+        "url": url,
+        "excerpt": excerpt,
+        "published_at": _parse_published(entry),
+    }
 
 
 def _search_spotify_track(
@@ -557,6 +704,38 @@ def _get_spotify_cc_token(client_id: str, client_secret: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------
+
+
+def _embed_new_source_artists(artist_sources: dict[int, str]) -> None:
+    items = [
+        (artist_id, source)
+        for artist_id, source in artist_sources.items()
+        if artist_id and source
+    ]
+    if not items:
+        return
+
+    for start in range(0, len(items), MAX_EMBED_BATCH):
+        batch = items[start : start + MAX_EMBED_BATCH]
+        texts = [source for _, source in batch]
+        try:
+            vectors = embedder.embed(texts, input_type="document")
+        except Exception as exc:
+            print(f"source_ingest: source artist embedding failed — {exc}")
+            return
+        if len(vectors) != len(batch):
+            print("source_ingest: source artist vector count mismatch — skipping batch")
+            continue
+        for (artist_id, source), vector in zip(batch, vectors):
+            try:
+                admin_supabase.table("artists").update(
+                    {
+                        "embedding_source": source,
+                        "embedding": vector,
+                    }
+                ).eq("id", artist_id).execute()
+            except Exception as exc:
+                print(f"source_ingest: failed to update source artist {artist_id}: {exc}")
 
 
 def _embed_and_upsert(candidates: list[dict]) -> None:

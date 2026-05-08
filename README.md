@@ -1,6 +1,6 @@
 # MusicLife
 
-A personal music discovery dashboard powered by Spotify, editorial sources (music blogs, Reddit, Bandcamp), and AI recommendations.
+A personal music radio and playlist discovery app powered by Spotify, editorial sources (music blogs, Reddit, Bandcamp), and vector recommendations.
 
 **Stack:** Next.js 14 · FastAPI · Supabase (Postgres + pgvector) · Anthropic Claude · Voyage AI
 
@@ -11,9 +11,11 @@ A personal music discovery dashboard powered by Spotify, editorial sources (musi
 - Syncs your Spotify library, top artists, and recent plays
 - Enriches artists with MusicBrainz + Last.fm metadata
 - Embeds artist profiles as vectors for taste-aware similarity
-- Crawls editorial RSS feeds and Reddit to find mention heat
-- Recommends artists you haven't heard yet, blending personal affinity, prompt context, and editorial momentum
-- Lets you save, name, and revisit discovery views
+- Crawls editorial RSS feeds and Reddit to find daily music buzz
+- Expands the catalog from blog-sourced tracks, not just artists already in your library
+- Builds radio-style song queues across three lanes: radio hits, popular cuts, and deep cuts / indie
+- Recommends playable songs by blending personal affinity, prompt context, editorial momentum, novelty, and familiarity
+- Lets you play recommendations like radio or save the full queue as a Spotify playlist
 
 ---
 
@@ -124,16 +126,17 @@ make api   # FastAPI only
 make web   # Next.js only
 ```
 
-### 6. Populate your library
+### 6. Build your Music Profile
 
-In the dashboard sidebar (bottom section):
+In the dashboard sidebar, run **Refresh music profile** once:
 
-1. **Sync Spotify library** — imports your saved tracks, top artists, and recent plays
-2. **Enrich artists** — fetches MusicBrainz + Last.fm metadata and bios (takes a few minutes; runs 1 req/s to respect MusicBrainz rate limits)
-3. **Embed artists** — generates taste vectors (requires Voyage or OpenAI key)
-4. **Fetch sources** — crawls editorial RSS feeds for mention heat
+1. **Import listening history** — imports Spotify saved tracks, top artists, and recent plays
+2. **Learn your taste** — fetches MusicBrainz + Last.fm metadata and genres
+3. **Build your radio model** — embeds artist profiles as taste vectors
+4. **Add music context** — crawls editorial RSS/Reddit sources for mention heat and blog-sourced tracks
+5. **Prepare song catalog** — loads playable Spotify tracks for radio and playlist export
 
-Once all four steps are complete, the **Discover** tab will return real recommendations.
+After setup is ready, the **Radio** tab can generate playable recommendations. You do not need to run the full setup every time. Use **Refresh sources** when you want fresh blog/community context; it can run independently and is safe to use daily.
 
 ---
 
@@ -146,17 +149,26 @@ db/           SQL migrations and seed data
 docs/         Design notes, architecture decisions, API references
 ```
 
-Three-signal recommendation model:
+Discovery model:
 
 ```
-score = w_affinity * affinity + w_context * context + w_editorial * editorial
+base_score = w_affinity * affinity + w_context * context + w_editorial * editorial
+song_score = base_score * track_boost * novelty_adjustment
 ```
 
 - **Affinity** — cosine similarity between candidate artist embedding and your taste centroid
 - **Context** — cosine similarity between your prompt embedding and editorial mention embeddings
 - **Editorial** — recency × trust weight × sentiment from crawled sources
+- **Novelty** — rewards lower-popularity, newer, editorially surfaced, and non-library tracks
+- **Familiarity** — penalizes songs you already played while still allowing deep cuts from artists you like
 
-Weights are controlled by the sliders in the Discover view.
+The backend returns lane-aware recommendations, reserving room for:
+
+- **Radio hits** — recognizable anchors, capped so they do not dominate
+- **Popular** — familiar but less obvious songs
+- **Deep cuts / indie** — lower-popularity and editorially surfaced discoveries
+
+Weights are controlled by the mode buttons and sliders in the Radio view.
 
 ---
 
@@ -171,7 +183,9 @@ Full interactive docs at [http://localhost:8000/docs](http://localhost:8000/docs
 | `POST /ingest/enrich-artists` | MusicBrainz + Last.fm enrichment |
 | `POST /ingest/embed-artists` | Generate artist embeddings |
 | `POST /ingest/sources` | Crawl RSS + Reddit feeds |
+| `POST /ingest/setup-all` | Run the full Music Profile setup pipeline |
 | `POST /recommend` | Get taste-aware recommendations |
+| `POST /recommend/songs` | Get lane-aware song recommendations for radio/playlists |
 | `POST /synthesize/for-artist` | Generate "Why this?" explanation via Claude |
 
 ---

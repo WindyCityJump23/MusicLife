@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.deps.auth import bearer_scheme, ensure_valid_bearer_token, require_bearer_token
 from app.services.discover_novelty import (
+    build_excluded_artist_ids,
     build_excluded_track_ids,
     has_signature_collision,
     load_recent_history,
@@ -108,13 +109,14 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
     excluded_track_ids = set()
     if req.exclude_previously_shown:
         excluded_track_ids = build_excluded_track_ids(history_rows)
+    excluded_artist_ids = build_excluded_artist_ids(history_rows)
 
-    # Genre/mood prompts are intentional searches — the user wants the best
-    # matching songs, not just ones they haven't seen. Don't exclude history
-    # for explicit prompts; save exclusion for unprompted browsing where
-    # "show me something new" is the implicit intent.
+    # Genre/mood prompts are intentional searches, but exact repeats still feel
+    # broken. Use a shorter memory for prompted searches instead of clearing
+    # history entirely.
     if req.prompt:
-        excluded_track_ids = set()
+        excluded_track_ids = build_excluded_track_ids(history_rows, older_than_days=14)
+        excluded_artist_ids = build_excluded_artist_ids(history_rows, older_than_days=14)
 
     from app.services.song_ranking import recommend_songs as _recommend_songs
 
@@ -143,6 +145,7 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             limit=req.limit,
             prompt_text=req.prompt,
             excluded_track_ids=local_excluded,
+            excluded_artist_ids=excluded_artist_ids,
             exploration_seed=request_base_seed + attempt,
         )
 
@@ -156,14 +159,22 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
 
         if has_signature_collision(user_client, req.user_id, signature):
             continue
-        # For prompted searches exclusion is already cleared above, so overlap
-        # is always 0 — skip the strict check to avoid unnecessary retries.
+        # Prompted searches use a shorter history window, so do not run the
+        # strict unprompted novelty retry loop against them.
         if not req.prompt and req.novelty_mode == "strict" and req.exclude_previously_shown and overlap > 0:
             continue
         if not req.prompt and req.novelty_mode == "graceful" and overlap > req.max_allowed_overlap:
             continue
 
-        persist_discover_run(user_client, req.user_id, track_ids, req.prompt, req.weights, run_id=run_id)
+        persist_discover_run(
+            user_client,
+            req.user_id,
+            track_ids,
+            req.prompt,
+            req.weights,
+            run_id=run_id,
+            results=attempt_results,
+        )
         return {
             "results": attempt_results,
             "run_id": run_id,
@@ -176,7 +187,15 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
     # All attempts failed novelty checks — return the best result we found
     track_ids = [r.get("spotify_track_id") for r in best_results if r.get("spotify_track_id")]
     signature = signature_from_ordered(track_ids)
-    persist_discover_run(user_client, req.user_id, track_ids, req.prompt, req.weights, run_id=run_id)
+    persist_discover_run(
+        user_client,
+        req.user_id,
+        track_ids,
+        req.prompt,
+        req.weights,
+        run_id=run_id,
+        results=best_results,
+    )
     return {
         "results": best_results,
         "run_id": run_id,
