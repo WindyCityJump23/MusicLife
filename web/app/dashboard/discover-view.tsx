@@ -443,7 +443,6 @@ export default function DiscoverView({
               novelty: r.signals?.novelty,
               familiarity: r.signals?.familiarity,
             },
-            lane: r.lane,
             genres: r.genres ?? [],
             reasons: r.reasons ?? [],
             mention_count: r.mention_count ?? 0,
