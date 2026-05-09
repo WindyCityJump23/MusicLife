@@ -102,17 +102,20 @@ def eval_heard_song_penalized() -> EvalResult:
 
 
 def eval_one_song_per_artist() -> EvalResult:
-    """After diversity re-ranking, each artist should appear at most once when catalog is sufficient.
+    """After diversity re-ranking, each artist should appear at most once when
+    enough unique artists exist to fill the requested limit.
 
-    MAX_ARTIST_SONGS=1 is enforced in _song_diversity_rerank. We request
-    limit=3 matching the number of distinct artists, so the first-pass
-    1-per-artist cap fills all slots without triggering the top-up path
-    (which intentionally relaxes the cap for sparse catalogs).
+    The reranker adapts: when unique artists >= limit it enforces 1-per-artist;
+    when fewer artists are available it allows up to 2 per artist so genre
+    searches aren't artificially capped. This test provides 5 distinct artists
+    for limit=3, ensuring the 1-per-artist path is exercised.
     """
     artists = [
         _make_artist(800, "Artist A", ["pop"], vec_seed=8, popularity=90),
         _make_artist(801, "Artist B", ["pop"], vec_seed=9, popularity=85),
         _make_artist(802, "Artist C", ["pop"], vec_seed=10, popularity=80),
+        _make_artist(803, "Artist D", ["pop"], vec_seed=11, popularity=75),
+        _make_artist(804, "Artist E", ["pop"], vec_seed=12, popularity=70),
     ]
     tracks = [
         _make_track(801, "Track A1", 800, popularity=90, vec_seed=301),
@@ -121,12 +124,14 @@ def eval_one_song_per_artist() -> EvalResult:
         _make_track(812, "Track B2", 801, popularity=83, vec_seed=312),
         _make_track(821, "Track C1", 802, popularity=82, vec_seed=321),
         _make_track(822, "Track C2", 802, popularity=79, vec_seed=322),
+        _make_track(831, "Track D1", 803, popularity=78, vec_seed=331),
+        _make_track(841, "Track E1", 804, popularity=73, vec_seed=341),
     ]
     scenario = UserScenario(
         user_id="diversity_test",
         library_artist_ids=[],
         played_track_ids=[],
-        top_artist_ids=[800, 801, 802],
+        top_artist_ids=[800, 801, 802, 803, 804],
         taste_vector=JAZZ_TASTE_VECTOR,
     )
     client = build_mock_client(scenario, artists=artists, tracks=tracks, mentions=[])
@@ -137,7 +142,7 @@ def eval_one_song_per_artist() -> EvalResult:
         prompt_vector=None,
         weights=_weights(),
         exclude_library=False,
-        limit=3,  # = number of artists, so 1-per-artist fills the limit exactly
+        limit=3,
     )
     diversity = artist_diversity_score(results)
     passed = diversity == 1.0
