@@ -86,7 +86,7 @@ const DISCOVERY_LANES: DiscoveryLane[] = [
 
 const TARGET_SONGS = 25;
 const FALLBACK_ARTIST_SEARCH_LIMIT = 15;
-const FALLBACK_TRACK_SEARCH_LIMIT = 10;
+const FALLBACK_TRACK_SEARCH_LIMIT = 20;
 const DISCOVER_CACHE_KEY = "musiclife:discover:last-results";
 const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -266,6 +266,7 @@ function spreadArtistsForDisplay(
 
   addPass(1, true);
   if (selected.length < target) addPass(2, false);
+  if (selected.length < target) addPass(3, false);
 
   return selected;
 }
@@ -326,11 +327,12 @@ function chooseFallbackTracks(tracks: any[]): any[] { // eslint-disable-line @ty
     return true;
   });
 
-  // Sort so deep cuts come first, then mid-popularity, then hits.
-  // This counteracts Spotify's default popularity ordering and ensures
-  // the fallback path contributes genuine discoveries.
+  // Pick a diverse spread across the popularity range so fallbacks
+  // include both discoveries and recognisable tracks.
+  if (unique.length <= 5) return unique;
   const sorted = [...unique].sort((a, b) => (a.popularity ?? 50) - (b.popularity ?? 50));
-  return sorted.slice(0, 5);
+  const step = (sorted.length - 1) / 4;
+  return [0, 1, 2, 3, 4].map((i) => sorted[Math.round(i * step)]);
 }
 
 export default function DiscoverView({
