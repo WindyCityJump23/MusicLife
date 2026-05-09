@@ -11,7 +11,7 @@ type JobStatusResponse = {
 
 type RunState = "idle" | "running" | "success" | "error";
 
-const TOTAL_STEPS = 5;
+const TOTAL_STEPS = 6;
 const STORAGE_KEY = "musiclife.setupAll.jobId";
 const POLL_INTERVAL_MS = 2500;
 

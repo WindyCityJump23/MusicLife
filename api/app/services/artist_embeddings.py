@@ -30,8 +30,13 @@ MAX_TOTAL = 2000
 def run_artist_embeddings(
     batch_size: int = BATCH_SIZE,
     progress: Callable[[str], None] | None = None,
+    artist_ids: list[int] | None = None,
+    max_total: int = MAX_TOTAL,
 ) -> dict:
     """Process all un-embedded artists in batches. Returns summary stats."""
+    if artist_ids is not None and len(artist_ids) == 0:
+        return {"embedded": 0, "skipped": 0, "batches": 0, "last_error": None}
+
     total_embedded = 0
     total_skipped = 0
     batch_num = 0
@@ -45,17 +50,20 @@ def run_artist_embeddings(
     # produces a misleading "N skipped" count.
     MAX_CONSECUTIVE_FAILURES = 2
 
-    while total_embedded + total_skipped < MAX_TOTAL:
+    max_total = max(1, max_total)
+
+    while total_embedded + total_skipped < max_total:
         batch_num += 1
 
-        result = (
+        query = (
             admin_supabase.table("artists")
             .select("id, name, spotify_artist_id, embedding_source")
             .not_.is_("embedding_source", "null")
             .is_("embedding", "null")
-            .limit(batch_size)
-            .execute()
         )
+        if artist_ids is not None:
+            query = query.in_("id", artist_ids)
+        result = query.limit(batch_size).execute()
 
         candidates = result.data or []
         if not candidates:

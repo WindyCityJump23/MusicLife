@@ -68,6 +68,7 @@ def build_excluded_track_ids(history_rows: list[dict], older_than_days: int | No
 
 
 def build_excluded_artist_ids(history_rows: list[dict], older_than_days: int | None = None) -> set[int]:
+    """Build set of artist IDs shown in recent discover runs."""
     threshold = None
     if older_than_days is not None:
         threshold = datetime.now(timezone.utc) - timedelta(days=older_than_days)
@@ -97,6 +98,13 @@ def overlap_ratio(candidate_ids: list[str], prior_ids: set[str]) -> float:
         return 0.0
     overlap = sum(1 for tid in normalized if tid in prior_ids)
     return overlap / len(normalized)
+
+
+def artist_overlap_ratio(candidate_artist_ids: list[int], prior_artist_ids: set[int]) -> float:
+    if not candidate_artist_ids:
+        return 0.0
+    overlap = sum(1 for aid in candidate_artist_ids if aid in prior_artist_ids)
+    return overlap / len(candidate_artist_ids)
 
 
 def has_signature_collision(client, user_id: str, list_signature: str) -> bool:

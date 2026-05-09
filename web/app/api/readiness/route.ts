@@ -50,6 +50,7 @@ export async function GET(req: NextRequest) {
   let enrichedCount = 0;
   let embeddedCount = 0;
   let playableTrackCount = 0;
+  let modeledTrackCount = 0;
 
   for (const ids of chunk(artistIds)) {
     const { data: artistRows, error: artistErr } = await sb
@@ -82,6 +83,14 @@ export async function GET(req: NextRequest) {
       .in("artist_id", ids)
       .not("spotify_track_id", "is", null);
     playableTrackCount += playableChunkCount ?? 0;
+
+    const { count: modeledChunkCount } = await sb
+      .from("tracks")
+      .select("id", { count: "exact", head: true })
+      .in("artist_id", ids)
+      .not("spotify_track_id", "is", null)
+      .not("embedding", "is", null);
+    modeledTrackCount += modeledChunkCount ?? 0;
   }
 
   const { count: recentPlayCount } = await sb
@@ -112,6 +121,7 @@ export async function GET(req: NextRequest) {
   const artistCount = artistIds.length;
   const requiredArtists = requiredArtistCount(artistCount);
   const requiredPlayableTracks = requiredPlayableTrackCount(artistCount, requiredArtists);
+  const requiredModeledTracks = Math.min(requiredPlayableTracks, playableTrackCount);
   const radioReady =
     artistCount > 0 &&
     enrichedCount >= requiredArtists &&
@@ -124,6 +134,7 @@ export async function GET(req: NextRequest) {
       trackCount: userTracks?.length ?? 0,
       catalogTrackCount: catalogTrackCount ?? 0,
       playableTrackCount,
+      modeledTrackCount,
       recentPlayCount: Math.min(recentPlayCount ?? 0, 50),
       mentionCount: mentionCount ?? 0,
     },
@@ -136,15 +147,19 @@ export async function GET(req: NextRequest) {
       radioReady,
       requiredArtistCount: requiredArtists,
       requiredPlayableTrackCount: requiredPlayableTracks,
+      requiredModeledTrackCount: requiredModeledTracks,
       enrichedCount,
       embeddedCount,
       playableTrackCount,
+      modeledTrackCount,
       steps: {
         imported: artistCount > 0,
         enriched: artistCount > 0 && enrichedCount >= requiredArtists,
         embedded: artistCount > 0 && embeddedCount >= requiredArtists,
         context: (mentionCount ?? 0) > 0,
         tracks: artistCount > 0 && playableTrackCount >= requiredPlayableTracks,
+        modeledTracks:
+          requiredModeledTracks > 0 && modeledTrackCount >= requiredModeledTracks,
       },
     },
   });

@@ -18,10 +18,10 @@ from typing import Callable
 
 import httpx
 
-from app.services.supabase_client import admin_supabase
+from app.services.supabase_client import admin_supabase, retry_on_disconnect
 
 
-TRACKS_PER_ARTIST = 10  # How many tracks to fetch per artist
+TRACKS_PER_ARTIST = 50  # Fetch deep into each artist's catalog
 ABORT_AFTER_ERRORS = 20
 # Cap Retry-After sleep so a single 429 can't freeze the entire job.
 # If Spotify asks us to wait longer, we skip and count it as an error.
@@ -63,10 +63,12 @@ def run_track_population(
     consecutive_401s = 0
     processed = 0
 
-    # Skip artists that already have tracks in the DB
-    existing_artist_ids = _get_artists_with_tracks()
+    # Skip artists that already have a deep catalog (>= 20 tracks).
+    # Artists with fewer tracks were likely populated with the old
+    # 10-track limit and need deepening.
+    existing_track_counts = _get_artist_track_counts()
     before_skip = len(artists)
-    artists = [a for a in artists if a["id"] not in existing_artist_ids]
+    artists = [a for a in artists if existing_track_counts.get(a["id"], 0) < 20]
     skipped = before_skip - len(artists)
     total = len(artists)
     print(f"track_populator: {skipped} already have tracks, {total} to process", flush=True)
@@ -80,12 +82,25 @@ def run_track_population(
         # Validate token — retry on 429 (rate limit) with exponential backoff
         print(f"track_populator: validating Spotify token (len={len(access_token)})", flush=True)
         MAX_RETRY_WAIT = 60  # Never wait more than 60s per retry
+        test_resp: httpx.Response | None = None
         for attempt in range(5):
-            test_resp = client.get(
-                "https://api.spotify.com/v1/search",
-                params={"q": "test", "type": "track", "limit": 1},
-                headers=headers,
-            )
+            try:
+                test_resp = client.get(
+                    "https://api.spotify.com/v1/search",
+                    params={"q": "test", "type": "track", "limit": 1},
+                    headers=headers,
+                )
+            except httpx.TransportError as exc:
+                wait = min(2 ** attempt, MAX_RETRY_WAIT)
+                print(
+                    f"track_populator: token test transport error "
+                    f"({type(exc).__name__}: {exc}), waiting {wait}s",
+                    flush=True,
+                )
+                if progress:
+                    progress(f"Spotify connection dropped — retrying in {wait}s...")
+                time.sleep(wait)
+                continue
             print(f"track_populator: token test HTTP {test_resp.status_code} (attempt {attempt+1})", flush=True)
             if test_resp.status_code == 429:
                 retry_after = int(test_resp.headers.get("Retry-After", "5"))
@@ -105,6 +120,13 @@ def run_track_population(
                 time.sleep(wait)
                 continue
             break
+
+        if test_resp is None:
+            msg = "Spotify connection dropped during token validation. Please retry."
+            print(f"track_populator: {msg}", flush=True)
+            if progress:
+                progress(msg)
+            return {"artists_total": before_skip, "artists_processed": 0, "tracks_added": 0, "error": msg}
 
         if test_resp.status_code in (401, 403):
             msg = f"Spotify token expired or invalid (HTTP {test_resp.status_code}). Please sign out and back in."
@@ -146,10 +168,9 @@ def run_track_population(
                 else:
                     consecutive_401s = 0
 
-                # Rate limit: Spotify allows ~30 req/sec but be very conservative
-                # to avoid 429s, especially after setup steps 1-4 burned quota
-                if (i + 1) % 3 == 0:
-                    time.sleep(0.5)
+                # Rate limit: each artist now makes multiple API calls
+                # (albums + album tracks + search), so pause between artists
+                time.sleep(1.0)
 
                 # Progress logging every 50 artists
                 if (i + 1) % 50 == 0:
@@ -195,30 +216,33 @@ def run_track_population(
     return summary
 
 
-def _get_artists_with_tracks() -> set[int]:
-    """Return set of artist IDs that already have at least one track."""
-    ids: set[int] = set()
+def _get_artist_track_counts() -> dict[int, int]:
+    """Return a map of artist_id → track count."""
+    counts: dict[int, int] = {}
     offset = 0
     page_size = 1000
 
     while True:
-        resp = (
-            admin_supabase.table("tracks")
-            .select("artist_id")
-            .not_.is_("artist_id", "null")
-            .range(offset, offset + page_size - 1)
-            .execute()
+        resp = retry_on_disconnect(
+            lambda: (
+                admin_supabase.table("tracks")
+                .select("artist_id")
+                .not_.is_("artist_id", "null")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            ),
+            attempts=3,
         )
         rows = resp.data or []
         for row in rows:
             aid = row.get("artist_id")
             if aid is not None:
-                ids.add(aid)
+                counts[aid] = counts.get(aid, 0) + 1
         if len(rows) < page_size:
             break
         offset += page_size
 
-    return ids
+    return counts
 
 
 def _fetch_all_artists() -> list[dict]:
@@ -228,12 +252,15 @@ def _fetch_all_artists() -> list[dict]:
     page_size = 1000
 
     while True:
-        resp = (
-            admin_supabase.table("artists")
-            .select("id,name,spotify_artist_id")
-            .not_.is_("spotify_artist_id", "null")
-            .range(offset, offset + page_size - 1)
-            .execute()
+        resp = retry_on_disconnect(
+            lambda: (
+                admin_supabase.table("artists")
+                .select("id,name,spotify_artist_id")
+                .not_.is_("spotify_artist_id", "null")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            ),
+            attempts=3,
         )
         rows = resp.data or []
         all_rows.extend(rows)
@@ -260,6 +287,52 @@ def _compose_embedding_source(
     return " – ".join(parts)
 
 
+def _fetch_artist_albums(
+    client: httpx.Client,
+    headers: dict[str, str],
+    spotify_artist_id: str,
+) -> list[dict] | None:
+    """Fetch an artist's albums (albums + singles). Returns None on error."""
+    resp = _retry_429(
+        client, "GET",
+        f"https://api.spotify.com/v1/artists/{spotify_artist_id}/albums",
+        headers=headers,
+        params={"include_groups": "album,single", "market": "US", "limit": 50},
+    )
+    if resp.status_code == 403:
+        return None
+    if resp.status_code != 200:
+        return None
+    return resp.json().get("items") or []
+
+
+def _fetch_album_tracks(
+    client: httpx.Client,
+    headers: dict[str, str],
+    album_id: str,
+    album_meta: dict,
+) -> list[dict] | None:
+    """Fetch all tracks from an album, enriching each with album metadata."""
+    resp = _retry_429(
+        client, "GET",
+        f"https://api.spotify.com/v1/albums/{album_id}/tracks",
+        headers=headers,
+        params={"market": "US", "limit": 50},
+    )
+    if resp.status_code != 200:
+        return None
+    raw_tracks = resp.json().get("items") or []
+    enriched = []
+    for t in raw_tracks:
+        t["album"] = {
+            "name": album_meta.get("name"),
+            "release_date": album_meta.get("release_date"),
+            "release_date_precision": album_meta.get("release_date_precision"),
+        }
+        enriched.append(t)
+    return enriched
+
+
 def _retry_429(
     client: httpx.Client,
     method: str,
@@ -267,9 +340,23 @@ def _retry_429(
     headers: dict[str, str],
     params: dict | None = None,
 ) -> httpx.Response:
-    """Make an HTTP request with automatic 429 retry (up to 2 retries, capped at 60s)."""
+    """Make an HTTP request with retry for 429 and transient disconnects."""
+    last_transport_error: httpx.TransportError | None = None
+    resp: httpx.Response | None = None
     for attempt in range(3):
-        resp = client.request(method, url, params=params, headers=headers)
+        try:
+            resp = client.request(method, url, params=params, headers=headers)
+        except httpx.TransportError as exc:
+            last_transport_error = exc
+            wait = min(2 * (attempt + 1), 8)
+            print(
+                f"track_populator: transport error on {url.split('/')[-1]} "
+                f"({type(exc).__name__}: {exc}), waiting {wait}s "
+                f"(attempt {attempt + 1})",
+                flush=True,
+            )
+            time.sleep(wait)
+            continue
         if resp.status_code != 429:
             return resp
         retry_after = int(resp.headers.get("Retry-After", "5"))
@@ -278,7 +365,9 @@ def _retry_429(
         wait = min(max(retry_after, 5 * (attempt + 1)), 60)
         print(f"track_populator: 429 on {url.split('/')[-1]}, waiting {wait}s (attempt {attempt+1})", flush=True)
         time.sleep(wait)
-    return resp  # Return last response even if still 429
+    if resp is not None:
+        return resp  # Return last response even if still 429
+    raise last_transport_error or httpx.TransportError("Spotify request failed")
 
 
 def _search_and_upsert_tracks(
@@ -289,8 +378,10 @@ def _search_and_upsert_tracks(
 ) -> tuple[int, str | None]:
     """Fetch tracks for an artist and upsert them.
 
-    Strategy: Use /artists/{id}/top-tracks if we have a spotify_artist_id
-    (direct lookup, cheaper on rate limits). Fall back to Search API.
+    Strategy: Start with /artists/{id}/albums to get full discography,
+    then fetch each album's tracks. This reaches deep cuts that never
+    appear in top-tracks or search results. Falls back to Search API
+    pagination when the albums endpoint is unavailable.
 
     Returns (tracks_upserted, error_message_or_None).
     """
@@ -302,59 +393,67 @@ def _search_and_upsert_tracks(
         return 0, None
 
     items: list[dict] = []
+    seen_ids: set[str] = set()
 
-    # Prefer top-tracks endpoint (direct, no text search, 1 API call)
+    # Strategy 1: Albums → album tracks (reaches deep cuts)
     if spotify_artist_id:
-        resp = _retry_429(
-            client, "GET",
-            f"https://api.spotify.com/v1/artists/{spotify_artist_id}/top-tracks",
-            headers=headers,
-            params={"market": "US"},
-        )
-        if resp.status_code == 429:
-            retry_after = int(resp.headers.get("Retry-After", "5"))
-            return 0, f"Spotify rate limit too severe ({retry_after}s)"
-        if resp.status_code == 200:
-            items = resp.json().get("tracks", [])[:limit]
-        elif resp.status_code == 403:
-            # Dev mode may block top-tracks; fall through to search
-            pass
-        elif resp.status_code in (401,):
-            body = (resp.text or "")[:120]
-            return 0, f"spotify top-tracks HTTP {resp.status_code} for '{artist_name}': {body}"
+        album_items = _fetch_artist_albums(client, headers, spotify_artist_id)
+        if album_items is not None:
+            for album in album_items[:20]:
+                album_id = album.get("id")
+                if not album_id:
+                    continue
+                album_tracks = _fetch_album_tracks(client, headers, album_id, album)
+                if album_tracks is None:
+                    continue
+                for t in album_tracks:
+                    tid = t.get("id")
+                    if tid and tid not in seen_ids:
+                        seen_ids.add(tid)
+                        items.append(t)
+                    if len(items) >= limit:
+                        break
+                if len(items) >= limit:
+                    break
 
-    # Fallback: Search API
-    if not items:
+    # Strategy 2: Search API with pagination to go beyond top results
+    if len(items) < limit:
         quoted = artist_name.replace('"', '\\"')
         query = f'artist:"{quoted}"'
-        params = {"q": query, "type": "track", "market": "US", "limit": limit}
-        resp = _retry_429(
-            client, "GET",
-            "https://api.spotify.com/v1/search",
-            headers=headers,
-            params=params,
-        )
-        if resp.status_code == 429:
-            retry_after = int(resp.headers.get("Retry-After", "5"))
-            return 0, f"Spotify rate limit too severe ({retry_after}s)"
+        for offset in range(0, limit, 50):
+            batch = min(50, limit - len(items))
+            params = {"q": query, "type": "track", "market": "US", "limit": batch, "offset": offset}
+            resp = _retry_429(
+                client, "GET",
+                "https://api.spotify.com/v1/search",
+                headers=headers,
+                params=params,
+            )
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", "5"))
+                if not items:
+                    return 0, f"Spotify rate limit too severe ({retry_after}s)"
+                break
+            if resp.status_code == 401:
+                if not items:
+                    return 0, f"spotify token expired or invalid for '{artist_name}' (HTTP 401)"
+                break
+            if resp.status_code != 200:
+                if not items:
+                    body = (resp.text or "")[:120]
+                    return 0, f"spotify HTTP {resp.status_code} for '{artist_name}': {body}"
+                break
+            search_items = (resp.json().get("tracks") or {}).get("items") or []
+            for t in search_items:
+                tid = t.get("id")
+                if tid and tid not in seen_ids:
+                    seen_ids.add(tid)
+                    items.append(t)
+            if len(search_items) < batch:
+                break
+            if len(items) >= limit:
+                break
 
-    if resp.status_code == 401:
-        return 0, f"spotify token expired or invalid for '{artist_name}' (HTTP 401)"
-
-    if resp.status_code != 200:
-        body = (resp.text or "")[:120]
-        return 0, f"spotify HTTP {resp.status_code} for '{artist_name}': {body}"
-
-    # Parse items — top-tracks returns {tracks: [...]}, search returns {tracks: {items: [...]}}
-    if not items:
-        data = resp.json()
-        tracks_data = data.get("tracks")
-        if isinstance(tracks_data, list):
-            # /artists/{id}/top-tracks format
-            items = tracks_data[:limit]
-        elif isinstance(tracks_data, dict):
-            # /search format
-            items = tracks_data.get("items") or []
     if not items:
         return 0, None
 
@@ -399,8 +498,13 @@ def _search_and_upsert_tracks(
     if not rows:
         return 0, None
 
-    admin_supabase.table("tracks").upsert(
-        rows, on_conflict="spotify_track_id"
-    ).execute()
+    retry_on_disconnect(
+        lambda: (
+            admin_supabase.table("tracks")
+            .upsert(rows, on_conflict="spotify_track_id")
+            .execute()
+        ),
+        attempts=3,
+    )
 
     return len(rows), None

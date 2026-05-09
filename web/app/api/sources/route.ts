@@ -17,7 +17,14 @@ export async function POST(req: NextRequest) {
   }
   const upstream = await fetch(`${apiUrl}/ingest/sources`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${serviceRoleKey}` },
+    headers: {
+      Authorization: `Bearer ${serviceRoleKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      spotify_client_id: process.env.SPOTIFY_CLIENT_ID ?? undefined,
+      spotify_client_secret: process.env.SPOTIFY_CLIENT_SECRET ?? undefined,
+    }),
   });
   const data = await upstream.json().catch(() => ({}));
   return NextResponse.json(data, { status: upstream.status });

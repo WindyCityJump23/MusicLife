@@ -2,7 +2,6 @@
 The taste model.
 """
 import random as _std_random
-import time
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends
@@ -11,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.deps.auth import bearer_scheme, ensure_valid_bearer_token, require_bearer_token
 from app.services.discover_novelty import (
+    artist_overlap_ratio,
     build_excluded_artist_ids,
     build_excluded_track_ids,
     has_signature_collision,
@@ -111,10 +111,12 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             print(f"recommend_songs: prompt embedding failed — {e}. Continuing without prompt vector.")
 
     history_rows = load_recent_history(user_client, req.user_id, req.history_window_runs)
-    excluded_track_ids = set()
+
+    excluded_track_ids: set[str] = set()
+    excluded_artist_ids: set[int] = set()
     if req.exclude_previously_shown:
         excluded_track_ids = build_excluded_track_ids(history_rows)
-    excluded_artist_ids = build_excluded_artist_ids(history_rows)
+        excluded_artist_ids = build_excluded_artist_ids(history_rows)
 
     # Prompted searches are intentional searches, but exact repeats still feel
     # broken. Use a shorter memory instead of the full unprompted exclusion
@@ -126,8 +128,6 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
 
     from app.services.song_ranking import recommend_songs as _recommend_songs
 
-    # Unique seed per request — without this, seed=0 always gives identical
-    # track ordering and results feel the same on every load.
     request_base_seed = _std_random.randint(0, 2**31)
 
     best_results: list[dict] = []
@@ -137,9 +137,12 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
 
     for attempt in range(5):
         attempts = attempt + 1
-        local_excluded = excluded_track_ids
+        local_excluded_tracks = excluded_track_ids
+        local_excluded_artists = excluded_artist_ids
+
         if not query_intent and req.novelty_mode == "graceful" and attempt >= 2:
-            local_excluded = build_excluded_track_ids(history_rows, older_than_days=30)
+            local_excluded_tracks = build_excluded_track_ids(history_rows, older_than_days=30)
+            local_excluded_artists = build_excluded_artist_ids(history_rows, older_than_days=30)
 
         attempt_results = _recommend_songs(
             client=user_client,
@@ -150,25 +153,27 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             exclude_library=req.exclude_library,
             limit=req.limit,
             prompt_text=prompt_for_ranking,
-            excluded_track_ids=local_excluded,
-            excluded_artist_ids=excluded_artist_ids,
+            excluded_track_ids=local_excluded_tracks,
+            excluded_artist_ids=local_excluded_artists,
             exploration_seed=request_base_seed + attempt,
         )
 
-        # Keep whichever attempt produced the most songs — use as fallback
         if len(attempt_results) > len(best_results):
             best_results = attempt_results
 
         track_ids = [r.get("spotify_track_id") for r in attempt_results if r.get("spotify_track_id")]
+        result_artist_ids = [int(r["artist_id"]) for r in attempt_results if r.get("artist_id")]
         signature = signature_from_ordered(track_ids)
         overlap = overlap_ratio(track_ids, excluded_track_ids)
+        a_overlap = artist_overlap_ratio(result_artist_ids, excluded_artist_ids)
 
         if has_signature_collision(user_client, req.user_id, signature):
             continue
         # Prompted searches use a shorter history window, so do not run the
         # strict unprompted novelty retry loop against them.
-        if not query_intent and req.novelty_mode == "strict" and req.exclude_previously_shown and overlap > 0:
-            continue
+        if not query_intent and req.novelty_mode == "strict" and req.exclude_previously_shown:
+            if overlap > 0 or a_overlap > 0.3:
+                continue
         if not query_intent and req.novelty_mode == "graceful" and overlap > req.max_allowed_overlap:
             continue
 
@@ -188,11 +193,13 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             "list_signature": signature,
             "novelty_attempts": attempts,
             "overlap_ratio": round(overlap, 4),
+            "artist_overlap_ratio": round(a_overlap, 4),
             "novelty_mode_used": req.novelty_mode,
         }
 
     # All attempts failed novelty checks — return the best result we found
     track_ids = [r.get("spotify_track_id") for r in best_results if r.get("spotify_track_id")]
+    result_artist_ids = [int(r["artist_id"]) for r in best_results if r.get("artist_id")]
     signature = signature_from_ordered(track_ids)
     persist_discover_run(
         user_client,
@@ -210,9 +217,9 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
         "list_signature": signature,
         "novelty_attempts": attempts,
         "overlap_ratio": round(overlap, 4),
+        "artist_overlap_ratio": round(artist_overlap_ratio(result_artist_ids, excluded_artist_ids), 4),
         "novelty_mode_used": "graceful",
     }
-
 
 def _build_taste_vector(client, user_id: str) -> list[float]:
     from app.services.ranking import build_taste_vector

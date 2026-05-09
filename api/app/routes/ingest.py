@@ -9,7 +9,7 @@ TODO order (matches the week-by-week build plan):
 """
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Body, Depends
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
@@ -181,37 +181,138 @@ def _run_embed_tracks(job_id: str):
         print(f"embed_tracks: FAILED: {exc}")
 
 
+def _summarize_track_embedding(backfill: dict | None, summary: dict | None) -> str:
+    embedded = summary.get("embedded", 0) if isinstance(summary, dict) else 0
+    skipped = summary.get("skipped", 0) if isinstance(summary, dict) else 0
+    batches = summary.get("batches", 0) if isinstance(summary, dict) else 0
+    backfilled = backfill.get("updated", 0) if isinstance(backfill, dict) else 0
+    msg = f"modeled {embedded} tracks in {batches} batches"
+    if backfilled:
+        msg += f", prepared {backfilled} track descriptions"
+    if skipped:
+        msg += f" ({skipped} skipped)"
+    return msg
+
+
+class SourceIngestRequest(BaseModel):
+    spotify_client_id: str | None = None
+    spotify_client_secret: str | None = None
+
+
 @router.post("/sources")
 def ingest_sources(
     bg: BackgroundTasks,
+    req: SourceIngestRequest = Body(default_factory=SourceIngestRequest),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ):
     token = require_bearer_token(credentials)
     ensure_valid_bearer_token(token)
     job_id = str(uuid.uuid4())
     create_job(job_id, "sources")
-    bg.add_task(_run_source_ingest, job_id)
+    bg.add_task(
+        _run_source_ingest,
+        job_id,
+        req.spotify_client_id,
+        req.spotify_client_secret,
+    )
     return {"status": "queued", "job_id": job_id}
 
 
-def _run_source_ingest(job_id: str):
+def _coerce_int_ids(value: object) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    ids: list[int] = []
+    for item in value:
+        try:
+            ids.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def _run_source_ingest(
+    job_id: str,
+    spotify_client_id: str | None = None,
+    spotify_client_secret: str | None = None,
+):
+    from app.services.artist_embeddings import run_artist_embeddings
+    from app.services.artist_enrichment import run_artist_enrichment
     from app.services.source_ingest import run_source_ingest
+    from app.services.track_embeddings import run_track_embeddings
 
     def progress(msg: str):
         update_job(job_id, JobStatus.RUNNING, msg[:500])
 
     update_job(job_id, JobStatus.RUNNING, "Crawling editorial sources...")
     try:
-        summary = run_source_ingest(progress=progress)
+        summary = run_source_ingest(
+            progress=progress,
+            spotify_client_id=spotify_client_id,
+            spotify_client_secret=spotify_client_secret,
+        )
         sources = summary.get("sources_scanned", 0)
         mentions = summary.get("mentions_found", 0)
         tracks = summary.get("blog_tracks_added", 0)
         artists = summary.get("source_artists_added", 0)
+        source_artist_ids = _coerce_int_ids(summary.get("source_artist_ids"))
+        blog_track_ids = _coerce_int_ids(summary.get("blog_track_ids"))
+
+        embedded_artists = 0
+        embedded_tracks = 0
+        followup_notes: list[str] = []
+
+        if source_artist_ids:
+            try:
+                progress(f"Finalizing {len(source_artist_ids)} source artists...")
+                # A small targeted enrichment pass improves genre/similar-artist
+                # context without turning the daily source refresh into full setup.
+                run_artist_enrichment(
+                    progress=progress,
+                    limit=min(25, len(source_artist_ids)),
+                    artist_ids=source_artist_ids,
+                )
+                artist_summary = run_artist_embeddings(
+                    batch_size=32,
+                    progress=progress,
+                    artist_ids=source_artist_ids,
+                    max_total=max(32, len(source_artist_ids)),
+                )
+                embedded_artists = artist_summary.get("embedded", 0)
+                last_error = artist_summary.get("last_error")
+                if last_error:
+                    followup_notes.append(f"artist embedding warning: {last_error}")
+            except Exception as exc:
+                followup_notes.append(f"artist finalization skipped: {exc}")
+                print(f"source_ingest: artist finalization failed: {exc}")
+
+        if blog_track_ids:
+            try:
+                progress(f"Finalizing {len(blog_track_ids)} source tracks...")
+                track_summary = run_track_embeddings(
+                    batch_size=64,
+                    track_ids=blog_track_ids,
+                    max_total=max(64, len(blog_track_ids)),
+                    progress=progress,
+                )
+                embedded_tracks = track_summary.get("embedded", 0)
+                last_error = track_summary.get("last_error")
+                if last_error:
+                    followup_notes.append(f"track embedding warning: {last_error}")
+            except Exception as exc:
+                followup_notes.append(f"track finalization skipped: {exc}")
+                print(f"source_ingest: track finalization failed: {exc}")
+
         msg = f"Scanned {sources} sources, found {mentions} mentions"
         if tracks:
             msg += f", added {tracks} tracks"
         if artists:
             msg += f", discovered {artists} artists"
+        if embedded_artists:
+            msg += f", modeled {embedded_artists} artists"
+        if embedded_tracks:
+            msg += f", modeled {embedded_tracks} tracks"
+        if followup_notes:
+            msg += f" — {'; '.join(followup_notes)}"
         update_job(job_id, JobStatus.SUCCESS, msg[:500])
         print("source_ingest: completed")
     except Exception as exc:
@@ -327,29 +428,58 @@ def populate_tracks(
 
 
 def _run_populate_tracks(job_id: str, spotify_token: str):
+    from app.services.track_embeddings import (
+        backfill_embedding_source,
+        run_track_embeddings,
+    )
     from app.services.track_populator import run_track_population
 
     update_job(job_id, JobStatus.RUNNING, "Populating tracks for all artists...")
     try:
-        summary = run_track_population(spotify_token)
-        added = summary.get("tracks_added", 0)
-        processed = summary.get("artists_processed", 0)
-        errors = summary.get("errors", 0)
-        fatal_error = summary.get("error")  # Token expired, etc.
+        summary = run_track_population(
+            spotify_token,
+            progress=lambda msg: update_job(job_id, JobStatus.RUNNING, msg[:500]),
+        )
+        added = summary.get("tracks_added", 0) if isinstance(summary, dict) else 0
+        processed = summary.get("artists_processed", 0) if isinstance(summary, dict) else 0
+        errors = summary.get("errors", 0) if isinstance(summary, dict) else 0
+        fatal_error = summary.get("error") if isinstance(summary, dict) else None
         msg = f"Added {added} tracks for {processed} artists"
         if errors:
             msg += f" ({errors} errors)"
-        last_err = summary.get("last_error")
+        last_err = summary.get("last_error") if isinstance(summary, dict) else None
         if last_err:
             msg += f" — last error: {last_err}"
-        if fatal_error:
-            msg = f"Failed: {fatal_error}"
-            update_job(job_id, JobStatus.FAILED, msg[:500])
-            print(f"populate_tracks: FAILED — {msg}")
-        elif added == 0 and processed == 0:
+
+        update_job(job_id, JobStatus.RUNNING, "Preparing track context...")
+        backfill = backfill_embedding_source()
+        update_job(job_id, JobStatus.RUNNING, "Generating track embeddings...")
+        embed_summary = run_track_embeddings(
+            progress=lambda embed_msg: update_job(job_id, JobStatus.RUNNING, embed_msg[:500])
+        )
+        embed_msg = _summarize_track_embedding(backfill, embed_summary)
+        embedded = embed_summary.get("embedded", 0) if isinstance(embed_summary, dict) else 0
+        skipped = embed_summary.get("skipped", 0) if isinstance(embed_summary, dict) else 0
+        embed_error = embed_summary.get("last_error") if isinstance(embed_summary, dict) else None
+
+        if fatal_error and embedded == 0:
+            fail_msg = f"Failed: {fatal_error}. Track context not modeled."
+            update_job(job_id, JobStatus.FAILED, fail_msg[:500])
+            print(f"populate_tracks: FAILED — {fail_msg}")
+        elif added == 0 and processed == 0 and embedded == 0:
             update_job(job_id, JobStatus.FAILED, msg[:500])
             print(f"populate_tracks: FAILED (0 results) — {msg}")
+        elif embedded == 0 and skipped > 0:
+            reason = embed_error or "no tracks were embedded"
+            fail_msg = f"{msg}; embedding failed: {reason}"[:500]
+            update_job(job_id, JobStatus.FAILED, fail_msg)
+            print(f"populate_tracks: FAILED — {fail_msg}")
         else:
+            if fatal_error:
+                msg += f"; Spotify update incomplete: {fatal_error}"
+            msg += f"; {embed_msg}"
+            if embed_error:
+                msg += f" — embedding warning: {embed_error}"
             update_job(job_id, JobStatus.SUCCESS, msg[:500])
             print(f"populate_tracks: completed — {msg}")
     except Exception as exc:
@@ -559,7 +689,8 @@ def setup_all(
 ):
     """Run the full library setup pipeline as one orchestrated job.
 
-    Sequentially runs sync → enrich → embed → sources → populate-tracks
+    Sequentially runs sync → enrich → embed artists → sources → populate
+    tracks → embed tracks
     server-side, reporting unified progress via the standard /status/{job_id}
     endpoint. Progress state is persisted for dashboard polling; if the process
     loses the running task, stale status checks tell the user to re-run setup.
@@ -567,7 +698,7 @@ def setup_all(
     token = require_bearer_token(credentials)
     ensure_valid_bearer_token(token)
     job_id = str(uuid.uuid4())
-    create_job(job_id, "setup-all", user_id=req.user_id, total_steps=5)
+    create_job(job_id, "setup-all", user_id=req.user_id, total_steps=6)
     bg.add_task(
         _run_setup_all,
         job_id,
@@ -592,9 +723,13 @@ def _run_setup_all(
     from app.services.artist_enrichment import run_artist_enrichment
     from app.services.source_ingest import run_source_ingest
     from app.services.spotify_ingest import run_spotify_library_ingest
+    from app.services.track_embeddings import (
+        backfill_embedding_source,
+        run_track_embeddings,
+    )
     from app.services.track_populator import run_track_population
 
-    total = 5
+    total = 6
 
     def progress_for(step: int):
         def cb(msg: str):
@@ -659,6 +794,9 @@ def _run_setup_all(
         if not active_token:
             active_token = fresh_token()
 
+        track_added = 0
+        track_catalog_note = ""
+
         # Step 5 is allowed to soft-fail because Spotify dev-mode rate limits
         # can lock out the app. The message must not claim Radio is ready until
         # the user's own playable track slice meets readiness.
@@ -667,25 +805,52 @@ def _run_setup_all(
             track_error = track_summary.get("error") if isinstance(track_summary, dict) else None
             errors = track_summary.get("errors", 0) if isinstance(track_summary, dict) else 0
             added = track_summary.get("tracks_added", 0) if isinstance(track_summary, dict) else 0
+            track_added = added
             if track_error:
                 print(f"setup_all: track population failed (non-fatal): {track_error}", flush=True)
-                note = _radio_readiness_message(user_id, "Taste profile is ready")
-                update_job(job_id, JobStatus.SUCCESS, f"{note} Track catalog will update later: {track_error}"[:500])
+                track_catalog_note = f" Track catalog will update later: {track_error}"
             elif errors > 0 and added == 0:
                 last_err = (track_summary.get("last_error") or "") if isinstance(track_summary, dict) else ""
                 note = "rate-limited" if "429" in last_err or "rate" in last_err.lower() else "will retry later"
-                ready_note = _radio_readiness_message(user_id, "Taste profile is ready")
-                update_job(job_id, JobStatus.SUCCESS,
-                           f"{ready_note} Track catalog will update later — {note}"[:500])
-            else:
-                update_job(job_id, JobStatus.SUCCESS, _radio_readiness_message(
-                    user_id,
-                    f"Radio setup complete ({added} new tracks added)",
-                ))
+                track_catalog_note = f" Track catalog will update later — {note}"
         except Exception as step5_exc:
             print(f"setup_all: step 5 non-fatal error — {step5_exc}", flush=True)
-            update_job(job_id, JobStatus.SUCCESS,
-                       f"{_radio_readiness_message(user_id, 'Taste profile is ready')} Track catalog will update later"[:500])
+            track_catalog_note = " Track catalog will update later"
+
+        current_stage = "Model Tracks"
+        progress_for(6)("Preparing track context…")
+        backfill = backfill_embedding_source()
+        progress_for(6)("Generating track embeddings…")
+        track_embed_summary = run_track_embeddings(progress=progress_for(6))
+        embedded_tracks = (
+            track_embed_summary.get("embedded", 0)
+            if isinstance(track_embed_summary, dict)
+            else 0
+        )
+        skipped_tracks = (
+            track_embed_summary.get("skipped", 0)
+            if isinstance(track_embed_summary, dict)
+            else 0
+        )
+        track_embed_error = (
+            track_embed_summary.get("last_error")
+            if isinstance(track_embed_summary, dict)
+            else None
+        )
+        if embedded_tracks == 0 and skipped_tracks > 0:
+            reason = track_embed_error or "no tracks were embedded"
+            raise RuntimeError(f"track embedding failed: {reason}")
+
+        model_note = _summarize_track_embedding(backfill, track_embed_summary)
+        final_msg = _radio_readiness_message(
+            user_id,
+            f"Radio setup complete ({track_added} new tracks added; {model_note})",
+        )
+        if track_catalog_note:
+            final_msg += track_catalog_note
+        if track_embed_error:
+            final_msg += f" Embedding warning: {track_embed_error}"
+        update_job(job_id, JobStatus.SUCCESS, final_msg[:500])
 
         print(f"setup_all: completed for user {user_id}")
     except Exception as exc:

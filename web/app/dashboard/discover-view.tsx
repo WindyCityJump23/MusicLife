@@ -30,7 +30,9 @@ type SongRecommendation = {
   explicit: boolean;
   spotify_track_id: string;
   score: number;
-  lane?: DiscoveryLaneId;
+  lane?: DiscoveryLaneId | "radio_hit" | "deep_cut" | "familiar";
+  novelty_score?: number;
+  familiarity_score?: number;
   signals: SignalBreakdown;
   reasons: string[];
   genres: string[];
@@ -39,6 +41,7 @@ type SongRecommendation = {
 };
 
 type Preset = { label: string; desc: string; weights: { affinity: number; context: number; editorial: number } };
+
 type DiscoveryLaneId = "radio_hits" | "popular" | "deep_cuts";
 
 type DiscoveryLane = {
@@ -82,7 +85,7 @@ const DISCOVERY_LANES: DiscoveryLane[] = [
 ];
 
 const TARGET_SONGS = 25;
-const FALLBACK_ARTIST_SEARCH_LIMIT = 10;
+const FALLBACK_ARTIST_SEARCH_LIMIT = 15;
 const FALLBACK_TRACK_SEARCH_LIMIT = 20;
 const DISCOVER_CACHE_KEY = "musiclife:discover:last-results";
 const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -95,6 +98,13 @@ type DiscoverCachePayload = {
 };
 
 function laneForSong(song: SongRecommendation): DiscoveryLaneId {
+  // Prefer backend-assigned lane when available
+  if (song.lane) {
+    if (song.lane === "deep_cuts" || song.lane === "deep_cut") return "deep_cuts";
+    if (song.lane === "radio_hits" || song.lane === "radio_hit" || song.lane === "familiar") return "radio_hits";
+    if (song.lane === "popular") return "popular";
+  }
+
   const popularity = song.signals.track_popularity ?? 0.5;
   const reasons = song.reasons.join(" ").toLowerCase();
   const genres = song.genres.join(" ").toLowerCase();
@@ -107,6 +117,18 @@ function laneForSong(song: SongRecommendation): DiscoveryLaneId {
   if (hasDeepSignal || popularity < 0.46) return "deep_cuts";
   if (popularity >= 0.74) return "radio_hits";
   return "popular";
+}
+
+function laneBadge(song: SongRecommendation): { label: string; className: string } | null {
+  if (!song.lane) return null;
+  const lane = laneForSong(song);
+  if (lane === "deep_cuts") {
+    return { label: "Deep cut", className: "bg-violet-50 text-violet-600" };
+  }
+  if (lane === "popular") {
+    return { label: "Popular", className: "bg-amber-50 text-amber-600" };
+  }
+  return { label: "Radio hit", className: "bg-emerald-50 text-emerald-600" };
 }
 
 function targetLaneCounts(total: number): { radio_hits: number; deep_cuts: number } {
@@ -206,6 +228,48 @@ function interleaveForPlayback(songs: SongRecommendation[]): SongRecommendation[
   return mixed;
 }
 
+function trackIdentity(song: SongRecommendation): string {
+  return (
+    song.spotify_track_id ||
+    `${song.track_name.toLowerCase()}|${song.artist_name.toLowerCase()}`
+  );
+}
+
+function artistIdentity(song: SongRecommendation): string {
+  return (song.artist_id || song.artist_name).toLowerCase();
+}
+
+function spreadArtistsForDisplay(
+  songs: SongRecommendation[],
+  target: number
+): SongRecommendation[] {
+  const selected: SongRecommendation[] = [];
+  const seenTracks = new Set<string>();
+  const artistCounts = new Map<string, number>();
+
+  function addPass(maxPerArtist: number, requireUniqueArtist: boolean) {
+    for (const song of songs) {
+      if (selected.length >= target) break;
+      const trackKey = trackIdentity(song);
+      if (seenTracks.has(trackKey)) continue;
+
+      const artistKey = artistIdentity(song);
+      const count = artistCounts.get(artistKey) ?? 0;
+      if (requireUniqueArtist && count > 0) continue;
+      if (count >= maxPerArtist) continue;
+
+      selected.push(song);
+      seenTracks.add(trackKey);
+      artistCounts.set(artistKey, count + 1);
+    }
+  }
+
+  addPass(1, true);
+  if (selected.length < target) addPass(2, false);
+
+  return selected;
+}
+
 function toQueueTracks(songs: SongRecommendation[]): QueueTrack[] {
   return interleaveForPlayback(songs)
     .filter((s) => s.spotify_track_id)
@@ -262,17 +326,11 @@ function chooseFallbackTracks(tracks: any[]): any[] { // eslint-disable-line @ty
     return true;
   });
 
-  const deep = unique.find((track) => (track.popularity ?? 50) < 46);
-  const mid = unique.find((track) => {
-    const popularity = track.popularity ?? 50;
-    return popularity >= 46 && popularity < 74;
-  });
-  const hit = unique.find((track) => (track.popularity ?? 50) >= 74);
-
-  return [deep, mid, hit, ...unique]
-    .filter(Boolean)
-    .filter((track, index, list) => list.findIndex((candidate) => candidate.id === track.id) === index)
-    .slice(0, 3);
+  // Sort so deep cuts come first, then mid-popularity, then hits.
+  // This counteracts Spotify's default popularity ordering and ensures
+  // the fallback path contributes genuine discoveries.
+  const sorted = [...unique].sort((a, b) => (a.popularity ?? 50) - (b.popularity ?? 50));
+  return sorted.slice(0, 5);
 }
 
 export default function DiscoverView({
@@ -365,6 +423,7 @@ export default function DiscoverView({
             prompt: prompt || null,
             weights: normalized,
             limit: 30,
+            exclude_library: true,
             discover_run_id: crypto.randomUUID(),
             exclude_previously_shown: true,
             history_window_runs: 50,
@@ -387,6 +446,9 @@ export default function DiscoverView({
             explicit: r.explicit ?? false,
             spotify_track_id: r.spotify_track_id ?? "",
             score: r.score ?? 0,
+            lane: r.lane,
+            novelty_score: r.novelty_score,
+            familiarity_score: r.familiarity_score,
             signals: {
               affinity: r.signals?.affinity ?? 0,
               context: r.signals?.context ?? 0,
@@ -395,7 +457,6 @@ export default function DiscoverView({
               novelty: r.signals?.novelty,
               familiarity: r.signals?.familiarity,
             },
-            lane: r.lane,
             genres: r.genres ?? [],
             reasons: r.reasons ?? [],
             mention_count: r.mention_count ?? 0,
@@ -490,7 +551,7 @@ export default function DiscoverView({
               return tracks.map((track: any): SongRecommendation => { // eslint-disable-line @typescript-eslint/no-explicit-any
                 const trackPop = (track.popularity ?? 50) / 100;
                 const depthBoost = trackPop < 0.46 ? 1.08 : trackPop > 0.74 ? 0.88 : 1.0;
-                const songScore = artist.score * (0.74 + 0.14 * trackPop) * depthBoost;
+                const songScore = artist.score * (0.78 + 0.18 * trackPop) * depthBoost;
                 const fallbackSong: SongRecommendation = {
                   track_id: null,
                   track_name: track.name,
@@ -502,6 +563,8 @@ export default function DiscoverView({
                   explicit: track.explicit ?? false,
                   spotify_track_id: track.id,
                   score: songScore,
+                  novelty_score: 1.0,
+                  familiarity_score: 0.0,
                   signals: {
                     affinity: artist.signals.affinity,
                     context: artist.signals.context,
@@ -548,14 +611,16 @@ export default function DiscoverView({
         }
       }
 
-      setResults(deduped);
-      writeDiscoverCache(prompt, weights, deduped);
+      const finalResults = spreadArtistsForDisplay(deduped, TARGET_SONGS);
+
+      setResults(finalResults);
+      writeDiscoverCache(prompt, weights, finalResults);
 
       // Set the player queue so songs auto-advance
-      setQueue(toQueueTracks(deduped));
+      setQueue(toQueueTracks(finalResults));
 
       // Fetch initial favorite and feedback state
-      await refreshTrackState(deduped);
+      await refreshTrackState(finalResults);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
       setResults([]);
@@ -1035,6 +1100,7 @@ function SongRow({
   const [expanded, setExpanded] = useState(false);
 
   const matchPct = Math.round(song.score * 100);
+  const lane = laneBadge(song);
   const minutes = Math.floor(song.duration_ms / 60000);
   const seconds = Math.floor((song.duration_ms % 60000) / 1000);
   const duration =
@@ -1156,6 +1222,12 @@ function SongRow({
           {/* Source badge — shown when this song has editorial coverage */}
           {song.top_mention?.source && (
             <SourceBadge mention={song.top_mention} />
+          )}
+          {/* Lane pill */}
+          {lane && (
+            <span className={`inline-block text-[9px] font-medium rounded-full px-1.5 py-0.5 mt-0.5 ${lane.className}`}>
+              {lane.label}
+            </span>
           )}
         </div>
 
