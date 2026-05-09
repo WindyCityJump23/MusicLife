@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from supabase import Client
 
 from app.services.ranking import (
+    _get_user_library_artist_ids,
     _get_previously_recommended_artist_ids,
     _get_user_artist_weights,
     _get_user_feedback,
@@ -36,6 +37,133 @@ from app.services.vector_rpc import (
     max_mention_similarity_per_artist,
     track_similarity_for_artists,
 )
+
+DISCOVERY_LANES = ("deep_cuts", "popular", "radio_hits")
+
+_GENRE_PHRASES = {
+    "alternative rock",
+    "hip hop",
+    "hip-hop",
+    "r&b",
+    "indie rock",
+    "indie pop",
+    "electronic",
+    "dance",
+    "house",
+    "techno",
+    "ambient",
+    "jazz",
+    "metal",
+    "punk",
+    "folk",
+    "country",
+    "americana",
+    "soul",
+    "funk",
+    "classical",
+    "reggae",
+    "latin",
+    "pop",
+    "rock",
+    "rap",
+}
+
+_GENRE_TOKEN_STOPWORDS = {
+    "new",
+    "old",
+    "sad",
+    "happy",
+    "chill",
+    "night",
+    "drive",
+    "work",
+    "study",
+    "songs",
+    "music",
+    "vibes",
+    "like",
+}
+
+
+def _genre_tokens_for_prompt(prompt_text: str | None) -> list[str] | None:
+    if not prompt_text:
+        return None
+    normalized = prompt_text.strip().lower().replace("-", " ")
+    normalized = " ".join(normalized.split())
+    if not normalized:
+        return None
+
+    hits: list[str] = []
+    for phrase in sorted(_GENRE_PHRASES, key=len, reverse=True):
+        phrase_norm = phrase.replace("-", " ")
+        if phrase_norm in normalized:
+            hits.extend([tok for tok in phrase_norm.split() if tok not in _GENRE_TOKEN_STOPWORDS])
+
+    if not hits:
+        return None
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for token in hits:
+        if token and token not in seen:
+            seen.add(token)
+            deduped.append(token)
+    return deduped or None
+
+
+def _release_age_days(raw_release: object, now: datetime) -> int | None:
+    if not raw_release:
+        return None
+    try:
+        release_dt = datetime.fromisoformat(str(raw_release))
+    except (ValueError, AttributeError):
+        return None
+    return max((now.date() - release_dt.date()).days, 0)
+
+
+def _lane_for_track(
+    track_pop: float,
+    genres: list[str],
+    reasons: list[str],
+    editorial: float,
+    release_age_days: int | None,
+) -> str:
+    reason_text = " ".join(reasons).lower()
+    genre_text = " ".join(genres).lower()
+    has_deep_signal = (
+        "deep cut" in reason_text
+        or "obscure" in reason_text
+        or "indie" in genre_text
+        or "underground" in genre_text
+        or (editorial >= 0.45 and track_pop < 0.62)
+    )
+    is_newish = release_age_days is not None and release_age_days <= 540
+    if has_deep_signal or track_pop < 0.46:
+        return "deep_cuts"
+    if track_pop >= 0.78 and not is_newish:
+        return "radio_hits"
+    return "popular"
+
+
+def _novelty_score(
+    track_pop: float,
+    editorial: float,
+    in_library: bool,
+    is_library_artist: bool,
+    release_age_days: int | None,
+) -> float:
+    release_bonus = 0.0
+    if release_age_days is not None and release_age_days < 365:
+        release_bonus = 1.0 - release_age_days / 365
+    score = (
+        0.45 * (1.0 - track_pop)
+        + 0.22 * editorial
+        + 0.18 * (0.0 if is_library_artist else 1.0)
+        + 0.15 * release_bonus
+    )
+    if in_library:
+        score *= 0.35
+    return max(0.0, min(1.0, score))
 
 
 _MOOD_WORDS = frozenset({
@@ -148,7 +276,7 @@ def recommend_songs(
     """
 
     artist_weights = _get_user_artist_weights(client, user_id)
-    library_artist_ids = set(artist_weights.keys())
+    library_artist_ids = _get_user_library_artist_ids(client, user_id)
     previously_recommended = _get_previously_recommended_artist_ids(client, user_id)
     feedback_scores = _get_user_feedback(client, user_id)
 
@@ -191,20 +319,10 @@ def recommend_songs(
     # below the obvious head of the list later.
     POOL_SIZE = max(limit * 50, 1500)
 
-    # Classify prompt to decide filtering strategy
-    prompt_kind = classify_prompt(prompt_text) if prompt_text else None
-    if prompt_kind:
-        print(f"song_ranking: prompt '{prompt_text}' classified as '{prompt_kind}'")
-
-    # Genre tokens: only apply genre filter when the prompt is actually
-    # about a genre. Mood prompts ("sad night drive") and semantic prompts
-    # rely on embedding similarity instead of genre substring matching.
-    genre_tokens: list[str] | None = None
-    if prompt_text and prompt_kind == "genre":
-        _norm = prompt_text.strip().lower().replace("-", " ").strip()
-        _toks = [w for w in _norm.split() if len(w) >= 2]
-        if _toks:
-            genre_tokens = _toks
+    # Only use hard genre filtering when the prompt actually names a genre.
+    # Mood prompts like "sad night drive" should stay semantic; treating every
+    # token as a genre filter made searches feel oddly literal.
+    genre_tokens = _genre_tokens_for_prompt(prompt_text)
 
     all_artists = match_artists(
         client,
@@ -517,6 +635,9 @@ def recommend_songs(
         if aid in excluded_artist_ids:
             base_score *= 0.15
 
+        if aid in excluded_artist_ids:
+            base_score *= 0.58
+
         # Artist-level feedback adjustment
         artist_fb = feedback_scores.get(aid, 0)
         if artist_fb < 0:
@@ -768,21 +889,22 @@ def recommend_songs(
             if aid in previously_recommended:
                 track_base *= 0.65
 
-            # Track-level boost: small popularity signal only — discovery is
-            # the goal so we don't want hits to dominate just because they're hits.
-            track_boost = 0.85 + (0.15 * track_pop)  # 0.85–1.0 range
+            raw_release = track.get("release_date")
+            release_age = _release_age_days(raw_release, now)
+
+            # Track-level boost: popularity is only a confidence hint. Old,
+            # very popular songs are deliberately cooled down so the station
+            # does not drift into greatest-hits mode.
+            track_boost = 0.86 + (0.10 * track_pop)  # 0.86–0.96 range
 
             # New-release bonus: up to +15% for tracks released in the last
             # calendar year, decaying linearly to 0 at 365 days old.
-            raw_release = track.get("release_date")
-            if raw_release:
-                try:
-                    release_dt = datetime.fromisoformat(str(raw_release))
-                    days_old = max((now.date() - release_dt.date()).days, 0)
-                    if days_old < 365:
-                        track_boost *= 1.0 + 0.15 * (1.0 - days_old / 365)
-                except (ValueError, AttributeError):
-                    pass
+            if release_age is not None and release_age < 365:
+                track_boost *= 1.0 + 0.15 * (1.0 - release_age / 365)
+            elif track_pop >= 0.78:
+                track_boost *= 0.82
+            elif track_pop >= 0.68:
+                track_boost *= 0.92
 
             # Familiarity: penalize songs the user has already heard,
             # but welcome NEW songs from familiar artists (deep cuts are
@@ -811,7 +933,9 @@ def recommend_songs(
             # Obscurity bonus: reward genuinely unknown tracks that aren't
             # already in the user's library — defined after in_library is set.
             if track_pop < 0.40 and not in_library:
-                track_boost *= 1.12
+                track_boost *= 1.20
+            elif track_pop < 0.55 and not in_library:
+                track_boost *= 1.10
 
             # Audio feature alignment: prefer tracks that sound like the user's library.
             # This is the "does it sound right" signal — energy, danceability, mood, etc.
@@ -831,6 +955,15 @@ def recommend_songs(
                 track_boost *= 0.15  # Very strong penalty — user explicitly disliked this track
             elif track_fb > 0:
                 track_boost *= 1.15  # Modest boost
+
+            novelty = _novelty_score(
+                track_pop,
+                a_info["editorial"],
+                in_library,
+                is_library_artist,
+                release_age,
+            )
+            track_boost *= 0.92 + 0.18 * novelty
 
             # Exploration
             exploration = rng.uniform(-EXPLORATION_STRENGTH, EXPLORATION_STRENGTH)
@@ -865,20 +998,24 @@ def recommend_songs(
                 reasons.append(f"Featured in {src_name}" if src_name else "In the press")
             if track_pop > 0.7:
                 reasons.append("Popular track")
-            if raw_release:
-                try:
-                    release_dt = datetime.fromisoformat(str(raw_release))
-                    days_old = max((now.date() - release_dt.date()).days, 0)
-                    if days_old < 365:
-                        reasons.append("New release")
-                except (ValueError, AttributeError):
-                    pass
+            if release_age is not None and release_age < 365:
+                reasons.append("New release")
             if in_library:
                 reasons.append("Already in your library")
             elif is_library_artist and not in_library:
                 reasons.append("Deep cut from an artist you love")
+            if aid in excluded_artist_ids:
+                reasons.append("Recently surfaced")
             if not reasons:
                 reasons.append("Curated pick")
+
+            lane = _lane_for_track(
+                track_pop,
+                a_info["genres"],
+                reasons,
+                a_info["editorial"],
+                release_age,
+            )
 
             song_results.append({
                 "track_id": str(track_id) if track_id else None,
@@ -899,8 +1036,11 @@ def recommend_songs(
                     "context": round(track_context, 4),
                     "editorial": round(a_info["editorial"], 4),
                     "track_popularity": round(track_pop, 4),
+                    "novelty": round(novelty, 4),
+                    "familiarity": round(1.0 - novelty, 4),
                     "track_embedding": used_track_embedding,
                 },
+                "lane": lane,
                 "genres": a_info["genres"],
                 "reasons": reasons,
                 "mention_count": a_info["mention_count"],
@@ -910,8 +1050,11 @@ def recommend_songs(
     # Sort by score
     song_results.sort(key=lambda s: s["score"], reverse=True)
 
-    # ── Lane-aware diversity re-ranking ─────────────────────────
-    diverse = _lane_diversity_rerank(song_results, max(limit, 0))
+    # ── Lane-aware diversity re-ranking ──────────────────────────
+    # The old path sorted one blended list and let hits crowd out discovery.
+    # This enforces a Pandora-like station mix: some recognizable anchors,
+    # plenty of solid popular cuts, and a real deep-cut lane.
+    diverse = _lane_aware_rerank(song_results, max(limit, 0))
 
     return diverse
 
@@ -1123,4 +1266,158 @@ def _lane_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
     return selected
 
 
-_song_diversity_rerank = _lane_diversity_rerank
+def _lane_targets(limit: int) -> dict[str, int]:
+    if limit <= 0:
+        return {lane: 0 for lane in DISCOVERY_LANES}
+    radio_hits = max(1, round(limit * 0.18))
+    deep_cuts = max(2, round(limit * 0.38))
+    popular = max(0, limit - radio_hits - deep_cuts)
+    return {
+        "deep_cuts": deep_cuts,
+        "popular": popular,
+        "radio_hits": radio_hits,
+    }
+
+
+def _candidate_key(candidate: dict) -> str:
+    spotify_id = candidate.get("spotify_track_id")
+    if spotify_id:
+        return f"spotify:{spotify_id}"
+    return f"{candidate.get('track_name', '')}|{candidate.get('artist_name', '')}".lower()
+
+
+def _pick_lane_candidates(
+    pool: list[dict],
+    target: int,
+    used: set[str],
+    artist_counts: Counter[str],
+    genre_counts: Counter[str],
+    strict_artist_cap: int = 1,
+) -> list[dict]:
+    picks: list[dict] = []
+    if target <= 0:
+        return picks
+
+    while len(picks) < target:
+        best_idx = -1
+        best_adjusted = -1.0
+
+        for i, candidate in enumerate(pool):
+            key = _candidate_key(candidate)
+            if key in used:
+                continue
+
+            artist = (candidate.get("artist_name") or "").lower()
+            if artist_counts.get(artist, 0) >= strict_artist_cap:
+                continue
+
+            genres = [g.lower() for g in (candidate.get("genres") or [])] or ["__none__"]
+            max_genre_share = max(
+                genre_counts.get(g, 0.0) / max(len(used), 1) for g in genres
+            )
+            genre_penalty = 0.72 if max_genre_share >= 0.34 else 1.0
+            novelty = float((candidate.get("signals") or {}).get("novelty") or 0.0)
+            lane_bonus = 1.0 + (0.08 * novelty if candidate.get("lane") == "deep_cuts" else 0.0)
+            adjusted = float(candidate.get("score") or 0.0) * genre_penalty * lane_bonus
+
+            if adjusted > best_adjusted:
+                best_adjusted = adjusted
+                best_idx = i
+
+        if best_idx < 0:
+            break
+
+        pick = pool[best_idx]
+        key = _candidate_key(pick)
+        used.add(key)
+        picks.append(pick)
+        artist_counts[(pick.get("artist_name") or "").lower()] += 1
+        genres = [g.lower() for g in (pick.get("genres") or [])] or ["__none__"]
+        for genre in genres:
+            genre_counts[genre] += 1.0 / max(len(genres), 1)
+
+    return picks
+
+
+def _lane_aware_rerank(scored: list[dict], limit: int) -> list[dict]:
+    if not scored or limit <= 0:
+        return []
+
+    pools: dict[str, list[dict]] = {lane: [] for lane in DISCOVERY_LANES}
+    for row in scored:
+        lane = row.get("lane") if row.get("lane") in DISCOVERY_LANES else "popular"
+        pools[lane].append(row)
+
+    for lane, rows in pools.items():
+        rows.sort(
+            key=lambda r: (
+                float((r.get("signals") or {}).get("novelty") or 0.0)
+                if lane == "deep_cuts"
+                else float(r.get("score") or 0.0),
+                float(r.get("score") or 0.0),
+            ),
+            reverse=True,
+        )
+
+    targets = _lane_targets(limit)
+    selected: list[dict] = []
+    used: set[str] = set()
+    artist_counts: Counter[str] = Counter()
+    genre_counts: Counter[str] = Counter()
+
+    # Fill lanes from discovery-first to recognition anchors. Radio hits are
+    # intentionally last and capped unless the catalog has nothing else.
+    for lane in ("deep_cuts", "popular", "radio_hits"):
+        selected.extend(
+            _pick_lane_candidates(
+                pools[lane],
+                targets[lane],
+                used,
+                artist_counts,
+                genre_counts,
+            )
+        )
+
+    if len(selected) < limit:
+        non_hit_pool = [
+            row
+            for row in scored
+            if row.get("lane") != "radio_hits" and _candidate_key(row) not in used
+        ]
+        selected.extend(
+            _pick_lane_candidates(
+                non_hit_pool,
+                limit - len(selected),
+                used,
+                artist_counts,
+                genre_counts,
+            )
+        )
+
+    if len(selected) < limit:
+        selected.extend(
+            _pick_lane_candidates(
+                scored,
+                limit - len(selected),
+                used,
+                artist_counts,
+                genre_counts,
+            )
+        )
+
+    if len(selected) < limit:
+        selected.extend(
+            _pick_lane_candidates(
+                scored,
+                limit - len(selected),
+                used,
+                artist_counts,
+                genre_counts,
+                strict_artist_cap=2,
+            )
+        )
+
+    return selected[:limit]
+
+
+_song_diversity_rerank = _lane_aware_rerank

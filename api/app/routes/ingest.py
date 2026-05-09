@@ -253,6 +253,7 @@ def _run_source_ingest(
         sources = summary.get("sources_scanned", 0)
         mentions = summary.get("mentions_found", 0)
         tracks = summary.get("blog_tracks_added", 0)
+        artists = summary.get("source_artists_added", 0)
         source_artist_ids = _coerce_int_ids(summary.get("source_artist_ids"))
         blog_track_ids = _coerce_int_ids(summary.get("blog_track_ids"))
 
@@ -304,6 +305,8 @@ def _run_source_ingest(
         msg = f"Scanned {sources} sources, found {mentions} mentions"
         if tracks:
             msg += f", added {tracks} tracks"
+        if artists:
+            msg += f", discovered {artists} artists"
         if embedded_artists:
             msg += f", modeled {embedded_artists} artists"
         if embedded_tracks:

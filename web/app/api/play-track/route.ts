@@ -97,7 +97,7 @@ export async function POST(request: NextRequest) {
         NextResponse.json(
           {
             error:
-              "No active Spotify device. Open Spotify on your phone, then pick it from the device list.",
+              "No active Connect device. Playback will continue in the browser player.",
             reason: "NO_ACTIVE_DEVICE",
           },
           { status: 404 }

@@ -2,7 +2,6 @@
 The taste model.
 """
 import random as _std_random
-from collections import Counter
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends
@@ -114,6 +113,13 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
         excluded_track_ids = build_excluded_track_ids(history_rows)
         excluded_artist_ids = build_excluded_artist_ids(history_rows)
 
+    # Genre/mood prompts are intentional searches, but exact repeats still feel
+    # broken. Use a shorter memory for prompted searches instead of clearing
+    # history entirely.
+    if req.prompt:
+        excluded_track_ids = build_excluded_track_ids(history_rows, older_than_days=14)
+        excluded_artist_ids = build_excluded_artist_ids(history_rows, older_than_days=14)
+
     from app.services.song_ranking import recommend_songs as _recommend_songs
 
     request_base_seed = _std_random.randint(0, 2**31)
@@ -157,16 +163,22 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
 
         if has_signature_collision(user_client, req.user_id, signature):
             continue
+        # Prompted searches use a shorter history window, so do not run the
+        # strict unprompted novelty retry loop against them.
         if not req.prompt and req.novelty_mode == "strict" and req.exclude_previously_shown:
             if overlap > 0 or a_overlap > 0.3:
                 continue
         if not req.prompt and req.novelty_mode == "graceful" and overlap > req.max_allowed_overlap:
             continue
 
-        lane_dist = _count_lanes(attempt_results)
         persist_discover_run(
-            user_client, req.user_id, track_ids, result_artist_ids,
-            req.prompt, req.weights, lane_distribution=lane_dist, run_id=run_id,
+            user_client,
+            req.user_id,
+            track_ids,
+            req.prompt,
+            req.weights,
+            run_id=run_id,
+            results=attempt_results,
         )
         return {
             "results": attempt_results,
@@ -182,10 +194,14 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
     track_ids = [r.get("spotify_track_id") for r in best_results if r.get("spotify_track_id")]
     result_artist_ids = [int(r["artist_id"]) for r in best_results if r.get("artist_id")]
     signature = signature_from_ordered(track_ids)
-    lane_dist = _count_lanes(best_results)
     persist_discover_run(
-        user_client, req.user_id, track_ids, result_artist_ids,
-        req.prompt, req.weights, lane_distribution=lane_dist, run_id=run_id,
+        user_client,
+        req.user_id,
+        track_ids,
+        req.prompt,
+        req.weights,
+        run_id=run_id,
+        results=best_results,
     )
     return {
         "results": best_results,
@@ -196,15 +212,6 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
         "artist_overlap_ratio": round(artist_overlap_ratio(result_artist_ids, excluded_artist_ids), 4),
         "novelty_mode_used": "graceful",
     }
-
-
-def _count_lanes(results: list[dict]) -> dict[str, int]:
-    counts: Counter[str] = Counter()
-    for r in results:
-        lane = r.get("lane", "unknown")
-        counts[lane] += 1
-    return dict(counts)
-
 
 def _build_taste_vector(client, user_id: str) -> list[float]:
     from app.services.ranking import build_taste_vector

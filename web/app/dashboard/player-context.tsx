@@ -26,11 +26,10 @@ export type ConnectDevice = {
 
 /**
  * Two playback modes:
- *  - "connect": send playback to a Spotify Connect device (phone, etc.) so it
- *    keeps playing through screen lock — the gym scenario. Requires Premium.
- *  - "embed":   the existing in-page Spotify iframe (30s previews for free
- *    accounts, full plays for Premium-in-tab). Used as a fallback when no
- *    Connect device is online.
+ *  - "embed":   the in-page Spotify iframe. This is the default so playback
+ *    stays inside MusicLife.
+ *  - "connect": optional remote-control of a Spotify Connect device when a
+ *    user explicitly chooses one from the player.
  */
 export type PlayMode = "connect" | "embed";
 
@@ -89,44 +88,17 @@ type PlaybackResult = {
   status?: number;
 };
 
-/** Detect mobile browsers where Web Playback SDK won't work. */
-function isMobileBrowser(): boolean {
-  if (typeof navigator === "undefined") return false;
-  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+function toSpotifyTrackUri(value: string): string {
+  return value.startsWith("spotify:track:") ? value : `spotify:track:${value}`;
 }
 
 function toSpotifyTrackId(value: string): string {
   return value.startsWith("spotify:track:") ? value.replace("spotify:track:", "") : value;
 }
 
-function toSpotifyTrackUri(value: string): string {
-  return value.startsWith("spotify:track:") ? value : `spotify:track:${value}`;
-}
-
 const NOW_PLAYING_POLL_MS = 5_000;
 const NOW_PLAYING_IDLE_POLL_MS = 15_000;
 const NOW_PLAYING_HIDDEN_POLL_MS = 30_000;
-
-/**
- * Open a Spotify URI in the native app. Uses the spotify: scheme
- * which deep-links on iOS/Android. Falls back to the web URL.
- */
-function openInSpotifyApp(spotifyUri: string, webUrl: string): void {
-  let didLeavePage = false;
-  const markLeftPage = () => {
-    if (document.hidden) didLeavePage = true;
-  };
-
-  document.addEventListener("visibilitychange", markLeftPage, { once: true });
-  window.location.href = spotifyUri;
-
-  setTimeout(() => {
-    document.removeEventListener("visibilitychange", markLeftPage);
-    if (!didLeavePage) {
-      window.location.href = webUrl;
-    }
-  }, 1500);
-}
 
 const PlayerContext = createContext<PlayerContextValue>({
   queue: [],
@@ -204,21 +176,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       const list: ConnectDevice[] = data.devices ?? [];
       setDevices(list);
 
-      // Auto-pick: keep current selection if it's still online; else prefer
-      // the active device, then a phone, then anything.
+      // Keep explicit user choices alive, but default playback stays in the
+      // browser. Users can still pick a Connect target from the device picker.
       const current = deviceIdRef.current;
-      const stillOnline = current && list.some((d) => d.id === current);
+      const stillOnline = current && list.some((d) => d.id === current && !d.is_restricted);
       if (!stillOnline) {
-        const active = list.find((d) => d.is_active && !d.is_restricted);
-        const phone = list.find(
-          (d) => d.type.toLowerCase() === "smartphone" && !d.is_restricted
-        );
-        const any = list.find((d) => !d.is_restricted);
-        const picked = (active ?? phone ?? any)?.id ?? null;
-        deviceIdRef.current = picked;
-        setSelectedDeviceId(picked);
-        // If any usable Connect device exists, default to connect mode.
-        if (picked) setModeState("connect");
+        deviceIdRef.current = null;
+        setSelectedDeviceId(null);
+        if (modeRef.current === "connect") setModeState("embed");
       }
     } catch {
       setDevices([]);
@@ -234,6 +199,16 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const setEmbedTrackId = useCallback((id: string | null) => {
     setEmbedTrackIdState(id);
   }, []);
+
+  useEffect(() => {
+    void refreshDevices();
+
+    const onVisibilityChange = () => {
+      if (!document.hidden) void refreshDevices();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [refreshDevices]);
 
   const transferToDevice = useCallback(
     async (deviceId: string): Promise<PlaybackResult> => {
@@ -323,16 +298,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       if (modeRef.current === "connect" && deviceIdRef.current) {
         const result = await playOnConnect(index);
         if (!result.ok) {
-          if (isMobileBrowser()) {
-            setPlaybackError(
-              result.error
-                ? `${result.error} Tap Open in Spotify to continue.`
-                : "Could not start Spotify Connect. Tap Open in Spotify to continue."
-            );
-            setEmbedTrackIdState(q[index].spotifyTrackId);
-            setModeState("embed");
-            return;
-          }
           setPlaybackError(result.error ?? "Playback failed");
           // Fallback to embed so the user still hears something.
           setEmbedTrackIdState(q[index].spotifyTrackId);
@@ -342,16 +307,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         setIsPlaying(true);
         // Clear any embed track so the iframe stops competing for audio.
         setEmbedTrackIdState(null);
-      } else if (isMobileBrowser()) {
-        // Mobile deep-links are most reliable when fired immediately from the tap.
-        setPlaybackError(null);
-        const trackId = toSpotifyTrackId(q[index].spotifyTrackId);
-        openInSpotifyApp(
-          `spotify:track:${trackId}`,
-          `https://open.spotify.com/track/${trackId}`
-        );
-        setIsPlaying(true);
-        setEmbedTrackIdState(q[index].spotifyTrackId);
       } else {
         setEmbedTrackIdState(q[index].spotifyTrackId);
         setIsPlaying(true);

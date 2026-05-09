@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -22,18 +23,19 @@ def set_hash_from_sorted(track_ids: list[str]) -> str:
 
 
 def load_recent_history(client, user_id: str, history_window_runs: int = 50) -> list[dict]:
+    columns = "id,run_id,created_at,track_ids,artist_ids,lanes,prompt,prompt_mode,list_signature"
     try:
         resp = (
             client.table("discover_history")
-            .select("id,run_id,created_at,track_ids,list_signature,artist_ids")
+            .select(columns)
             .eq("user_id", user_id)
             .order("created_at", desc=True)
             .limit(max(1, min(history_window_runs, 500)))
             .execute()
         )
     except Exception:
-        # Keep recommendations working if the artist-history migration has
-        # not landed yet. Track-level novelty still works with the old shape.
+        # Migration 019 may not be applied yet in older environments. Keep
+        # track-level novelty working while the deployment catches up.
         resp = (
             client.table("discover_history")
             .select("id,run_id,created_at,track_ids,list_signature")
@@ -82,11 +84,11 @@ def build_excluded_artist_ids(history_rows: list[dict], older_than_days: int | N
                         continue
                 except ValueError:
                     pass
-        for aid in (row.get("artist_ids") or []):
+        for aid in row.get("artist_ids") or []:
             try:
                 excluded.add(int(aid))
             except (TypeError, ValueError):
-                pass
+                continue
     return excluded
 
 
@@ -121,28 +123,56 @@ def persist_discover_run(
     client,
     user_id: str,
     track_ids: list[str],
-    artist_ids: list[int],
     prompt: str | None,
     weights: dict[str, float] | None,
-    lane_distribution: dict[str, int] | None = None,
     run_id: str | None = None,
+    results: list[dict] | None = None,
 ) -> dict:
     ordered = _norm_track_ids(track_ids)
+    result_rows = results or []
+    artist_ids: list[int] = []
+    lanes: list[str] = []
+    lane_counts: dict[str, int] = {}
+    for row in result_rows:
+        try:
+            if row.get("artist_id") is not None:
+                artist_ids.append(int(row["artist_id"]))
+        except (TypeError, ValueError):
+            pass
+        lane = row.get("lane")
+        if isinstance(lane, str) and lane:
+            lanes.append(lane)
+            lane_counts[lane] = lane_counts.get(lane, 0) + 1
+
     payload = {
         "user_id": user_id,
         "run_id": run_id or str(uuid4()),
         "prompt": prompt,
         "weights": weights or {},
         "track_ids": ordered,
-        "artist_ids": artist_ids,
         "track_set_hash": set_hash_from_sorted(ordered),
         "list_signature": signature_from_ordered(ordered),
-        "lane_distribution": lane_distribution or {},
     }
+    if result_rows:
+        payload.update(
+            {
+                "artist_ids": artist_ids,
+                "lanes": lanes,
+                "prompt_mode": "prompted" if prompt else "radio",
+                "result_meta": {
+                    "lane_counts": lane_counts,
+                    "result_count": len(result_rows),
+                },
+            }
+        )
+
     try:
         resp = client.table("discover_history").insert(payload).execute()
     except Exception:
+        # Backward-compatible fallback when migration 019 is not present.
         payload.pop("artist_ids", None)
-        payload.pop("lane_distribution", None)
+        payload.pop("lanes", None)
+        payload.pop("prompt_mode", None)
+        payload.pop("result_meta", None)
         resp = client.table("discover_history").insert(payload).execute()
     return (resp.data or [payload])[0]

@@ -1,6 +1,6 @@
 # MusicLife
 
-Pandora-style personal radio with playlist export and daily editorial discovery refresh.
+Pandora-style personal radio and playlist discovery powered by Spotify, editorial sources, and vector recommendations.
 
 **Stack:** Next.js 14 · FastAPI · Supabase (Postgres + pgvector) · Voyage AI · Spotify Web Playback SDK
 
@@ -8,13 +8,14 @@ Pandora-style personal radio with playlist export and daily editorial discovery 
 
 ## What it does
 
-- **Personal radio:** Syncs your Spotify library, builds a taste profile from your listening history, and generates personalized song recommendations you can play in-browser
-- **Discovery engine:** Blends personal taste affinity, editorial momentum from music blogs/Reddit, and prompt context to surface music you wouldn't find yourself
-- **Lane-aware results:** Backend enforces quotas across three lanes — deep cuts (45%), popular picks (35%), and familiar comfort (20%) — so every session has genuine discoveries
-- **Novelty guardrails:** Tracks discovery history at both track and artist level, ensuring you don't get the same recommendations twice
-- **Editorial ingest:** Crawls RSS feeds and Reddit for artist mentions, and creates new artist candidates from blog-sourced tracks to expand the discovery universe
-- **Playlist export:** Save any Discover session as a Spotify playlist with one click
-- **Playback:** Built-in Spotify Web Playback SDK player with queue management
+- Syncs your Spotify library, top artists, and recent plays
+- Enriches artists with MusicBrainz + Last.fm metadata
+- Embeds artist profiles and tracks as vectors for taste-aware similarity
+- Crawls editorial RSS feeds and Reddit to find daily music buzz
+- Expands the catalog from blog-sourced tracks, not just artists already in your library
+- Builds radio-style song queues across three lanes: radio hits, popular cuts, and deep cuts / indie
+- Uses novelty guardrails so recently shown tracks and artists do not dominate repeat sessions
+- Lets you play recommendations in the browser or save the full queue as a Spotify playlist
 
 ---
 
@@ -116,17 +117,17 @@ make api   # FastAPI only
 make web   # Next.js only
 ```
 
-### 6. Set up your radio
+### 6. Build your Music Profile
 
-In the dashboard sidebar:
+In the dashboard sidebar, run **Refresh music profile** once:
 
-1. **Sync Library** — imports your saved tracks, top artists, and recent plays
-2. **Enrich Artists** — fetches MusicBrainz + Last.fm metadata (runs at 1 req/s)
-3. **Generate Embeddings** — creates taste vectors (requires Voyage or OpenAI key)
-4. **Populate Tracks** — builds the track catalog for song-level recommendations
-5. **Refresh Sources** — crawls editorial feeds for mention heat and new artist candidates
+1. **Import listening history** — imports Spotify saved tracks, top artists, and recent plays
+2. **Learn your taste** — fetches MusicBrainz + Last.fm metadata and genres
+3. **Build your radio model** — embeds artist profiles as taste vectors
+4. **Add music context** — crawls editorial RSS/Reddit sources for mention heat and blog-sourced tracks
+5. **Prepare song catalog** — loads playable Spotify tracks for radio and playlist export
 
-Once all steps are complete, the **Discover** tab generates personalized radio sessions.
+After setup is ready, the **Radio** tab can generate playable recommendations. You do not need to run the full setup every time. Use **Refresh sources** when you want fresh blog/community context; it can run independently and is safe to use daily.
 
 ---
 
@@ -138,18 +139,28 @@ api/          FastAPI ranking + ingestion + discovery service
 db/           SQL migrations and seed data
 ```
 
-### Recommendation model
+Discovery model:
 
 ```
-song_score = (w_affinity × track_affinity + w_context × track_context + w_editorial × editorial) × track_boost
+base_score = w_affinity * affinity + w_context * context + w_editorial * editorial
+song_score = base_score * track_boost * novelty_adjustment
 ```
 
-- **Affinity** — cosine(taste_vector, track/artist embedding), blended with genre preference weights
-- **Context** — cosine(prompt_embedding, track/mention embedding), with prompt classification (genre vs mood vs semantic)
-- **Editorial** — recency × trust_weight × sentiment from crawled sources
-- **Track boost** — popularity, recency, audio feature alignment, familiarity penalty, obscurity bonus, feedback
+- **Affinity** — cosine similarity between candidate artist embedding and your taste centroid
+- **Context** — cosine similarity between your prompt embedding and editorial mention embeddings
+- **Editorial** — recency × trust weight × sentiment from crawled sources
+- **Novelty** — rewards lower-popularity, newer, editorially surfaced, and non-library tracks
+- **Familiarity** — penalizes songs you already played while still allowing deep cuts from artists you like
 
-### Discovery pipeline
+The backend returns lane-aware recommendations, reserving room for:
+
+- **Radio hits** — recognizable anchors, capped so they do not dominate
+- **Popular** — familiar but less obvious songs
+- **Deep cuts / indie** — lower-popularity and editorially surfaced discoveries
+
+Weights are controlled by the mode buttons and sliders in the Radio view.
+
+Discovery pipeline:
 
 1. **Prompt classifier** distinguishes genre queries ("alternative rock") from mood queries ("sad night drive") from semantic queries ("new Chicago indie") — genre queries filter the artist pool, mood/semantic queries rely on embedding similarity
 2. **Lane assignment** happens in the backend: each track is assigned to `deep_cut`, `popular`, or `familiar` based on popularity, library overlap, and editorial signal
@@ -168,7 +179,9 @@ song_score = (w_affinity × track_affinity + w_context × track_context + w_edit
 | `POST /ingest/enrich-artists` | MusicBrainz + Last.fm enrichment |
 | `POST /ingest/embed-artists` | Generate artist embeddings |
 | `POST /ingest/sources` | Crawl RSS + Reddit feeds, create new artists/tracks, and model fresh source finds |
+| `POST /ingest/setup-all` | Run the full Music Profile setup pipeline |
 | `POST /playlist-from-tracks` | Export discover session to Spotify playlist |
+| `POST /synthesize/for-artist` | Generate "Why this?" explanation via Claude |
 
 ---
 

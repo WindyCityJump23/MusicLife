@@ -1,20 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { usePlayer } from "./player-context";
 
 /**
  * Player panel.
  *
  * Two modes:
- *  - "connect" — remote-control a Spotify Connect device (phone, desktop app,
- *    speaker). Audio plays on that device, so it survives screen lock and
- *    backgrounding. This is the primary path.
- *  - "embed"   — Spotify iframe in this page. Used as a fallback when no
- *    Connect device is online (and for free-tier 30s previews).
- *
- * The Player auto-selects connect mode when a device is detected, defaulting
- * to the user's phone if available so the gym scenario "just works".
+ *  - "embed"   — Spotify iframe in this page. This is the default path; the
+ *    listening experience stays inside MusicLife.
+ *  - "connect" — optional remote-control of a Spotify Connect device when the
+ *    user explicitly picks one from the device selector.
  */
 export default function Player() {
   const {
@@ -37,13 +33,6 @@ export default function Player() {
     clearPlaybackError,
   } = usePlayer();
 
-  // Detect mobile ONLY on the client to avoid hydration mismatches.
-  // Server always renders as non-mobile; client updates after mount.
-  const [isMobile, setIsMobile] = useState(false);
-  useEffect(() => {
-    setIsMobile(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
-  }, []);
-
   const currentTrack =
     currentIndex >= 0 && currentIndex < queue.length ? queue[currentIndex] : null;
 
@@ -53,42 +42,63 @@ export default function Player() {
   const usableDevices = devices.filter((d) => !d.is_restricted);
   const selectedDevice =
     usableDevices.find((d) => d.id === selectedDeviceId) ?? null;
-  const isConnectMode = mode === "connect" && Boolean(selectedDeviceId);
-  const useMobileSpotify = isMobile && currentTrack !== null && !isConnectMode;
+  const isConnectMode = mode === "connect" && Boolean(selectedDevice);
+  const playbackLabel = isConnectMode
+    ? `Remote on ${selectedDevice?.name ?? "Spotify device"}`
+    : "Browser player";
+  const playbackTone = isConnectMode ? "connect" : "preview";
 
   return (
     <div
-      className="rounded-2xl flex flex-col gap-4 p-5 min-h-full"
+      className="rounded-lg flex flex-col gap-4 p-5 min-h-full"
       style={{
         background:
           "linear-gradient(160deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%)",
       }}
     >
       {/* Header */}
-      <div className="text-center">
-        <p
-          className="text-[10px] font-bold tracking-[0.25em] uppercase"
-          style={{ color: "#e94560" }}
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p
+            className="text-[10px] font-bold uppercase"
+            style={{ color: "#e94560" }}
+          >
+            Now Playing
+          </p>
+          <p className="text-xs text-white/45">{playbackLabel}</p>
+        </div>
+        <span
+          className="shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold uppercase"
+          style={{
+            background:
+              playbackTone === "connect"
+                ? "rgba(76, 217, 100, 0.16)"
+                : "rgba(255,255,255,0.08)",
+            color:
+              playbackTone === "connect"
+                ? "rgba(140, 255, 170, 0.95)"
+                : "rgba(255,255,255,0.62)",
+          }}
         >
-          ♫ Now Playing
-        </p>
+          {isConnectMode ? "Connect" : "Browser"}
+        </span>
       </div>
 
       {/* Current track info */}
       {currentTrack ? (
-        <div className="text-center px-2">
-          <p className="text-white font-semibold text-sm leading-snug truncate">
+        <div className="px-1">
+          <p className="text-white font-semibold text-base leading-snug truncate">
             {currentTrack.trackName}
           </p>
           <p
-            className="text-xs mt-0.5 truncate"
+            className="text-sm mt-0.5 truncate"
             style={{ color: "rgba(255,255,255,0.55)" }}
           >
             {currentTrack.artistName}
           </p>
         </div>
       ) : (
-        <div className="text-center px-2">
+        <div className="px-1">
           <p className="text-white font-medium text-sm">Pick a song</p>
           <p
             className="text-xs mt-0.5"
@@ -117,6 +127,14 @@ export default function Player() {
         onRefresh={refreshDevices}
       />
 
+      <PlaybackStatus
+        mode={mode}
+        hasDevice={Boolean(selectedDevice)}
+        deviceName={selectedDevice?.name ?? null}
+        devicesLoading={devicesLoading}
+        deviceCount={usableDevices.length}
+      />
+
       {/* Error banner */}
       {playbackError && (
         <div className="rounded-lg px-3 py-2 text-xs flex items-start gap-2"
@@ -137,22 +155,6 @@ export default function Player() {
         </div>
       )}
 
-      {/* Mobile: use the native Spotify app for reliable full-track playback. */}
-      {useMobileSpotify && currentTrack && (
-        <a
-          href={`https://open.spotify.com/track/${toSpotifyTrackId(currentTrack.spotifyTrackId)}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-white text-sm font-medium active:scale-95 transition-all"
-          style={{ background: "#1DB954" }}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z" />
-          </svg>
-          Open in Spotify
-        </a>
-      )}
-
       {/* Mode-specific player */}
       {isConnectMode ? (
         <ConnectControls
@@ -164,8 +166,6 @@ export default function Player() {
           onTogglePause={togglePause}
           deviceName={selectedDevice?.name ?? "device"}
         />
-      ) : useMobileSpotify ? (
-        <MobileSpotifyStatus />
       ) : (
         <EmbedPlayer trackId={embedTrackId} onTrackEnd={playNext} />
       )}
@@ -225,7 +225,7 @@ export default function Player() {
                 key={`${t.spotifyTrackId}-${i}`}
                 onClick={() => playFromQueue(i)}
                 className={[
-                  "w-full text-left px-3 py-1.5 text-xs transition-colors flex items-center gap-2",
+                  "w-full text-left px-3 py-2 text-xs transition-colors grid grid-cols-[1.5rem_minmax(0,1fr)_minmax(0,0.8fr)] items-center gap-2",
                   i === currentIndex
                     ? "bg-white/10 text-white"
                     : "text-white/50 hover:bg-white/5 hover:text-white/70",
@@ -237,9 +237,9 @@ export default function Player() {
                 >
                   {i === currentIndex ? "▶" : i + 1}
                 </span>
-                <span className="truncate">{t.trackName}</span>
+                <span className="truncate font-medium">{t.trackName}</span>
                 <span
-                  className="ml-auto shrink-0 text-[10px]"
+                  className="min-w-0 truncate text-right text-[10px]"
                   style={{ color: "rgba(255,255,255,0.3)" }}
                 >
                   {t.artistName}
@@ -257,30 +257,55 @@ export default function Player() {
       >
         {mode === "connect" && selectedDeviceId
           ? "Audio plays on your device — keeps going through screen lock."
-          : isMobile
-          ? "Tap play to open in Spotify for full tracks."
-          : "Open Spotify on your phone for full tracks beyond previews."}
+          : "Playback stays in MusicLife. Save a playlist when you want to export it."}
       </p>
     </div>
   );
 }
 
-function MobileSpotifyStatus() {
+function PlaybackStatus({
+  mode,
+  hasDevice,
+  deviceName,
+  devicesLoading,
+  deviceCount,
+}: {
+  mode: "connect" | "embed";
+  hasDevice: boolean;
+  deviceName: string | null;
+  devicesLoading: boolean;
+  deviceCount: number;
+}) {
+  let title = "Browser player";
+  let detail = "Songs load in the embedded player so the experience stays in MusicLife.";
+
+  if (mode === "connect" && hasDevice) {
+    title = "Queue ready";
+    detail = `Playing through ${deviceName ?? "your Spotify device"} with native queue handoff.`;
+  } else if (devicesLoading) {
+    title = "Finding devices";
+    detail = "Checking for optional Connect devices. Browser playback remains available.";
+  } else if (deviceCount === 0) {
+    title = "Ready in browser";
+    detail = "No Connect device is selected, so playback will stay in MusicLife.";
+  }
+
   return (
     <div
-      className="rounded-xl px-4 py-4 text-center"
+      className="rounded-lg px-3 py-2"
       style={{
-        background: "rgba(255,255,255,0.06)",
-        border: "1px solid rgba(255,255,255,0.1)",
+        background:
+          mode === "connect" && hasDevice
+            ? "rgba(76,217,100,0.1)"
+            : "rgba(255,255,255,0.05)",
+        border:
+          mode === "connect" && hasDevice
+            ? "1px solid rgba(76,217,100,0.22)"
+            : "1px solid rgba(255,255,255,0.08)",
       }}
     >
-      <p className="text-sm font-medium text-white">Continue in Spotify</p>
-      <p
-        className="text-xs mt-1 leading-relaxed"
-        style={{ color: "rgba(255,255,255,0.5)" }}
-      >
-        Full-track playback is handled by Spotify on mobile.
-      </p>
+      <p className="text-xs font-medium text-white">{title}</p>
+      <p className="mt-0.5 text-[11px] leading-relaxed text-white/45">{detail}</p>
     </div>
   );
 }
@@ -307,66 +332,81 @@ function DevicePicker({
   onRefresh: () => void;
 }) {
   const value = mode === "embed" ? "__embed__" : selectedDeviceId ?? "__embed__";
+  const statusText =
+    loading && devices.length === 0
+      ? "Finding devices"
+      : mode === "connect" && selectedDevice
+      ? selectedDevice.name
+      : "This browser";
 
   return (
     <div
-      className="rounded-lg px-3 py-2 flex items-center gap-2"
+      className="rounded-lg px-3 py-2 space-y-2"
       style={{
         background: "rgba(255,255,255,0.05)",
         border: "1px solid rgba(255,255,255,0.08)",
       }}
     >
-      <span className="text-[10px] uppercase tracking-wider shrink-0"
-        style={{ color: "rgba(255,255,255,0.4)" }}
-      >
-        Playing on
-      </span>
-      <select
-        value={value}
-        onChange={(e) => onSelect(e.target.value)}
-        aria-label="Playback device"
-        className="flex-1 min-w-0 bg-transparent text-xs text-white focus:outline-none truncate"
-        style={{ colorScheme: "dark" }}
-      >
-        {devices.map((d) => (
-          <option key={d.id} value={d.id}>
-            {iconForType(d.type)} {d.name}
-            {d.is_active ? " · active" : ""}
-          </option>
-        ))}
-        <option value="__embed__">▷ This browser (preview)</option>
-      </select>
-      <button
-        onClick={onRefresh}
-        disabled={loading}
-        title="Refresh device list"
-        aria-label="Refresh device list"
-        className="shrink-0 w-6 h-6 rounded flex items-center justify-center text-white/40 hover:text-white/80 hover:bg-white/10 transition-colors disabled:opacity-30"
-      >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.5"
-          className={loading ? "animate-spin" : ""}
-        >
-          <path
-            d="M3 12a9 9 0 0 1 15.5-6.3M21 12a9 9 0 0 1-15.5 6.3"
-            strokeLinecap="round"
-          />
-          <path d="M21 4v5h-5M3 20v-5h5" strokeLinecap="round" />
-        </svg>
-      </button>
-      {mode === "connect" && selectedDevice && (
-        <span
-          className="shrink-0 text-[10px] tabular-nums"
-          style={{ color: "rgba(76, 217, 100, 0.9)" }}
-        >
-          ●
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] uppercase shrink-0 text-white/40">
+          Playing on
         </span>
-      )}
+        <span className="min-w-0 truncate text-[10px] text-white/45">
+          {statusText}
+        </span>
+      </div>
+      <div className="flex items-center gap-2">
+        <select
+          value={value}
+          onChange={(e) => onSelect(e.target.value)}
+          aria-label="Playback device"
+          className="flex-1 min-w-0 bg-transparent text-xs text-white focus:outline-none truncate disabled:text-white/35"
+          style={{ colorScheme: "dark" }}
+          disabled={loading && devices.length === 0}
+        >
+          {loading && devices.length === 0 && (
+            <option value="__embed__">Finding Spotify devices...</option>
+          )}
+          {devices.map((d) => (
+            <option key={d.id} value={d.id}>
+              {iconForType(d.type)} {d.name}
+              {d.is_active ? " · active" : ""}
+            </option>
+          ))}
+          <option value="__embed__">▷ This browser</option>
+        </select>
+        <button
+          onClick={onRefresh}
+          disabled={loading}
+          title="Refresh device list"
+          aria-label="Refresh device list"
+          className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-white/45 hover:text-white/85 hover:bg-white/10 transition-colors disabled:opacity-30"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            className={loading ? "animate-spin" : ""}
+          >
+            <path
+              d="M3 12a9 9 0 0 1 15.5-6.3M21 12a9 9 0 0 1-15.5 6.3"
+              strokeLinecap="round"
+            />
+            <path d="M21 4v5h-5M3 20v-5h5" strokeLinecap="round" />
+          </svg>
+        </button>
+        {mode === "connect" && selectedDevice && (
+          <span
+            className="shrink-0 text-[10px] tabular-nums"
+            style={{ color: "rgba(76, 217, 100, 0.9)" }}
+          >
+            ●
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -379,10 +419,6 @@ function iconForType(type: string): string {
   if (t === "tv") return "📺";
   if (t === "tablet") return "📱";
   return "🎵";
-}
-
-function toSpotifyTrackId(value: string): string {
-  return value.startsWith("spotify:track:") ? value.replace("spotify:track:", "") : value;
 }
 
 function toSpotifyTrackUri(value: string): string {
