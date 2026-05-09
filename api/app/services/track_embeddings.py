@@ -14,7 +14,7 @@ import time
 from typing import Callable
 
 from app.services.embedding import embedder
-from app.services.supabase_client import admin_supabase
+from app.services.supabase_client import admin_supabase, retry_on_disconnect
 
 BATCH_SIZE = 128
 
@@ -121,10 +121,13 @@ def run_track_embeddings(
         # (artist_id, name, etc.); a per-row update is cleaner and just
         # as cheap at this batch size.
         try:
-            for i, track in enumerate(valid):
-                admin_supabase.table("tracks").update(
-                    {"embedding": vectors[i]}
-                ).eq("id", track["id"]).execute()
+            def _write_batch():
+                for i, track in enumerate(valid):
+                    admin_supabase.table("tracks").update(
+                        {"embedding": vectors[i]}
+                    ).eq("id", track["id"]).execute()
+
+            retry_on_disconnect(_write_batch, attempts=3)
             total_embedded += len(valid)
             consecutive_failures = 0
             print(
