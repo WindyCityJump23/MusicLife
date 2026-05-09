@@ -25,11 +25,13 @@ from datetime import datetime, timezone
 from supabase import Client
 
 from app.services.ranking import (
+    _cosine_similarity,
     _get_user_library_artist_ids,
     _get_previously_recommended_artist_ids,
     _get_user_artist_weights,
     _get_user_feedback,
     _normalize_01,
+    _parse_vector,
     _percentile_rank,
 )
 from app.services.vector_rpc import (
@@ -588,6 +590,77 @@ def recommend_songs(
     )
     all_tracks = tracks_resp.data or []
 
+    # Explicit searches are different from normal Discover: the user may ask
+    # for a narrow style whose best matching tracks sit outside their usual
+    # artist frontier. Pull the indexed track-embedding catalog into the pool
+    # so searched-only songs can compete on track-level context similarity.
+    if has_explicit_prompt and prompt_vector:
+        try:
+            search_tracks_resp = (
+                client.table("tracks")
+                .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
+                .not_.is_("embedding", "null")
+                .range(0, 9999)
+                .execute()
+            )
+            seen_track_keys = {
+                t.get("spotify_track_id") or t.get("id")
+                for t in all_tracks
+                if t.get("spotify_track_id") or t.get("id")
+            }
+            search_tracks = []
+            for track in search_tracks_resp.data or []:
+                track_key = track.get("spotify_track_id") or track.get("id")
+                if not track_key or track_key in seen_track_keys:
+                    continue
+                search_tracks.append(track)
+                seen_track_keys.add(track_key)
+
+            if search_tracks:
+                all_tracks.extend(search_tracks)
+                artist_lookup = {
+                    int(a["id"]): a
+                    for a in all_artists
+                    if a.get("id") is not None
+                }
+                search_artist_ids: set[int] = set()
+                added_artist_ids: list[int] = []
+                for track in search_tracks:
+                    aid = track.get("artist_id")
+                    if aid is None:
+                        continue
+                    aid_int = int(aid)
+                    search_artist_ids.add(aid_int)
+                    if aid_int in artist_scores:
+                        continue
+                    artist = artist_lookup.get(aid_int)
+                    if not artist:
+                        continue
+                    vec = _parse_vector(artist.get("embedding"))
+                    raw = _cosine_similarity(taste_vector, vec) if taste_vector and vec else 0.0
+                    affinity = _normalize_01(raw) if vec else 0.0
+                    artist_scores[aid_int] = {
+                        "base_score": weights["affinity"] * affinity,
+                        "affinity": affinity,
+                        "affinity_raw": raw,
+                        "context": 0.0,
+                        "editorial": 0.0,
+                        "name": artist.get("name") or "Unknown",
+                        "genres": list(artist.get("genres") or []),
+                        "best_mention": None,
+                        "mention_count": 0,
+                        "spotify_artist_id": artist.get("spotify_artist_id"),
+                    }
+                    added_artist_ids.append(aid_int)
+                top_artist_ids.extend(
+                    a for a in search_artist_ids if a in artist_scores and a not in top_artist_ids
+                )
+                print(
+                    f"song_ranking: explicit search added {len(search_tracks)} "
+                    f"track-embedding candidates across {len(added_artist_ids)} artists"
+                )
+        except Exception as _e:
+            print(f"song_ranking: explicit search track scan failed (non-fatal): {_e}")
 
     # If the result pool is still shallow, widen artist frontier using
     # genre-neighbor artists related to the current top set. This helps
@@ -697,6 +770,14 @@ def recommend_songs(
                 client, taste_vector, top_artist_ids
             )
 
+    def _local_track_similarity(t: dict, vector: list[float] | None) -> float | None:
+        if not vector:
+            return None
+        track_vec = _parse_vector(t.get("embedding"))
+        if not track_vec:
+            return None
+        return _cosine_similarity(vector, track_vec)
+
     # ── Phase 3: Score individual songs ──────────────────────────
     song_results: list[dict] = []
     seen_songs: set[str] = set()
@@ -723,8 +804,9 @@ def recommend_songs(
             except (ValueError, AttributeError):
                 pass
         tid = t.get("id")
-        if effective_prompt_vector and tid is not None and tid in track_context_sim:
-            ctx = _normalize_01(track_context_sim[tid])
+        local_ctx = _local_track_similarity(t, effective_prompt_vector)
+        if effective_prompt_vector and tid is not None and (tid in track_context_sim or local_ctx is not None):
+            ctx = _normalize_01(track_context_sim[tid] if tid in track_context_sim else local_ctx or 0.0)
             return 0.60 * ctx + 0.12 * pop + 0.10 * recency + 0.18 * rng.random()
         return 0.28 * pop + 0.12 * recency + 0.60 * rng.random()
 
@@ -762,18 +844,27 @@ def recommend_songs(
             track_affinity = a_info["affinity"]
             used_track_embedding = False
             tid_lookup = track_id
+            local_context = _local_track_similarity(track, effective_prompt_vector)
+            local_taste = _local_track_similarity(track, taste_vector)
             if tid_lookup is not None and (
-                tid_lookup in track_context_sim or tid_lookup in track_taste_sim
+                tid_lookup in track_context_sim
+                or tid_lookup in track_taste_sim
+                or local_context is not None
+                or local_taste is not None
             ):
                 used_track_embedding = True
-                if effective_prompt_vector and tid_lookup in track_context_sim:
-                    track_context = _normalize_01(track_context_sim[tid_lookup])
+                if effective_prompt_vector:
+                    if tid_lookup in track_context_sim:
+                        track_context = _normalize_01(track_context_sim[tid_lookup])
+                    elif local_context is not None:
+                        track_context = _normalize_01(local_context)
                 # Blend track-level taste similarity with artist affinity
                 # so tracks whose description aligns with the user's taste
                 # rank above generic ones. Skip the blend for new users
                 # with no taste vector — artist-level affinity is already 0.
-                if taste_vector and tid_lookup in track_taste_sim:
-                    track_affinity_raw = _normalize_01(track_taste_sim[tid_lookup])
+                if taste_vector and (tid_lookup in track_taste_sim or local_taste is not None):
+                    taste_raw = track_taste_sim[tid_lookup] if tid_lookup in track_taste_sim else local_taste or 0.0
+                    track_affinity_raw = _normalize_01(taste_raw)
                     track_affinity = 0.7 * a_info["affinity"] + 0.3 * track_affinity_raw
 
             # Recompute the base score per track using the (possibly)
@@ -957,9 +1048,11 @@ def _song_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
     if not scored or limit <= 0:
         return []
 
-    # Give the greedy selector a wide pool so it can find diverse candidates,
-    # but cap it to avoid O(n²) slowdown on very large catalogs.
-    pool = scored if len(scored) <= limit * 15 else scored[: limit * 15]
+    # Give the greedy selector a wide pool so it can find diverse candidates.
+    # Keep a generous floor for narrow explicit searches where the best style
+    # match can sit outside the first few score bands.
+    rerank_pool_size = max(limit * 15, 500)
+    pool = scored if len(scored) <= rerank_pool_size else scored[:rerank_pool_size]
     selected: list[dict] = []
     genre_counts: Counter[str] = Counter()
     artist_counts: Counter[str] = Counter()

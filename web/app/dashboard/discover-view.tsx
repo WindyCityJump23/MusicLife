@@ -354,6 +354,7 @@ export default function DiscoverView({
       setLoadingStage("Finding songs for you\u2026");
 
       let deduped: SongRecommendation[] = [];
+      let interpretedPrompt = prompt.trim();
 
       // Attempt 1: Server-side song recommendations (uses tracks in DB)
       try {
@@ -373,6 +374,7 @@ export default function DiscoverView({
         });
         if (songRes.ok) {
           const songData = await songRes.json().catch(() => ({}));
+          interpretedPrompt = songData.query_intent?.search_phrase || interpretedPrompt;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           deduped = (songData.results ?? []).map((r: any): SongRecommendation => ({
             track_id: r.track_id ?? null,
@@ -426,7 +428,7 @@ export default function DiscoverView({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            prompt: prompt || null,
+            prompt: interpretedPrompt || prompt || null,
             weights: normalized,
             limit: 25,  // Request extra to allow diversity filtering
           }),
@@ -463,12 +465,26 @@ export default function DiscoverView({
         const songArrays = await Promise.all(
           missingArtists.slice(0, FALLBACK_ARTIST_SEARCH_LIMIT).map(async (artist: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
             try {
-              const searchRes = await fetch(
-                `https://api.spotify.com/v1/search?q=${encodeURIComponent(`artist:${artist.artist_name}`)}&type=track&market=US&limit=${FALLBACK_TRACK_SEARCH_LIMIT}`,
-                { headers: spotifyHeaders }
-              );
-              if (!searchRes.ok) return [];
-              const searchData = await searchRes.json();
+              const queries = interpretedPrompt
+                ? [
+                    `artist:${artist.artist_name} ${interpretedPrompt}`,
+                    `artist:${artist.artist_name}`,
+                  ]
+                : [`artist:${artist.artist_name}`];
+              let searchData: any = null; // eslint-disable-line @typescript-eslint/no-explicit-any
+              for (const q of queries) {
+                const searchRes = await fetch(
+                  `https://api.spotify.com/v1/search?q=${encodeURIComponent(q)}&type=track&market=US&limit=${FALLBACK_TRACK_SEARCH_LIMIT}`,
+                  { headers: spotifyHeaders }
+                );
+                if (!searchRes.ok) continue;
+                const data = await searchRes.json();
+                if ((data.tracks?.items ?? []).length > 0) {
+                  searchData = data;
+                  break;
+                }
+              }
+              if (!searchData) return [];
               const tracks = chooseFallbackTracks(searchData.tracks?.items ?? []);
 
               return tracks.map((track: any): SongRecommendation => { // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -651,7 +667,7 @@ export default function DiscoverView({
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-            placeholder="What are you in the mood for? (e.g. chill lo-fi, energetic hip-hop, 90s rock…)"
+            placeholder="Describe a sound, scene, mood, or reference..."
             className="flex-1 px-4 py-2.5 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 placeholder:text-neutral-400"
           />
           <button

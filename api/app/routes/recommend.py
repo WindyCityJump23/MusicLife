@@ -20,6 +20,7 @@ from app.services.discover_novelty import (
     signature_from_ordered,
 )
 from app.services.embedding import embedder
+from app.services.query_intent import interpret_music_prompt
 from app.services.supabase_client import get_user_scoped_supabase
 
 router = APIRouter()
@@ -46,6 +47,7 @@ class RecommendRequest(BaseModel):
 
 class RecommendResponse(BaseModel):
     results: list[dict]
+    query_intent: dict | None = None
 
 
 class RecommendSongsRequest(BaseModel):
@@ -78,16 +80,17 @@ def recommend(req: RecommendRequest, credentials: HTTPAuthorizationCredentials |
     ensure_valid_bearer_token(token)
     user_client = get_user_scoped_supabase(token)
     taste_vector = _build_taste_vector(user_client, req.user_id)
+    query_intent = interpret_music_prompt(req.prompt)
     prompt_vec = None
-    if req.prompt:
+    if query_intent:
         try:
-            embedded = embedder.embed([req.prompt], input_type="query")
+            embedded = embedder.embed([query_intent.expanded_prompt], input_type="query")
             prompt_vec = embedded[0] if embedded else None
         except Exception as e:
             print(f"recommend: prompt embedding failed — {e}")
     from app.services.ranking import rank_candidates
     results = rank_candidates(client=user_client, user_id=req.user_id, taste_vector=taste_vector, prompt_vector=prompt_vec, weights=req.weights, exclude_library=req.exclude_library, limit=req.limit)
-    return RecommendResponse(results=results)
+    return {"results": results, "query_intent": query_intent.as_response() if query_intent else None}
 
 
 @router.post("/songs")
@@ -96,11 +99,13 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
     ensure_valid_bearer_token(token)
     user_client = get_user_scoped_supabase(token)
     taste_vector = _build_taste_vector(user_client, req.user_id)
+    query_intent = interpret_music_prompt(req.prompt)
+    prompt_for_ranking = query_intent.search_phrase if query_intent else req.prompt
 
     prompt_vec = None
-    if req.prompt:
+    if query_intent:
         try:
-            embedded = embedder.embed([req.prompt], input_type="query")
+            embedded = embedder.embed([query_intent.expanded_prompt], input_type="query")
             prompt_vec = embedded[0] if embedded else None
         except Exception as e:
             print(f"recommend_songs: prompt embedding failed — {e}. Continuing without prompt vector.")
@@ -111,10 +116,11 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
         excluded_track_ids = build_excluded_track_ids(history_rows)
     excluded_artist_ids = build_excluded_artist_ids(history_rows)
 
-    # Genre/mood prompts are intentional searches, but exact repeats still feel
-    # broken. Use a shorter memory for prompted searches instead of clearing
-    # history entirely.
-    if req.prompt:
+    # Prompted searches are intentional searches, but exact repeats still feel
+    # broken. Use a shorter memory instead of the full unprompted exclusion
+    # window so style searches can reach outside normal Discover while still
+    # avoiding recently repeated tracks/artists.
+    if query_intent:
         excluded_track_ids = build_excluded_track_ids(history_rows, older_than_days=14)
         excluded_artist_ids = build_excluded_artist_ids(history_rows, older_than_days=14)
 
@@ -132,7 +138,7 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
     for attempt in range(5):
         attempts = attempt + 1
         local_excluded = excluded_track_ids
-        if not req.prompt and req.novelty_mode == "graceful" and attempt >= 2:
+        if not query_intent and req.novelty_mode == "graceful" and attempt >= 2:
             local_excluded = build_excluded_track_ids(history_rows, older_than_days=30)
 
         attempt_results = _recommend_songs(
@@ -143,7 +149,7 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             weights=req.weights,
             exclude_library=req.exclude_library,
             limit=req.limit,
-            prompt_text=req.prompt,
+            prompt_text=prompt_for_ranking,
             excluded_track_ids=local_excluded,
             excluded_artist_ids=excluded_artist_ids,
             exploration_seed=request_base_seed + attempt,
@@ -161,9 +167,9 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             continue
         # Prompted searches use a shorter history window, so do not run the
         # strict unprompted novelty retry loop against them.
-        if not req.prompt and req.novelty_mode == "strict" and req.exclude_previously_shown and overlap > 0:
+        if not query_intent and req.novelty_mode == "strict" and req.exclude_previously_shown and overlap > 0:
             continue
-        if not req.prompt and req.novelty_mode == "graceful" and overlap > req.max_allowed_overlap:
+        if not query_intent and req.novelty_mode == "graceful" and overlap > req.max_allowed_overlap:
             continue
 
         persist_discover_run(
@@ -177,6 +183,7 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
         )
         return {
             "results": attempt_results,
+            "query_intent": query_intent.as_response() if query_intent else None,
             "run_id": run_id,
             "list_signature": signature,
             "novelty_attempts": attempts,
@@ -198,6 +205,7 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
     )
     return {
         "results": best_results,
+        "query_intent": query_intent.as_response() if query_intent else None,
         "run_id": run_id,
         "list_signature": signature,
         "novelty_attempts": attempts,

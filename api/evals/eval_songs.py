@@ -14,6 +14,7 @@ _API_DIR = Path(__file__).parent.parent
 if str(_API_DIR) not in sys.path:
     sys.path.insert(0, str(_API_DIR))
 
+from app.services.query_intent import interpret_music_prompt
 from app.services.song_ranking import recommend_songs, _song_diversity_rerank
 from evals.fixtures import (
     ALL_ARTISTS,
@@ -26,6 +27,7 @@ from evals.fixtures import (
     UserScenario,
     _make_artist,
     _make_track,
+    _rand_vec,
     build_mock_client,
 )
 from evals.metrics import artist_diversity_score
@@ -376,6 +378,83 @@ def eval_graceful_mode_refill_under_sparse_catalog() -> EvalResult:
     return EvalResult(name="graceful_mode_refill_under_sparse_catalog", passed=len(result) >= 1, score=1.0 if len(result) >= 1 else 0.0, details=f"returned={len(result)}")
 
 
+def eval_vibe_query_extracts_complaint_sentence() -> EvalResult:
+    intent = interpret_music_prompt("Couldn't find anything good when I typed in trippy darth Vader")
+    descriptors = set(intent.descriptors if intent else [])
+    passed = (
+        intent is not None
+        and intent.search_phrase == "trippy darth Vader"
+        and intent.extracted_from_sentence
+        and {"psychedelic", "cinematic", "sci-fi"}.issubset(descriptors)
+    )
+    return EvalResult(
+        name="vibe_query_extracts_complaint_sentence",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"intent={intent.as_response() if intent else None}",
+    )
+
+
+def eval_vibe_query_expands_activity_metaphor() -> EvalResult:
+    intent = interpret_music_prompt("trippy ski music")
+    descriptors = set(intent.descriptors if intent else [])
+    expected = {"psychedelic", "gliding", "cold", "mountain"}
+    passed = intent is not None and expected.issubset(descriptors)
+    return EvalResult(
+        name="vibe_query_expands_activity_metaphor",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"descriptors={sorted(descriptors)}",
+    )
+
+
+def eval_prompted_search_scans_track_catalog() -> EvalResult:
+    """Prompted song search should include track matches outside normal Discover frontier."""
+    prompt_vec = _rand_vec(8, seed=9999)
+    artists = [
+        _make_artist(i, f"Filler Artist {i}", ["ambient"], vec_seed=i, popularity=20)
+        for i in range(1, 511)
+    ]
+    target_artist = _make_artist(999, "Search Only Artist", ["cinematic electronic"], vec_seed=999, popularity=10)
+    artists.append(target_artist)
+
+    tracks = [
+        _make_track(10_000 + i, f"Filler Track {i}", i, popularity=40, vec_seed=20_000 + i)
+        for i in range(1, 511)
+    ]
+    target_track = _make_track(99_999, "Imperial Mushroom Cloud", 999, popularity=30, vec_seed=123)
+    target_track["embedding"] = prompt_vec
+    tracks.append(target_track)
+
+    scenario = UserScenario(
+        user_id="prompted_track_scan_test",
+        library_artist_ids=[],
+        played_track_ids=[],
+        top_artist_ids=[],
+        taste_vector=[],
+    )
+    client = build_mock_client(scenario, artists=artists, tracks=tracks, mentions=[])
+    results = recommend_songs(
+        client=client,
+        user_id=scenario.user_id,
+        taste_vector=[],
+        prompt_vector=prompt_vec,
+        weights=_weights(affinity=0.0, context=0.85, editorial=0.15),
+        exclude_library=False,
+        limit=30,
+        prompt_text="trippy darth vader",
+        exploration_seed=1,
+    )
+    names = [r["track_name"] for r in results]
+    passed = "Imperial Mushroom Cloud" in names[:3]
+    return EvalResult(
+        name="prompted_search_scans_track_catalog",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"top_tracks={names[:5]}",
+    )
+
+
 # ── Suite runner ─────────────────────────────────────────────────
 
 
@@ -391,4 +470,7 @@ def run_suite() -> list[EvalResult]:
         eval_no_identical_list_repeated(),
         eval_strict_novelty_zero_overlap_when_possible(),
         eval_graceful_mode_refill_under_sparse_catalog(),
+        eval_vibe_query_extracts_complaint_sentence(),
+        eval_vibe_query_expands_activity_metaphor(),
+        eval_prompted_search_scans_track_catalog(),
     ]
