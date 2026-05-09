@@ -86,7 +86,7 @@ const DISCOVERY_LANES: DiscoveryLane[] = [
 
 const TARGET_SONGS = 25;
 const FALLBACK_ARTIST_SEARCH_LIMIT = 15;
-const FALLBACK_TRACK_SEARCH_LIMIT = 20;
+const FALLBACK_TRACK_SEARCH_LIMIT = 10;
 const DISCOVER_CACHE_KEY = "musiclife:discover:last-results";
 const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
 

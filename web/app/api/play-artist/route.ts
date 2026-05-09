@@ -68,22 +68,27 @@ export async function POST(request: NextRequest) {
 
   const spotifyArtist = artists[0];
 
-  // Get top tracks
-  const tracksRes = await fetch(
-    `https://api.spotify.com/v1/artists/${spotifyArtist.id}/top-tracks?market=US`,
+  // Get tracks via search (top-tracks endpoint removed in Dev Mode Feb 2026)
+  const trackSearchRes = await fetch(
+    `https://api.spotify.com/v1/search?q=${encodeURIComponent(`artist:"${spotifyArtist.name}"`)}&type=track&market=US&limit=10`,
     { headers: { Authorization: `Bearer ${access_token}` } }
   );
 
-  if (!tracksRes.ok) {
-    const errBody = await tracksRes.json().catch(() => ({}));
+  if (!trackSearchRes.ok) {
+    const errBody = await trackSearchRes.json().catch(() => ({}));
     return NextResponse.json(
-      { error: errBody?.error?.message ?? "Failed to get top tracks" },
+      { error: errBody?.error?.message ?? "Failed to find tracks" },
       { status: 502 }
     );
   }
 
-  const tracksData = await tracksRes.json();
-  const tracks: Array<{ uri: string; name: string }> = (tracksData.tracks ?? []).slice(0, 5);
+  const trackSearchData = await trackSearchRes.json();
+  const tracks: Array<{ uri: string; name: string }> = (trackSearchData.tracks?.items ?? [])
+    .filter((t: { artists?: Array<{ id: string }> }) =>
+      t.artists?.some((a) => a.id === spotifyArtist.id)
+    )
+    .slice(0, 5)
+    .map((t: { uri: string; name: string }) => ({ uri: t.uri, name: t.name }));
   const uris = tracks.map((t) => t.uri);
 
   if (uris.length === 0) {

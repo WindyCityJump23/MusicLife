@@ -67,17 +67,9 @@ export async function POST(request: NextRequest) {
     "Content-Type": "application/json",
   };
 
-  // ── Get Spotify user ID ────────────────────────────────────
-  const meRes = await fetch("https://api.spotify.com/v1/me", { headers });
-  if (!meRes.ok) {
-    return NextResponse.json({ error: "Failed to get Spotify profile" }, { status: 502 });
-  }
-  const meData = await meRes.json();
-  const spotifyUserId: string = meData.id;
-
   // ── Create the playlist ────────────────────────────────────
   const createRes = await fetch(
-    `https://api.spotify.com/v1/users/${spotifyUserId}/playlists`,
+    "https://api.spotify.com/v1/me/playlists",
     {
       method: "POST",
       headers,
@@ -130,28 +122,16 @@ export async function POST(request: NextRequest) {
     const results = await Promise.all(
       batch.map(async (artistName): Promise<{ artist: string; track: TrackInfo | null }> => {
         try {
-          // Search for the artist
+          // Search for a track by this artist (top-tracks endpoint removed in Dev Mode Feb 2026)
           const searchRes = await fetch(
-            `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist&limit=1`,
+            `https://api.spotify.com/v1/search?q=${encodeURIComponent(`artist:"${artistName}"`)}&type=track&market=US&limit=5`,
             { headers }
           );
 
           if (!searchRes.ok) return { artist: artistName, track: null };
 
           const searchData = await searchRes.json();
-          const found = searchData.artists?.items?.[0];
-          if (!found) return { artist: artistName, track: null };
-
-          // Get top tracks
-          const tracksRes = await fetch(
-            `https://api.spotify.com/v1/artists/${found.id}/top-tracks?market=US`,
-            { headers }
-          );
-
-          if (!tracksRes.ok) return { artist: artistName, track: null };
-
-          const tracksData = await tracksRes.json();
-          const topTrack = tracksData.tracks?.[0];
+          const topTrack = (searchData.tracks?.items ?? [])[0];
           if (!topTrack) return { artist: artistName, track: null };
 
           return {
