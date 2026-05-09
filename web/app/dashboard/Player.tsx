@@ -1,22 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
 import { usePlayer } from "./player-context";
 
-/**
- * Player panel.
- *
- * Two modes:
- *  - "embed"   — Spotify iframe in this page. This is the default path; the
- *    listening experience stays inside MusicLife.
- *  - "connect" — optional remote-control of a Spotify Connect device when the
- *    user explicitly picks one from the device selector.
- */
 export default function Player() {
   const {
     queue,
     currentIndex,
-    embedTrackId,
     mode,
     setMode,
     devices,
@@ -31,6 +20,10 @@ export default function Player() {
     isPlaying,
     playbackError,
     clearPlaybackError,
+    sdkReady,
+    sdkPosition,
+    sdkDuration,
+    sdkPlayer,
   } = usePlayer();
 
   const currentTrack =
@@ -133,6 +126,7 @@ export default function Player() {
         deviceName={selectedDevice?.name ?? null}
         devicesLoading={devicesLoading}
         deviceCount={usableDevices.length}
+        sdkReady={sdkReady}
       />
 
       {/* Error banner */}
@@ -155,22 +149,23 @@ export default function Player() {
         </div>
       )}
 
-      {/* Mode-specific player */}
-      {isConnectMode ? (
-        <ConnectControls
-          isPlaying={isPlaying}
-          hasNext={hasNext}
-          hasPrev={hasPrev}
-          onPrev={playPrev}
-          onNext={playNext}
-          onTogglePause={togglePause}
-          deviceName={selectedDevice?.name ?? "device"}
-        />
-      ) : (
-        <EmbedPlayer trackId={embedTrackId} onTrackEnd={playNext} />
-      )}
+      {/* Playback controls — shared for both modes now */}
+      <PlaybackControls
+        isPlaying={isPlaying}
+        hasNext={hasNext}
+        hasPrev={hasPrev}
+        onPrev={playPrev}
+        onNext={playNext}
+        onTogglePause={togglePause}
+        position={sdkPosition}
+        duration={sdkDuration}
+        isConnectMode={isConnectMode}
+        deviceName={selectedDevice?.name ?? "device"}
+        sdkPlayer={sdkPlayer}
+        showProgress={mode === "embed" && sdkReady}
+      />
 
-      {/* Queue position + queue list (works in both modes) */}
+      {/* Queue position */}
       {queue.length > 1 && (
         <div className="flex items-center justify-center gap-2">
           <span
@@ -257,7 +252,7 @@ export default function Player() {
       >
         {mode === "connect" && selectedDeviceId
           ? "Audio plays on your device — keeps going through screen lock."
-          : "Playback stays in MusicLife. Save a playlist when you want to export it."}
+          : "Full playback in MusicLife. Save a playlist when you want to export."}
       </p>
     </div>
   );
@@ -269,15 +264,19 @@ function PlaybackStatus({
   deviceName,
   devicesLoading,
   deviceCount,
+  sdkReady,
 }: {
   mode: "connect" | "embed";
   hasDevice: boolean;
   deviceName: string | null;
   devicesLoading: boolean;
   deviceCount: number;
+  sdkReady: boolean;
 }) {
   let title = "Browser player";
-  let detail = "Songs load in the embedded player so the experience stays in MusicLife.";
+  let detail = sdkReady
+    ? "Full playback through your Spotify account — no separate sign-in needed."
+    : "Connecting to Spotify...";
 
   if (mode === "connect" && hasDevice) {
     title = "Queue ready";
@@ -285,7 +284,7 @@ function PlaybackStatus({
   } else if (devicesLoading) {
     title = "Finding devices";
     detail = "Checking for optional Connect devices. Browser playback remains available.";
-  } else if (deviceCount === 0) {
+  } else if (deviceCount === 0 && sdkReady) {
     title = "Ready in browser";
     detail = "No Connect device is selected, so playback will stay in MusicLife.";
   }
@@ -421,22 +420,30 @@ function iconForType(type: string): string {
   return "🎵";
 }
 
-function toSpotifyTrackUri(value: string): string {
-  return value.startsWith("spotify:track:") ? value : `spotify:track:${value}`;
+/* ─────────────────────────────────────────────────────────────── */
+/*  Unified playback controls                                      */
+/* ─────────────────────────────────────────────────────────────── */
+
+function formatTime(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-/* ─────────────────────────────────────────────────────────────── */
-/*  Connect remote-control buttons                                 */
-/* ─────────────────────────────────────────────────────────────── */
-
-function ConnectControls({
+function PlaybackControls({
   isPlaying,
   hasNext,
   hasPrev,
   onPrev,
   onNext,
   onTogglePause,
+  position,
+  duration,
+  isConnectMode,
   deviceName,
+  sdkPlayer,
+  showProgress,
 }: {
   isPlaying: boolean;
   hasNext: boolean;
@@ -444,10 +451,58 @@ function ConnectControls({
   onPrev: () => void;
   onNext: () => void;
   onTogglePause: () => void;
+  position: number;
+  duration: number;
+  isConnectMode: boolean;
   deviceName: string;
+  sdkPlayer: Spotify.Player | null;
+  showProgress: boolean;
 }) {
+  const progressPct = duration > 0 ? (position / duration) * 100 : 0;
+
+  const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!sdkPlayer || !duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    void sdkPlayer.seek(Math.floor(pct * duration));
+  };
+
   return (
     <div className="flex flex-col items-center gap-2 py-3">
+      {/* Progress bar */}
+      {showProgress && duration > 0 && (
+        <div className="w-full px-1 space-y-1">
+          <div
+            className="w-full h-1.5 rounded-full cursor-pointer group"
+            style={{ background: "rgba(255,255,255,0.1)" }}
+            onClick={handleSeek}
+          >
+            <div
+              className="h-full rounded-full transition-[width] duration-200"
+              style={{
+                width: `${progressPct}%`,
+                background: "linear-gradient(90deg, #e94560, #ff6b81)",
+              }}
+            />
+          </div>
+          <div className="flex justify-between">
+            <span
+              className="text-[10px] tabular-nums"
+              style={{ color: "rgba(255,255,255,0.35)" }}
+            >
+              {formatTime(position)}
+            </span>
+            <span
+              className="text-[10px] tabular-nums"
+              style={{ color: "rgba(255,255,255,0.35)" }}
+            >
+              {formatTime(duration)}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Transport buttons */}
       <div className="flex items-center justify-center gap-3">
         <button
           onClick={onPrev}
@@ -502,135 +557,15 @@ function ConnectControls({
           </svg>
         </button>
       </div>
-      <p
-        className="text-[10px] tracking-wide"
-        style={{ color: "rgba(255,255,255,0.4)" }}
-      >
-        Remote · {deviceName}
-      </p>
+
+      {isConnectMode && (
+        <p
+          className="text-[10px] tracking-wide"
+          style={{ color: "rgba(255,255,255,0.4)" }}
+        >
+          Remote · {deviceName}
+        </p>
+      )}
     </div>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────── */
-/*  Embed iframe (fallback / preview)                              */
-/* ─────────────────────────────────────────────────────────────── */
-
-function EmbedPlayer({
-  trackId,
-  onTrackEnd,
-}: {
-  trackId: string | null;
-  onTrackEnd: () => void;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const controllerRef = useRef<any>(null); // eslint-disable-line @typescript-eslint/no-explicit-any
-  const pendingRef = useRef<string | null>(null);
-  const advancedRef = useRef(false);
-  const wasPlayingRef = useRef(false);
-  const lastPositionRef = useRef(0);
-  const onEndRef = useRef(onTrackEnd);
-  onEndRef.current = onTrackEnd;
-
-  // Load Spotify IFrame API once and create the controller.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    function onApiReady(IFrameAPI: any) { // eslint-disable-line @typescript-eslint/no-explicit-any
-      const container = containerRef.current;
-      if (!container) return;
-
-      const initialId =
-        pendingRef.current || trackId || "4cOdK2wGLETKBW3PvgPWqT";
-      const uri = toSpotifyTrackUri(initialId);
-
-      IFrameAPI.createController(
-        container,
-        { uri, width: "100%", height: 152, theme: "0" },
-        (ctrl: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
-          controllerRef.current = ctrl;
-
-          ctrl.addListener("playback_update", (e: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
-            const data = e?.data;
-            if (!data) return;
-            const { isPaused, isBuffering, duration, position } = data;
-
-            if (
-              position + 5000 < lastPositionRef.current ||
-              (position < 1500 && lastPositionRef.current > 5000)
-            ) {
-              advancedRef.current = false;
-            }
-            lastPositionRef.current = position;
-
-            const wasPlaying = wasPlayingRef.current;
-            wasPlayingRef.current = !isPaused && !isBuffering;
-
-            if (advancedRef.current) return;
-
-            const nearEnd =
-              duration > 0 && position > 0 && duration - position < 3000;
-            const reachedEnd = duration > 0 && position >= duration;
-            const justEnded =
-              wasPlaying && isPaused && !isBuffering && nearEnd;
-
-            if ((justEnded || reachedEnd) && !isBuffering) {
-              advancedRef.current = true;
-              setTimeout(() => onEndRef.current(), 300);
-            }
-          });
-
-          if (pendingRef.current) {
-            ctrl.loadUri(toSpotifyTrackUri(pendingRef.current));
-            ctrl.play();
-            pendingRef.current = null;
-          }
-        }
-      );
-    }
-
-    if ((window as any).SpotifyIframeApi) { // eslint-disable-line @typescript-eslint/no-explicit-any
-      onApiReady((window as any).SpotifyIframeApi); // eslint-disable-line @typescript-eslint/no-explicit-any
-    } else {
-      (window as any).onSpotifyIframeApiReady = (IFrameAPI: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
-        (window as any).SpotifyIframeApi = IFrameAPI; // eslint-disable-line @typescript-eslint/no-explicit-any
-        onApiReady(IFrameAPI);
-      };
-
-      if (!document.querySelector('script[src*="embed/iframe-api"]')) {
-        const script = document.createElement("script");
-        script.src = "https://open.spotify.com/embed/iframe-api/v1";
-        script.async = true;
-        document.body.appendChild(script);
-      }
-    }
-
-    return () => {
-      (window as any).onSpotifyIframeApiReady = undefined; // eslint-disable-line @typescript-eslint/no-explicit-any
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // When the requested track changes, load it into the existing controller.
-  useEffect(() => {
-    if (!trackId) return;
-    advancedRef.current = false;
-    wasPlayingRef.current = false;
-    lastPositionRef.current = 0;
-
-    if (controllerRef.current) {
-      controllerRef.current.loadUri(toSpotifyTrackUri(trackId));
-      controllerRef.current.play();
-    } else {
-      pendingRef.current = trackId;
-    }
-  }, [trackId]);
-
-  return (
-    <div
-      ref={containerRef}
-      className="rounded-xl overflow-hidden"
-      style={{ minHeight: 152 }}
-    />
   );
 }
