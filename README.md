@@ -97,7 +97,7 @@ export DATABASE_URL=postgres://postgres:[password]@[host]:5432/postgres
 make migrate
 ```
 
-Or paste each file in **Supabase → SQL Editor** in order (`db/migrations/001_init.sql` through `019_discover_history_artists.sql`), then seed data with `db/seed/sources.sql`.
+Or paste each file in **Supabase → SQL Editor** in filename order (`db/migrations/001_init.sql` through the latest `db/migrations/019_*.sql` files), then seed data with `db/seed/sources.sql`.
 
 ### 5. Install dependencies and start
 
@@ -126,6 +126,7 @@ In the dashboard sidebar, run **Refresh music profile** once:
 3. **Build your radio model** — embeds artist profiles as taste vectors
 4. **Add music context** — crawls editorial RSS/Reddit sources for mention heat and blog-sourced tracks
 5. **Prepare song catalog** — loads playable Spotify tracks for radio and playlist export
+6. **Model songs** — embeds track context so song-level lanes and prompts have fresher signals
 
 After setup is ready, the **Radio** tab can generate playable recommendations. You do not need to run the full setup every time. Use **Refresh sources** when you want fresh blog/community context; it can run independently and is safe to use daily.
 

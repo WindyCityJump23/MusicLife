@@ -100,8 +100,8 @@ type DiscoverCachePayload = {
 function laneForSong(song: SongRecommendation): DiscoveryLaneId {
   // Prefer backend-assigned lane when available
   if (song.lane) {
-    if (song.lane === "deep_cut") return "deep_cuts";
-    if (song.lane === "radio_hit" || song.lane === "familiar") return "radio_hits";
+    if (song.lane === "deep_cuts" || song.lane === "deep_cut") return "deep_cuts";
+    if (song.lane === "radio_hits" || song.lane === "radio_hit" || song.lane === "familiar") return "radio_hits";
     if (song.lane === "popular") return "popular";
   }
 
@@ -117,6 +117,18 @@ function laneForSong(song: SongRecommendation): DiscoveryLaneId {
   if (hasDeepSignal || popularity < 0.46) return "deep_cuts";
   if (popularity >= 0.74) return "radio_hits";
   return "popular";
+}
+
+function laneBadge(song: SongRecommendation): { label: string; className: string } | null {
+  if (!song.lane) return null;
+  const lane = laneForSong(song);
+  if (lane === "deep_cuts") {
+    return { label: "Deep cut", className: "bg-violet-50 text-violet-600" };
+  }
+  if (lane === "popular") {
+    return { label: "Popular", className: "bg-amber-50 text-amber-600" };
+  }
+  return { label: "Radio hit", className: "bg-emerald-50 text-emerald-600" };
 }
 
 function targetLaneCounts(total: number): { radio_hits: number; deep_cuts: number } {
@@ -1072,6 +1084,7 @@ function SongRow({
   const [expanded, setExpanded] = useState(false);
 
   const matchPct = Math.round(song.score * 100);
+  const lane = laneBadge(song);
   const minutes = Math.floor(song.duration_ms / 60000);
   const seconds = Math.floor((song.duration_ms % 60000) / 1000);
   const duration =
@@ -1195,13 +1208,9 @@ function SongRow({
             <SourceBadge mention={song.top_mention} />
           )}
           {/* Lane pill */}
-          {song.lane && (
-            <span className={`inline-block text-[9px] font-medium rounded-full px-1.5 py-0.5 mt-0.5 ${
-              song.lane === "deep_cut" ? "bg-violet-50 text-violet-600" :
-              song.lane === "popular" ? "bg-amber-50 text-amber-600" :
-              "bg-emerald-50 text-emerald-600"
-            }`}>
-              {song.lane === "deep_cut" ? "Deep cut" : song.lane === "popular" ? "Popular" : "Radio hit"}
+          {lane && (
+            <span className={`inline-block text-[9px] font-medium rounded-full px-1.5 py-0.5 mt-0.5 ${lane.className}`}>
+              {lane.label}
             </span>
           )}
         </div>
