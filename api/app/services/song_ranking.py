@@ -662,13 +662,10 @@ def recommend_songs(
         )
 
         if aid in previously_recommended:
-            base_score *= 0.45
+            base_score *= 0.70
 
         if aid in excluded_artist_ids:
-            base_score *= 0.15
-
-        if aid in excluded_artist_ids:
-            base_score *= 0.58
+            base_score *= 0.35
 
         # Artist-level feedback adjustment
         artist_fb = feedback_scores.get(aid, 0)
@@ -1008,7 +1005,7 @@ def recommend_songs(
                 track_base *= 0.75  # 25% penalty for universally-popular embeddings
 
             if aid in previously_recommended:
-                track_base *= 0.65
+                track_base *= 0.80
 
             raw_release = track.get("release_date")
             release_age = _release_age_days(raw_release, now)
