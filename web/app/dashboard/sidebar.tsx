@@ -19,6 +19,7 @@ const STEP_META = [
   { step: 3, title: "Build your radio model",   desc: "Prepare matching signals for better stations" },
   { step: 4, title: "Add music context",        desc: "Blend in editorial sources and buzz" },
   { step: 5, title: "Prepare song catalog",     desc: "Load playable tracks for radio and playlists" },
+  { step: 6, title: "Model songs",              desc: "Build song-level context for fresher lanes" },
 ];
 
 export default function Sidebar({
@@ -39,7 +40,7 @@ export default function Sidebar({
     discovered: number;
     embedded: number;
   } | null>(null);
-  const allDone = completedSteps.size >= 5;
+  const allDone = completedSteps.size >= STEP_META.length;
   const [setupOpen,      setSetupOpen]      = useState(!allDone);
   const setupStatusLabel = allDone ? "Ready" : completedSteps.size > 0 ? "In progress" : "Needs setup";
   const setupStatusClass = allDone
@@ -72,6 +73,7 @@ export default function Sidebar({
         if (steps?.embedded) done.add(3);
         if (steps?.context) done.add(4);
         if (steps?.tracks) done.add(5);
+        if (steps?.modeledTracks) done.add(6);
         setCompletedSteps(done);
 
         const catalog = data.catalogStats;

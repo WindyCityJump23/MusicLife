@@ -1,8 +1,8 @@
 # MusicLife
 
-A personal music radio and playlist discovery app powered by Spotify, editorial sources (music blogs, Reddit, Bandcamp), and vector recommendations.
+Pandora-style personal radio and playlist discovery powered by Spotify, editorial sources, and vector recommendations.
 
-**Stack:** Next.js 14 · FastAPI · Supabase (Postgres + pgvector) · Anthropic Claude · Voyage AI
+**Stack:** Next.js 14 · FastAPI · Supabase (Postgres + pgvector) · Voyage AI · Spotify Web Playback SDK
 
 ---
 
@@ -10,12 +10,12 @@ A personal music radio and playlist discovery app powered by Spotify, editorial 
 
 - Syncs your Spotify library, top artists, and recent plays
 - Enriches artists with MusicBrainz + Last.fm metadata
-- Embeds artist profiles as vectors for taste-aware similarity
+- Embeds artist profiles and tracks as vectors for taste-aware similarity
 - Crawls editorial RSS feeds and Reddit to find daily music buzz
 - Expands the catalog from blog-sourced tracks, not just artists already in your library
 - Builds radio-style song queues across three lanes: radio hits, popular cuts, and deep cuts / indie
-- Recommends playable songs by blending personal affinity, prompt context, editorial momentum, novelty, and familiarity
-- Lets you play recommendations like radio or save the full queue as a Spotify playlist
+- Uses novelty guardrails so recently shown tracks and artists do not dominate repeat sessions
+- Lets you play recommendations in the browser or save the full queue as a Spotify playlist
 
 ---
 
@@ -77,7 +77,6 @@ make env        # copies .env.local.example → web/.env.local and api/.env.exam
 | `SUPABASE_URL` | Same as above |
 | `SUPABASE_SERVICE_ROLE_KEY` | Same as above |
 | `SUPABASE_ANON_KEY` | Same as above |
-| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) |
 | `VOYAGE_API_KEY` | [dash.voyageai.com](https://dash.voyageai.com) *(or use OpenAI below)* |
 | `EMBEDDING_PROVIDER` | `voyage` or `openai` |
 | `EMBEDDING_MODEL` | `voyage-3` *(Voyage)* or `text-embedding-3-large` *(OpenAI)* |
@@ -98,15 +97,7 @@ export DATABASE_URL=postgres://postgres:[password]@[host]:5432/postgres
 make migrate
 ```
 
-Or paste each file manually in **Supabase → SQL Editor**:
-
-1. `db/migrations/001_init.sql`
-2. `db/migrations/002_playlists.sql`
-3. `db/migrations/003_rls.sql`
-4. `db/migrations/004_ingest_constraints.sql`
-5. `db/migrations/005_mentions_dedup.sql`
-6. `db/migrations/006_triggers_and_indexes.sql`
-7. `db/seed/sources.sql`
+Or paste each file in **Supabase → SQL Editor** in filename order (`db/migrations/001_init.sql` through the latest `db/migrations/019_*.sql` files), then seed data with `db/seed/sources.sql`.
 
 ### 5. Install dependencies and start
 
@@ -135,6 +126,7 @@ In the dashboard sidebar, run **Refresh music profile** once:
 3. **Build your radio model** — embeds artist profiles as taste vectors
 4. **Add music context** — crawls editorial RSS/Reddit sources for mention heat and blog-sourced tracks
 5. **Prepare song catalog** — loads playable Spotify tracks for radio and playlist export
+6. **Model songs** — embeds track context so song-level lanes and prompts have fresher signals
 
 After setup is ready, the **Radio** tab can generate playable recommendations. You do not need to run the full setup every time. Use **Refresh sources** when you want fresh blog/community context; it can run independently and is safe to use daily.
 
@@ -143,10 +135,9 @@ After setup is ready, the **Radio** tab can generate playable recommendations. Y
 ## Architecture
 
 ```
-web/          Next.js 14 frontend (App Router, Tailwind, Spotify SDK)
-api/          FastAPI ingestion + ranking + synthesis service
+web/          Next.js 14 frontend (App Router, Tailwind, Spotify Web Playback SDK)
+api/          FastAPI ranking + ingestion + discovery service
 db/           SQL migrations and seed data
-docs/         Design notes, architecture decisions, API references
 ```
 
 Discovery model:
@@ -170,22 +161,27 @@ The backend returns lane-aware recommendations, reserving room for:
 
 Weights are controlled by the mode buttons and sliders in the Radio view.
 
----
+Discovery pipeline:
 
-## API reference
+1. **Prompt classifier** distinguishes genre queries ("alternative rock") from mood queries ("sad night drive") from semantic queries ("new Chicago indie") — genre queries filter the artist pool, mood/semantic queries rely on embedding similarity
+2. **Lane assignment** happens in the backend: each track is assigned to `deep_cut`, `popular`, or `familiar` based on popularity, library overlap, and editorial signal
+3. **Lane quotas** enforce a mix (45% deep cuts, 35% popular, 20% familiar) during diversity reranking
+4. **Novelty tracking** persists both track IDs and artist IDs per discover run; subsequent requests exclude recently shown artists (not just tracks)
+5. **Editorial ingest** creates new artist records from blog-sourced tracks, expanding the catalog beyond the user's existing library
 
-Full interactive docs at [http://localhost:8000/docs](http://localhost:8000/docs) once the API is running.
+### Key endpoints
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /health` | Liveness + DB connectivity check |
+| `GET /health` | Liveness + readiness check |
+| `POST /recommend` | Artist-level taste recommendations |
+| `POST /recommend/songs` | Song-level recommendations with lanes, novelty, and history |
 | `POST /ingest/spotify-library` | Pull Spotify library and listens |
 | `POST /ingest/enrich-artists` | MusicBrainz + Last.fm enrichment |
 | `POST /ingest/embed-artists` | Generate artist embeddings |
-| `POST /ingest/sources` | Crawl RSS + Reddit feeds |
+| `POST /ingest/sources` | Crawl RSS + Reddit feeds, create new artists/tracks, and model fresh source finds |
 | `POST /ingest/setup-all` | Run the full Music Profile setup pipeline |
-| `POST /recommend` | Get taste-aware recommendations |
-| `POST /recommend/songs` | Get lane-aware song recommendations for radio/playlists |
+| `POST /playlist-from-tracks` | Export discover session to Spotify playlist |
 | `POST /synthesize/for-artist` | Generate "Why this?" explanation via Claude |
 
 ---

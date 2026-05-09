@@ -31,16 +31,30 @@ from app.services.supabase_client import admin_supabase, retry_on_disconnect
 
 def run_artist_enrichment(
     progress: Callable[[str], None] | None = None,
+    limit: int = 200,
+    artist_ids: list[int] | None = None,
 ) -> None:
-    result = retry_on_disconnect(
-        lambda: (
+    if artist_ids is not None and len(artist_ids) == 0:
+        print("artist_enrichment: no requested artist IDs")
+        if progress:
+            progress("Enriching artists (nothing to do)")
+        return
+
+    limit = max(1, min(limit, 200))
+
+    def fetch_candidates():
+        query = (
             admin_supabase.table("artists")
             .select("id, name, spotify_artist_id")
             .is_("musicbrainz_id", "null")
             .is_("lastfm_url", "null")
-            .limit(200)
-            .execute()
-        ),
+        )
+        if artist_ids is not None:
+            query = query.in_("id", artist_ids)
+        return query.limit(limit).execute()
+
+    result = retry_on_disconnect(
+        fetch_candidates,
         attempts=3,
     )
 
