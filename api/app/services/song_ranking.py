@@ -47,12 +47,18 @@ _GENRE_PHRASES = {
     "hip hop",
     "hip-hop",
     "r&b",
+    "rnb",
     "indie rock",
     "indie pop",
     "electronic",
+    "edm",
     "dance",
     "house",
     "techno",
+    "trance",
+    "dubstep",
+    "drum and bass",
+    "dnb",
     "ambient",
     "jazz",
     "metal",
@@ -64,10 +70,20 @@ _GENRE_PHRASES = {
     "funk",
     "classical",
     "reggae",
+    "reggaeton",
     "latin",
     "pop",
     "rock",
     "rap",
+    "trap",
+    "lo-fi",
+    "lofi",
+    "grunge",
+    "blues",
+    "gospel",
+    "disco",
+    "synthwave",
+    "synth pop",
 }
 
 _GENRE_TOKEN_STOPWORDS = {
@@ -86,6 +102,17 @@ _GENRE_TOKEN_STOPWORDS = {
     "like",
 }
 
+_GENRE_SYNONYMS: dict[str, list[str]] = {
+    "edm": ["electronic", "dance"],
+    "dnb": ["drum", "bass"],
+    "lofi": ["lo", "fi"],
+    "rnb": ["r&b"],
+    "trap": ["hip", "hop"],
+    "synthwave": ["synth", "electronic"],
+    "grunge": ["alternative", "rock"],
+    "disco": ["dance", "funk"],
+}
+
 
 def _genre_tokens_for_prompt(prompt_text: str | None) -> list[str] | None:
     if not prompt_text:
@@ -100,6 +127,9 @@ def _genre_tokens_for_prompt(prompt_text: str | None) -> list[str] | None:
         phrase_norm = phrase.replace("-", " ")
         if phrase_norm in normalized:
             hits.extend([tok for tok in phrase_norm.split() if tok not in _GENRE_TOKEN_STOPWORDS])
+            synonyms = _GENRE_SYNONYMS.get(phrase_norm)
+            if synonyms:
+                hits.extend(synonyms)
 
     if not hits:
         return None

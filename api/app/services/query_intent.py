@@ -142,6 +142,9 @@ _WORD_SIGNALS: dict[str, tuple[str, list[str]]] = {
     "alien": ("reference", ["sci-fi", "strange", "spacey", "experimental"]),
     "robot": ("reference", ["mechanical", "electronic", "futuristic", "precise"]),
     "ghost": ("reference", ["haunting", "ambient", "ethereal", "mysterious"]),
+    "edm": ("mood", ["electronic", "dance", "high-energy", "bass-heavy", "festival", "synth-heavy"]),
+    "lofi": ("mood", ["relaxed", "mellow", "downtempo", "warm", "nostalgic"]),
+    "lo-fi": ("mood", ["relaxed", "mellow", "downtempo", "warm", "nostalgic"]),
 }
 
 
