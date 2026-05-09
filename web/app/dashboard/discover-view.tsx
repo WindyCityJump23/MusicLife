@@ -505,7 +505,7 @@ export default function DiscoverView({
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const artists: any[] = artistData.results ?? [];
-        if (artists.length === 0) {
+        if (artists.length === 0 && deduped.length === 0) {
           setResults([]);
           return;
         }
