@@ -417,11 +417,13 @@ def _search_and_upsert_tracks(
                     break
 
     # Strategy 2: Search API with pagination to go beyond top results
+    # Spotify reduced the search limit from 50 to 10 in February 2026.
+    SEARCH_PAGE = 10
     if len(items) < limit:
         quoted = artist_name.replace('"', '\\"')
         query = f'artist:"{quoted}"'
-        for offset in range(0, limit, 50):
-            batch = min(50, limit - len(items))
+        for offset in range(0, limit, SEARCH_PAGE):
+            batch = min(SEARCH_PAGE, limit - len(items))
             params = {"q": query, "type": "track", "market": "US", "limit": batch, "offset": offset}
             resp = _retry_429(
                 client, "GET",
