@@ -159,7 +159,9 @@ export async function GET(req: NextRequest) {
         context: (mentionCount ?? 0) > 0,
         tracks: artistCount > 0 && playableTrackCount >= requiredPlayableTracks,
         modeledTracks:
-          requiredModeledTracks > 0 && modeledTrackCount >= requiredModeledTracks,
+          playableTrackCount > 0
+            ? modeledTrackCount >= Math.max(1, requiredModeledTracks)
+            : false,
       },
     },
   });

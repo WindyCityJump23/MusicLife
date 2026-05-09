@@ -1462,6 +1462,9 @@ def _lane_aware_rerank(scored: list[dict], limit: int) -> list[dict]:
     if not scored or limit <= 0:
         return []
 
+    unique_artists = len({(r.get("artist_name") or "").lower() for r in scored})
+    initial_cap = 1 if unique_artists >= limit else 2
+
     pools: dict[str, list[dict]] = {lane: [] for lane in DISCOVERY_LANES}
     for row in scored:
         lane = row.get("lane") if row.get("lane") in DISCOVERY_LANES else "popular"
@@ -1484,8 +1487,6 @@ def _lane_aware_rerank(scored: list[dict], limit: int) -> list[dict]:
     artist_counts: Counter[str] = Counter()
     genre_counts: Counter[str] = Counter()
 
-    # Fill lanes from discovery-first to recognition anchors. Radio hits are
-    # intentionally last and capped unless the catalog has nothing else.
     for lane in ("deep_cuts", "popular", "radio_hits"):
         selected.extend(
             _pick_lane_candidates(
@@ -1494,6 +1495,7 @@ def _lane_aware_rerank(scored: list[dict], limit: int) -> list[dict]:
                 used,
                 artist_counts,
                 genre_counts,
+                strict_artist_cap=initial_cap,
             )
         )
 
@@ -1510,17 +1512,7 @@ def _lane_aware_rerank(scored: list[dict], limit: int) -> list[dict]:
                 used,
                 artist_counts,
                 genre_counts,
-            )
-        )
-
-    if len(selected) < limit:
-        selected.extend(
-            _pick_lane_candidates(
-                scored,
-                limit - len(selected),
-                used,
-                artist_counts,
-                genre_counts,
+                strict_artist_cap=max(initial_cap, 2),
             )
         )
 
@@ -1533,6 +1525,18 @@ def _lane_aware_rerank(scored: list[dict], limit: int) -> list[dict]:
                 artist_counts,
                 genre_counts,
                 strict_artist_cap=2,
+            )
+        )
+
+    if len(selected) < limit:
+        selected.extend(
+            _pick_lane_candidates(
+                scored,
+                limit - len(selected),
+                used,
+                artist_counts,
+                genre_counts,
+                strict_artist_cap=3,
             )
         )
 

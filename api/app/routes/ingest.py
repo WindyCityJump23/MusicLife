@@ -819,7 +819,7 @@ def _run_setup_all(
 
         current_stage = "Model Tracks"
         progress_for(6)("Preparing track context…")
-        backfill = backfill_embedding_source()
+        backfill = backfill_embedding_source(max_rows=10_000, progress=progress_for(6))
         progress_for(6)("Generating track embeddings…")
         track_embed_summary = run_track_embeddings(progress=progress_for(6))
         embedded_tracks = (

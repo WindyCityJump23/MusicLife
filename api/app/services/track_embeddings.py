@@ -158,7 +158,10 @@ def run_track_embeddings(
     return summary
 
 
-def backfill_embedding_source() -> dict:
+def backfill_embedding_source(
+    max_rows: int = 50_000,
+    progress: Callable[[str], None] | None = None,
+) -> dict:
     """Fill tracks.embedding_source for rows that are missing it.
 
     Builds a description string from artist name + track name + album so
@@ -169,7 +172,7 @@ def backfill_embedding_source() -> dict:
     offset = 0
     page_size = 1000
 
-    while True:
+    while updated < max_rows:
         resp = (
             admin_supabase.table("tracks")
             .select("id, name, album_name, artist_id")
@@ -205,6 +208,9 @@ def backfill_embedding_source() -> dict:
                 {"embedding_source": source}
             ).eq("id", r["id"]).execute()
             updated += 1
+
+        if progress and updated % 2000 == 0 and updated > 0:
+            progress(f"Preparing track context ({updated} tracks)")
 
         if len(rows) < page_size:
             break
