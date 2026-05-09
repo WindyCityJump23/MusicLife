@@ -17,7 +17,7 @@ import time
 from typing import Callable
 
 from app.services.embedding import embedder
-from app.services.supabase_client import admin_supabase
+from app.services.supabase_client import admin_supabase, retry_on_disconnect
 
 # Max artists per API call. Voyage allows ~120K tokens per request;
 # at ~500 tokens per embedding_source, 64 is safe (~32K tokens).
@@ -139,7 +139,10 @@ def run_artist_embeddings(
         ]
 
         try:
-            admin_supabase.table("artists").upsert(rows, on_conflict="id").execute()
+            retry_on_disconnect(
+                lambda: admin_supabase.table("artists").upsert(rows, on_conflict="id").execute(),
+                attempts=3,
+            )
             total_embedded += len(valid_candidates)
             consecutive_failures = 0
             print(f"artist_embeddings: batch {batch_num} done — {total_embedded} total so far")

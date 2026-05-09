@@ -38,7 +38,7 @@ import feedparser
 import httpx
 
 from app.services.embedding import embedder
-from app.services.supabase_client import admin_supabase
+from app.services.supabase_client import admin_supabase, retry_on_disconnect
 
 
 # ── Mention ingestion limits ─────────────────────────────────────────────────
@@ -688,17 +688,20 @@ def _upsert_blog_track(track_obj: dict, artist_db_id: int) -> int | None:
     }
 
     try:
-        admin_supabase.table("tracks").upsert(
-            row, on_conflict="spotify_track_id"
-        ).execute()
-        lookup = (
-            admin_supabase.table("tracks")
-            .select("id")
-            .eq("spotify_track_id", spotify_track_id)
-            .limit(1)
-            .execute()
-        )
-        rows = lookup.data or []
+        def _do_upsert():
+            admin_supabase.table("tracks").upsert(
+                row, on_conflict="spotify_track_id"
+            ).execute()
+            lookup = (
+                admin_supabase.table("tracks")
+                .select("id")
+                .eq("spotify_track_id", spotify_track_id)
+                .limit(1)
+                .execute()
+            )
+            return lookup.data or []
+
+        rows = retry_on_disconnect(_do_upsert, attempts=3)
         return int(rows[0]["id"]) if rows and rows[0].get("id") else None
     except Exception as exc:
         print(f"source_ingest: failed to upsert blog track {spotify_track_id}: {exc}")
