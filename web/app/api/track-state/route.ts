@@ -24,24 +24,36 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ favorited: [], feedback: {} });
   }
 
-  try {
-    const sb = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-      { auth: { persistSession: false } }
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !serviceKey) {
+    console.error("track-state: missing SUPABASE_SERVICE_ROLE_KEY or SUPABASE_URL");
+    return NextResponse.json(
+      { error: "Server configuration error" },
+      { status: 500 }
     );
+  }
+
+  try {
+    const sb = createClient(supabaseUrl, serviceKey, {
+      auth: { persistSession: false },
+    });
+
+    // PostgREST has a URL length limit; cap at 200 IDs per query.
+    const queryIds = ids.slice(0, 200);
 
     const [favoritesResult, feedbackResult] = await Promise.all([
       sb
         .from("user_favorites")
         .select("spotify_track_id")
         .eq("user_id", user.userId)
-        .in("spotify_track_id", ids),
+        .in("spotify_track_id", queryIds),
       sb
         .from("user_feedback")
         .select("spotify_track_id,feedback")
         .eq("user_id", user.userId)
-        .in("spotify_track_id", ids),
+        .in("spotify_track_id", queryIds),
     ]);
 
     if (favoritesResult.error) throw favoritesResult.error;
@@ -56,7 +68,8 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({ favorited, feedback });
-  } catch {
+  } catch (err) {
+    console.error("track-state: query failed", err);
     return NextResponse.json(
       { error: "Failed to check track state" },
       { status: 500 }
