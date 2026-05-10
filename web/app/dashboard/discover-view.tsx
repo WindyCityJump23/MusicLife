@@ -473,8 +473,8 @@ export default function DiscoverView({
               : null,
           }));
         }
-      } catch {
-        // Server-side failed — fall through to client-side
+      } catch (e) {
+        console.warn("recommend-songs failed, falling back to Spotify search:", e);
       }
 
       // Attempt 2: Supplement with real-time Spotify Search
@@ -515,7 +515,14 @@ export default function DiscoverView({
         const accessToken = tokenData.access_token;
 
         if (!accessToken) {
-          setError("Spotify session expired \u2014 please sign out and back in");
+          if (deduped.length > 0) {
+            setResults(deduped);
+            writeDiscoverCache(prompt, weights, deduped);
+            setQueue(toQueueTracks(deduped));
+            void refreshTrackState(deduped);
+            return;
+          }
+          setError("Spotify session expired and no tracks in catalog \u2014 please sign out and back in, then re-run 'Set up music profile'");
           setResults([]);
           return;
         }
@@ -1655,7 +1662,7 @@ function EmptyInitial() {
 
 function EmptyNoResults() {
   const [missingStep, setMissingStep] = useState<
-    "loading" | "sync" | "enrich" | "embed" | "ready" | "unknown"
+    "loading" | "sync" | "enrich" | "embed" | "tracks" | "modeledTracks" | "ready" | "unknown"
   >("loading");
 
   useEffect(() => {
@@ -1666,6 +1673,8 @@ function EmptyNoResults() {
         if (!steps?.imported) return setMissingStep("sync");
         if (!steps?.enriched) return setMissingStep("enrich");
         if (!steps?.embedded) return setMissingStep("embed");
+        if (!steps?.tracks) return setMissingStep("tracks");
+        if (!steps?.modeledTracks) return setMissingStep("modeledTracks");
         setMissingStep("ready");
       })
       .catch(() => setMissingStep("unknown"));
@@ -1684,6 +1693,14 @@ function EmptyNoResults() {
     embed: {
       title: "Generate embeddings next",
       body: "Click \u201cGenerate Embeddings\u201d (step 3) in the left sidebar. This is what powers Discover.",
+    },
+    tracks: {
+      title: "Track catalog is empty",
+      body: "Your artists are ready but no playable tracks were loaded \u2014 this usually happens when Spotify rate limits block the initial setup. Re-run \u201cSet up music profile\u201d to try again.",
+    },
+    modeledTracks: {
+      title: "Track embeddings missing",
+      body: "Tracks exist but haven\u2019t been modeled yet. Re-run \u201cSet up music profile\u201d to generate track embeddings.",
     },
     ready: {
       title: "Nothing matched right now",
