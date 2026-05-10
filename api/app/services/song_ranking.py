@@ -541,7 +541,11 @@ def recommend_songs(
         for a in all_artists
         if a.get("id") is not None and int(a["id"]) not in excluded_artist_ids
     )
-    hard_exclude_recent_artists = bool(excluded_artist_ids) and non_recent_artist_count >= max(limit * 3, 30)
+    hard_exclude_recent_artists = (
+        bool(excluded_artist_ids)
+        and not has_explicit_prompt
+        and non_recent_artist_count >= max(limit * 3, 30)
+    )
     if hard_exclude_recent_artists:
         print(
             f"song_ranking: hard-excluding {len(excluded_artist_ids)} recent artists; "
@@ -662,10 +666,10 @@ def recommend_songs(
         )
 
         if aid in previously_recommended:
-            base_score *= 0.70
+            base_score *= 0.90 if has_explicit_prompt else 0.70
 
         if aid in excluded_artist_ids:
-            base_score *= 0.35
+            base_score *= 0.70 if has_explicit_prompt else 0.35
 
         # Artist-level feedback adjustment
         artist_fb = feedback_scores.get(aid, 0)
@@ -1005,7 +1009,7 @@ def recommend_songs(
                 track_base *= 0.75  # 25% penalty for universally-popular embeddings
 
             if aid in previously_recommended:
-                track_base *= 0.80
+                track_base *= 0.92 if has_explicit_prompt else 0.80
 
             raw_release = track.get("release_date")
             release_age = _release_age_days(raw_release, now)

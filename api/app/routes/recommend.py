@@ -118,13 +118,9 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
         excluded_track_ids = build_excluded_track_ids(history_rows)
         excluded_artist_ids = build_excluded_artist_ids(history_rows)
 
-    # Prompted searches are intentional searches, but exact repeats still feel
-    # broken. Use a shorter memory instead of the full unprompted exclusion
-    # window so style searches can reach outside normal Discover while still
-    # avoiding recently repeated tracks/artists.
     if query_intent:
-        excluded_track_ids = build_excluded_track_ids(history_rows, older_than_days=14)
-        excluded_artist_ids = build_excluded_artist_ids(history_rows, older_than_days=14)
+        excluded_track_ids = build_excluded_track_ids(history_rows, older_than_days=3)
+        excluded_artist_ids = build_excluded_artist_ids(history_rows, older_than_days=3)
 
     from app.services.song_ranking import recommend_songs as _recommend_songs
 
