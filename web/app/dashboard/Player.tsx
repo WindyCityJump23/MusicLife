@@ -24,6 +24,7 @@ export default function Player() {
     sdkPosition,
     sdkDuration,
     sdkPlayer,
+    albumArtUrl,
   } = usePlayer();
 
   const currentTrack =
@@ -77,28 +78,74 @@ export default function Player() {
         </span>
       </div>
 
-      {/* Current track info */}
+      {/* Album art + track info */}
       {currentTrack ? (
-        <div className="px-1">
-          <p className="text-white font-semibold text-base leading-snug truncate">
-            {currentTrack.trackName}
-          </p>
-          <p
-            className="text-sm mt-0.5 truncate"
-            style={{ color: "rgba(255,255,255,0.55)" }}
-          >
-            {currentTrack.artistName}
-          </p>
+        <div className="flex items-center gap-4 px-1">
+          <div className="relative shrink-0 w-20 h-20">
+            <div
+              className={[
+                "w-20 h-20 rounded-full overflow-hidden shadow-lg",
+                isPlaying ? "animate-spin-slow" : "",
+              ].join(" ")}
+              style={{
+                boxShadow: isPlaying
+                  ? "0 0 20px rgba(233,69,96,0.3), inset 0 0 0 6px rgba(0,0,0,0.6)"
+                  : "inset 0 0 0 6px rgba(0,0,0,0.6)",
+              }}
+            >
+              {albumArtUrl ? (
+                <img
+                  src={albumArtUrl}
+                  alt=""
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full bg-white/10 flex items-center justify-center text-2xl">
+                  🎵
+                </div>
+              )}
+            </div>
+            {/* Vinyl center hole */}
+            <div
+              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-4 h-4 rounded-full"
+              style={{
+                background: "radial-gradient(circle, #1a1a2e 40%, #0f0f1a 100%)",
+                boxShadow: "0 0 0 1px rgba(255,255,255,0.1)",
+              }}
+            />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-white font-semibold text-base leading-snug truncate">
+              {currentTrack.trackName}
+            </p>
+            <p
+              className="text-sm mt-0.5 truncate"
+              style={{ color: "rgba(255,255,255,0.55)" }}
+            >
+              {currentTrack.artistName}
+            </p>
+          </div>
         </div>
       ) : (
-        <div className="px-1">
-          <p className="text-white font-medium text-sm">Pick a song</p>
-          <p
-            className="text-xs mt-0.5"
-            style={{ color: "rgba(255,255,255,0.4)" }}
+        <div className="flex items-center gap-4 px-1">
+          <div
+            className="shrink-0 w-20 h-20 rounded-full flex items-center justify-center"
+            style={{
+              background: "rgba(255,255,255,0.05)",
+              boxShadow: "inset 0 0 0 6px rgba(0,0,0,0.4)",
+            }}
           >
-            Click play on any recommendation to start
-          </p>
+            <span className="text-2xl opacity-30">🎵</span>
+          </div>
+          <div className="min-w-0">
+            <p className="text-white font-medium text-sm">Pick a song</p>
+            <p
+              className="text-xs mt-0.5"
+              style={{ color: "rgba(255,255,255,0.4)" }}
+            >
+              Click play on any recommendation to start
+            </p>
+          </div>
         </div>
       )}
 
