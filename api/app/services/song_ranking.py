@@ -1180,19 +1180,45 @@ def recommend_songs(
     if genre_filtered and len(song_results) < MIN_RESULTS:
         print(
             f"song_ranking: genre-filtered search produced only "
-            f"{len(song_results)} songs — supplementing from full catalog"
+            f"{len(song_results)} songs — supplementing with genre-matched artists"
         )
-        full_artists = match_artists(
+        # First pass: try to supplement with more genre-matching artists
+        # (wider pool, popularity-ordered instead of taste-ordered).
+        supp_artists = match_artists(
             client,
-            query_vector=taste_vector or None,
+            query_vector=None,
             match_count=POOL_SIZE,
+            genre_tokens=genre_tokens,
         )
-        supplement_artist_ids_set = {int(a["id"]) for a in full_artists if a.get("id") is not None}
+        supplement_artist_ids_set = {int(a["id"]) for a in supp_artists if a.get("id") is not None}
         existing_artist_ids = {int(r["artist_id"]) for r in song_results if r.get("artist_id")}
         new_artist_ids = [
             aid for aid in supplement_artist_ids_set
             if aid not in existing_artist_ids and aid not in excluded_artist_ids
         ]
+        # If genre-matched supplement is still too sparse, fall back to
+        # the full catalog but only accept artists whose genres overlap
+        # with the search tokens.
+        if len(new_artist_ids) < MIN_RESULTS - len(song_results):
+            full_artists = match_artists(
+                client,
+                query_vector=taste_vector or None,
+                match_count=POOL_SIZE,
+            )
+            for a in full_artists:
+                aid = a.get("id")
+                if aid is None:
+                    continue
+                aid_int = int(aid)
+                if aid_int in supplement_artist_ids_set or aid_int in existing_artist_ids:
+                    continue
+                if aid_int in excluded_artist_ids:
+                    continue
+                artist_genres = " ".join(g.lower() for g in (a.get("genres") or []))
+                if any(t in artist_genres for t in genre_tokens):
+                    new_artist_ids.append(aid_int)
+                    supplement_artist_ids_set.add(aid_int)
+            supp_artists = full_artists
         if new_artist_ids:
             supp_tracks = _fetch_tracks_for_artist_ids(client, new_artist_ids[:200])
             supp_by_artist: dict[int, list[dict]] = {}
@@ -1210,7 +1236,7 @@ def recommend_songs(
                     break
                 a_info = artist_scores.get(aid)
                 if not a_info:
-                    for a in full_artists:
+                    for a in supp_artists:
                         if a.get("id") is not None and int(a["id"]) == aid:
                             a_info = {
                                 "name": a.get("name") or "Unknown",

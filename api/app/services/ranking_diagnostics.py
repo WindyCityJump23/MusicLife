@@ -251,7 +251,8 @@ def _check_minimum_results_guard(report: DiagnosticReport) -> None:
 
     source = src_path.read_text()
     has_min = "MIN_RESULTS" in source or "min_results" in source
-    has_supplement = "supplementing from full catalog" in source
+    has_supplement = "supplementing" in source
+    has_genre_guard = "genre_tokens" in source.split("supplementing")[1] if "supplementing" in source and has_supplement else False
 
     if not has_min or not has_supplement:
         report.findings.append(Finding(
@@ -260,6 +261,14 @@ def _check_minimum_results_guard(report: DiagnosticReport) -> None:
             message="No minimum results floor — genre-filtered searches can return very few songs",
             auto_fixable=True,
             fix_description="Add supplemental catalog fill when genre-filtered results < 15",
+        ))
+    elif not has_genre_guard:
+        report.findings.append(Finding(
+            check="minimum_results_guard",
+            severity=Severity.ERROR,
+            message="Supplemental fill does not re-apply genre filter — off-genre songs leak into results",
+            auto_fixable=True,
+            fix_description="Pass genre_tokens to the supplemental match_artists call",
         ))
     else:
         report.passed += 1
