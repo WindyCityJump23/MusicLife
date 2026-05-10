@@ -32,6 +32,7 @@ export default function SetupAllButton({
 }) {
   const [state, setState]     = useState<RunState>("idle");
   const [message, setMessage] = useState("");
+  const [partialSuccess, setPartialSuccess] = useState(false);
   const [step, setStep]       = useState(0);
   const intervalRef    = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastMessageRef = useRef("");
@@ -76,6 +77,10 @@ export default function SetupAllButton({
         setState("success");
         setStep(TOTAL_STEPS);
         setMessage(data.message || "Setup complete");
+        const msg = (data.message || "").toLowerCase();
+        setPartialSuccess(
+          msg.includes("track catalog will update") || msg.includes("radio needs")
+        );
         onProgressRef.current?.();
         if (!completedRef.current) {
           completedRef.current = true;
@@ -135,6 +140,7 @@ export default function SetupAllButton({
     setState("running");
     setStep(0);
     setMessage("Starting…");
+    setPartialSuccess(false);
 
     try {
       const res = await fetch("/api/setup-all", { method: "POST" });
@@ -203,7 +209,9 @@ export default function SetupAllButton({
       )}
 
       {state === "success" && (
-        <p className="text-[11px] text-emerald-600 px-0.5">✓ {message}</p>
+        <p className={`text-[11px] px-0.5 ${partialSuccess ? "text-amber-600" : "text-emerald-600"}`}>
+          {partialSuccess ? "⚠" : "✓"} {message}
+        </p>
       )}
 
       {state === "error" && (
