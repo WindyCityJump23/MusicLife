@@ -818,38 +818,32 @@ def _run_setup_all(
             track_catalog_note = " Track catalog will update later"
 
         current_stage = "Model Tracks"
-        progress_for(6)("Preparing track context…")
-        backfill = backfill_embedding_source(max_rows=10_000, progress=progress_for(6))
-        progress_for(6)("Generating track embeddings…")
-        track_embed_summary = run_track_embeddings(progress=progress_for(6))
-        embedded_tracks = (
-            track_embed_summary.get("embedded", 0)
-            if isinstance(track_embed_summary, dict)
-            else 0
-        )
-        skipped_tracks = (
-            track_embed_summary.get("skipped", 0)
-            if isinstance(track_embed_summary, dict)
-            else 0
-        )
-        track_embed_error = (
-            track_embed_summary.get("last_error")
-            if isinstance(track_embed_summary, dict)
-            else None
-        )
-        if embedded_tracks == 0 and skipped_tracks > 0:
-            reason = track_embed_error or "no tracks were embedded"
-            raise RuntimeError(f"track embedding failed: {reason}")
+        model_note = ""
+        try:
+            progress_for(6)("Preparing track context…")
+            backfill = backfill_embedding_source(max_rows=2_000, progress=progress_for(6))
+            progress_for(6)("Generating track embeddings…")
+            track_embed_summary = run_track_embeddings(
+                max_total=2_000, progress=progress_for(6),
+            )
+            model_note = _summarize_track_embedding(backfill, track_embed_summary)
+            track_embed_error = (
+                track_embed_summary.get("last_error")
+                if isinstance(track_embed_summary, dict)
+                else None
+            )
+            if track_embed_error:
+                track_catalog_note += f" Embedding warning: {track_embed_error}"
+        except Exception as step6_exc:
+            print(f"setup_all: step 6 non-fatal error — {step6_exc}", flush=True)
+            model_note = "track modeling deferred"
 
-        model_note = _summarize_track_embedding(backfill, track_embed_summary)
         final_msg = _radio_readiness_message(
             user_id,
-            f"Radio setup complete ({track_added} new tracks added; {model_note})",
+            f"Radio setup complete ({track_added} new tracks added{'; ' + model_note if model_note else ''})",
         )
         if track_catalog_note:
             final_msg += track_catalog_note
-        if track_embed_error:
-            final_msg += f" Embedding warning: {track_embed_error}"
         update_job(job_id, JobStatus.SUCCESS, final_msg[:500])
 
         print(f"setup_all: completed for user {user_id}")
