@@ -22,7 +22,6 @@ class DiagnosticsRequest(BaseModel):
     prompts: list[str | None] | None = None
     run_static: bool = True
     run_runtime: bool = True
-    auto_fix: bool = False
     limit: int = Field(default=30, ge=1, le=100)
 
 
@@ -43,7 +42,7 @@ def ranking_diagnostics(
         prompts=req.prompts,
         run_static=req.run_static,
         run_runtime=req.run_runtime,
-        auto_fix_enabled=req.auto_fix,
+        auto_fix_enabled=False,
         limit=req.limit,
     )
 

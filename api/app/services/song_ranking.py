@@ -1176,7 +1176,7 @@ def recommend_songs(
     # Sort by score
     song_results.sort(key=lambda s: s["score"], reverse=True)
 
-    MIN_RESULTS = 15
+    MIN_RESULTS = min(15, limit)
     if genre_filtered and len(song_results) < MIN_RESULTS:
         print(
             f"song_ranking: genre-filtered search produced only "

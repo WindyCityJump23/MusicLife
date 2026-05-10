@@ -316,12 +316,13 @@ def _check_result_count(
     report.checks_run += 1
     prompt_label = prompt or "(unprompted)"
     count = len(results)
+    expected_min = min(MIN_EXPECTED_RESULTS, limit)
 
-    if count < MIN_EXPECTED_RESULTS:
+    if count < expected_min:
         report.findings.append(Finding(
             check="result_count",
             severity=Severity.ERROR,
-            message=f"Prompt '{prompt_label}': only {count} results (minimum {MIN_EXPECTED_RESULTS})",
+            message=f"Prompt '{prompt_label}': only {count} results (minimum {expected_min})",
         ))
     elif count < limit // 2:
         report.findings.append(Finding(
