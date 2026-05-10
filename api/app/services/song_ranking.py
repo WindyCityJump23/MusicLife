@@ -1626,7 +1626,7 @@ def _lane_aware_rerank(scored: list[dict], limit: int) -> list[dict]:
                 used,
                 artist_counts,
                 genre_counts,
-                strict_artist_cap=max(initial_cap, 2),
+                strict_artist_cap=initial_cap,
             )
         )
 
@@ -1638,10 +1638,12 @@ def _lane_aware_rerank(scored: list[dict], limit: int) -> list[dict]:
                 used,
                 artist_counts,
                 genre_counts,
-                strict_artist_cap=2,
+                strict_artist_cap=initial_cap,
             )
         )
 
+    # Last resort: relax artist cap only when unique artists are genuinely
+    # exhausted — allows duplicates rather than returning fewer results.
     if len(selected) < limit:
         selected.extend(
             _pick_lane_candidates(
