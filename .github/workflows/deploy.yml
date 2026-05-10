@@ -11,6 +11,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check required secrets
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          missing=""
+          [ -z "$VERCEL_TOKEN" ] && missing="$missing VERCEL_TOKEN"
+          [ -z "$VERCEL_ORG_ID" ] && missing="$missing VERCEL_ORG_ID"
+          [ -z "$VERCEL_PROJECT_ID" ] && missing="$missing VERCEL_PROJECT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required secrets:$missing. Add them in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
       - name: Install Vercel CLI
         run: npm install -g vercel
 
@@ -29,6 +48,15 @@ jobs:
     name: Deploy API to Render
     runs-on: ubuntu-latest
     steps:
+      - name: Check required secrets
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK" ]; then
+            echo "::error::Missing required secret: RENDER_DEPLOY_HOOK. Add it in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
       - name: Trigger Render Deploy
         run: |
-          curl -s -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}" | head -c 200
+          curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}" --fail-with-body -w "\nHTTP Status: %{http_code}\n"
