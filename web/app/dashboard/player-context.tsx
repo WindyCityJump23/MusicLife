@@ -56,6 +56,7 @@ type PlayerContextValue = {
   sdkReady: boolean;
   sdkPosition: number;
   sdkDuration: number;
+  albumArtUrl: string | null;
 
   playbackError: string | null;
   clearPlaybackError: () => void;
@@ -116,6 +117,7 @@ const PlayerContext = createContext<PlayerContextValue>({
   sdkReady: false,
   sdkPosition: 0,
   sdkDuration: 0,
+  albumArtUrl: null,
   playbackError: null,
   clearPlaybackError: noop,
   playingArtist: null,
@@ -144,6 +146,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [sdkReady, setSdkReady] = useState(false);
   const [sdkPosition, setSdkPosition] = useState(0);
   const [sdkDuration, setSdkDuration] = useState(0);
+  const [albumArtUrl, setAlbumArtUrl] = useState<string | null>(null);
 
   const queueRef = useRef<QueueTrack[]>([]);
   const indexRef = useRef(-1);
@@ -205,9 +208,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         setSdkPosition(state.position);
         setSdkDuration(state.duration);
 
+        const images = state.track_window.current_track?.album?.images;
+        if (images && images.length > 0) {
+          const art = images.find((img) => img.height >= 200 && img.height <= 400) ?? images[0];
+          setAlbumArtUrl(art.url);
+        }
+
         if (modeRef.current !== "embed") return;
 
-        // Sync our queue index to whichever track Spotify is currently playing.
         const currentId = state.track_window.current_track?.id;
         if (currentId) {
           const idx = queueRef.current.findIndex(
@@ -701,6 +709,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         sdkReady,
         sdkPosition,
         sdkDuration,
+        albumArtUrl,
         playbackError,
         clearPlaybackError,
         playingArtist,
