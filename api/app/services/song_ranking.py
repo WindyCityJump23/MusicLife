@@ -951,12 +951,17 @@ def recommend_songs(
         for track in tracks:
             track_name = (track.get("name") or "").strip()
             spotify_tid = (track.get("spotify_track_id") or "").strip()
-            # Prefer spotify_track_id for dedup (unique per recording).
-            # Fall back to name+artist to catch untitled/missing-ID tracks.
-            dedup_key = spotify_tid if spotify_tid else f"{track_name.lower()}|{a_info['name'].lower()}"
-            if dedup_key in seen_songs:
+            # Dedup by both spotify_track_id AND name+artist so the same
+            # song from different releases (single vs album, remaster,
+            # different markets) doesn't appear twice.
+            name_key = f"{track_name.lower()}|{a_info['name'].lower()}"
+            if name_key in seen_songs:
                 continue
-            seen_songs.add(dedup_key)
+            if spotify_tid and spotify_tid in seen_songs:
+                continue
+            seen_songs.add(name_key)
+            if spotify_tid:
+                seen_songs.add(spotify_tid)
 
             track_id = track.get("id")
             track_pop = float(track.get("popularity") or 50) / 100.0
@@ -1150,7 +1155,6 @@ def recommend_songs(
                 "explicit": track.get("explicit") or False,
                 "spotify_track_id": spotify_track_id,
                 "score": round(max(0.0, final_score), 4),
-                "lane": lane,
                 "novelty_score": round(novelty_score, 4),
                 "familiarity_score": round(familiarity_score, 4),
                 "signals": {
@@ -1171,6 +1175,89 @@ def recommend_songs(
 
     # Sort by score
     song_results.sort(key=lambda s: s["score"], reverse=True)
+
+    MIN_RESULTS = 15
+    if genre_filtered and len(song_results) < MIN_RESULTS:
+        print(
+            f"song_ranking: genre-filtered search produced only "
+            f"{len(song_results)} songs — supplementing from full catalog"
+        )
+        full_artists = match_artists(
+            client,
+            query_vector=taste_vector or None,
+            match_count=POOL_SIZE,
+        )
+        supplement_artist_ids_set = {int(a["id"]) for a in full_artists if a.get("id") is not None}
+        existing_artist_ids = {int(r["artist_id"]) for r in song_results if r.get("artist_id")}
+        new_artist_ids = [
+            aid for aid in supplement_artist_ids_set
+            if aid not in existing_artist_ids and aid not in excluded_artist_ids
+        ]
+        if new_artist_ids:
+            supp_tracks = _fetch_tracks_for_artist_ids(client, new_artist_ids[:200])
+            supp_by_artist: dict[int, list[dict]] = {}
+            for t in supp_tracks:
+                aid = t.get("artist_id")
+                if aid is not None:
+                    supp_by_artist.setdefault(int(aid), []).append(t)
+
+            existing_name_keys = {
+                f"{(r.get('track_name') or '').lower()}|{(r.get('artist_name') or '').lower()}"
+                for r in song_results
+            }
+            for aid in new_artist_ids[:200]:
+                if len(song_results) >= limit:
+                    break
+                a_info = artist_scores.get(aid)
+                if not a_info:
+                    for a in full_artists:
+                        if a.get("id") is not None and int(a["id"]) == aid:
+                            a_info = {
+                                "name": a.get("name") or "Unknown",
+                                "genres": list(a.get("genres") or []),
+                                "affinity": 0.0, "affinity_raw": 0.0,
+                                "context": 0.0, "editorial": 0.0,
+                                "base_score": 0.0,
+                                "best_mention": None, "mention_count": 0,
+                                "spotify_artist_id": a.get("spotify_artist_id"),
+                            }
+                            break
+                if not a_info:
+                    continue
+                for track in (supp_by_artist.get(aid) or [])[:2]:
+                    tname = (track.get("name") or "").strip()
+                    name_key = f"{tname.lower()}|{a_info['name'].lower()}"
+                    if name_key in existing_name_keys:
+                        continue
+                    existing_name_keys.add(name_key)
+                    track_pop = float(track.get("popularity") or 50) / 100.0
+                    song_results.append({
+                        "track_id": str(track["id"]) if track.get("id") else None,
+                        "track_name": tname,
+                        "artist_id": str(aid),
+                        "artist_name": a_info["name"],
+                        "album_name": track.get("album_name") or "",
+                        "release_date": track.get("release_date"),
+                        "duration_ms": track.get("duration_ms") or 0,
+                        "explicit": track.get("explicit") or False,
+                        "spotify_track_id": (track.get("spotify_track_id") or "").strip(),
+                        "score": round(max(0.0, track_pop * 0.3), 4),
+                        "lane": "popular",
+                        "novelty_score": 0.8,
+                        "familiarity_score": 0.2,
+                        "signals": {
+                            "affinity": 0.0, "context": 0.0, "editorial": 0.0,
+                            "track_popularity": round(track_pop, 4),
+                            "novelty": 0.8, "familiarity": 0.2,
+                            "track_embedding": False,
+                        },
+                        "genres": a_info["genres"],
+                        "reasons": ["Curated pick"],
+                        "mention_count": 0,
+                        "top_mention": None,
+                    })
+
+        song_results.sort(key=lambda s: s["score"], reverse=True)
 
     # ── Lane-aware diversity re-ranking ──────────────────────────
     # The old path sorted one blended list and let hits crowd out discovery.
@@ -1403,10 +1490,7 @@ def _lane_targets(limit: int) -> dict[str, int]:
 
 
 def _candidate_key(candidate: dict) -> str:
-    spotify_id = candidate.get("spotify_track_id")
-    if spotify_id:
-        return f"spotify:{spotify_id}"
-    return f"{candidate.get('track_name', '')}|{candidate.get('artist_name', '')}".lower()
+    return f"{(candidate.get('track_name') or '')}|{(candidate.get('artist_name') or '')}".lower()
 
 
 def _pick_lane_candidates(
