@@ -274,16 +274,16 @@ def _assign_lane(
     editorial: float,
 ) -> str:
     if track_pop >= 0.72 and not in_library:
-        return "radio_hit"
+        return "radio_hits"
     if track_pop >= 0.48:
         return "popular"
     if track_pop <= 0.35 and not is_library_artist:
-        return "deep_cut"
+        return "deep_cuts"
     if is_library_artist and track_pop > 0.42:
         return "popular"
     if editorial > 0.3:
         return "popular"
-    return "deep_cut"
+    return "deep_cuts"
 
 
 def recommend_songs(
@@ -1271,9 +1271,9 @@ def recommend_songs(
 # Lane quotas as fractions of the total result set.
 # deep_cut gets the largest share — the whole point is discovery.
 _LANE_QUOTAS = {
-    "deep_cut": 0.45,
+    "deep_cuts": 0.45,
     "popular": 0.35,
-    "radio_hit": 0.20,
+    "radio_hits": 0.20,
 }
 
 
@@ -1359,16 +1359,16 @@ def _lane_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
     # Pre-sort each lane's candidates by score
     lane_pools: dict[str, list[dict]] = defaultdict(list)
     for s in pool:
-        lane_pools[s.get("lane", "deep_cut")].append(s)
+        lane_pools[s.get("lane", "deep_cuts")].append(s)
 
     lane_targets = {
         lane: max(1, int(limit * frac))
         for lane, frac in _LANE_QUOTAS.items()
     }
-    # Distribute any rounding remainder to deep_cut
+    # Distribute any rounding remainder to deep_cuts
     assigned = sum(lane_targets.values())
     if assigned < limit:
-        lane_targets["deep_cut"] += limit - assigned
+        lane_targets["deep_cuts"] += limit - assigned
 
     selected: list[dict] = []
     lane_counts: Counter[str] = Counter()
@@ -1380,7 +1380,7 @@ def _lane_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
     MAX_ARTIST_SONGS = 1
 
     # Round-robin across lanes in priority order
-    lane_order = ["deep_cut", "popular", "radio_hit"]
+    lane_order = ["deep_cuts", "popular", "radio_hits"]
     lane_cursors: dict[str, int] = {l: 0 for l in lane_order}
 
     rounds_without_progress = 0
@@ -1462,7 +1462,7 @@ def _lane_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
                 continue
             selected.append(candidate)
             used.add(key)
-            lane_counts[candidate.get("lane", "deep_cut")] += 1
+            lane_counts[candidate.get("lane", "deep_cuts")] += 1
             artist_counts[artist] += 1
 
     # Top-up pass: first preserve one artist per result; only then relax for
