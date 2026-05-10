@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import Sidebar, { type View } from "./sidebar";
 import Player from "./Player";
 import { PlayerProvider, usePlayer } from "./player-context";
+import SetupBanner from "./setup-banner";
 
 const RadioView = dynamic(() => import("./radio-view"), {
   loading: () => <ViewLoading label="Loading radio" />,
@@ -167,6 +168,7 @@ function DashboardInner() {
             <header className="mb-4 lg:mb-6 hidden lg:block">
               <h2 className="text-lg font-semibold tracking-tight">{TITLES[view]}</h2>
             </header>
+            <SetupBanner onSetupComplete={handleSetupComplete} />
             <div className="view-fade-in" key={view}>
               {view === "discover" && <RadioView onNavigate={(v) => setView(v as View)} />}
               {view === "playlists" && <PlaylistsView />}
