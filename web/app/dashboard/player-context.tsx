@@ -259,24 +259,31 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Play a track via SDK (embed mode) ───────────────────────
+  const pendingPlayRef = useRef<string | null>(null);
+
   const playViaSdk = useCallback(
     async (trackId: string) => {
       const devId = sdkDeviceIdRef.current;
-      if (!devId) return;
+      if (!devId) {
+        pendingPlayRef.current = trackId;
+        return;
+      }
+      pendingPlayRef.current = null;
 
       try {
-        // Unlock browser audio context on first user-initiated play
         const player = sdkPlayerRef.current;
         if (player) await player.activateElement();
 
         const tokenRes = await fetch("/api/auth/token", { cache: "no-store" });
-        if (!tokenRes.ok) return;
+        if (!tokenRes.ok) {
+          setPlaybackError("Could not get Spotify token. Try signing out and back in.");
+          return;
+        }
         const { access_token } = await tokenRes.json();
 
         const q = queueRef.current;
         const idx = indexRef.current;
 
-        // If there's a queue, play all tracks from the current position
         const uris =
           q.length > 1
             ? q.map((t) => toSpotifyTrackUri(t.spotifyTrackId))
@@ -295,9 +302,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           }
         );
 
-        if (!res.ok && res.status !== 204) {
+        if (res.status === 403) {
+          setPlaybackError("Spotify Premium is required for in-browser playback.");
+        } else if (!res.ok && res.status !== 204) {
           const err = await res.json().catch(() => ({}));
-          setPlaybackError(err?.error?.message ?? "Playback failed");
+          setPlaybackError(err?.error?.message ?? `Playback failed (${res.status})`);
         }
       } catch {
         setPlaybackError("Could not start playback");
@@ -311,6 +320,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     if (!embedTrackId || modeRef.current !== "embed") return;
     void playViaSdk(embedTrackId);
   }, [embedTrackId, playViaSdk]);
+
+  // When SDK becomes ready, play any pending track
+  useEffect(() => {
+    if (sdkReady && pendingPlayRef.current) {
+      void playViaSdk(pendingPlayRef.current);
+    }
+  }, [sdkReady, playViaSdk]);
 
   // ── Position polling for progress bar ─────────────────────
   useEffect(() => {
