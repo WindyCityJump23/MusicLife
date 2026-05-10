@@ -41,7 +41,7 @@ class Job:
 
 # TTL for finished jobs (10 minutes)
 _TTL_SECONDS = 600
-_STALE_RUNNING_SECONDS = 60 * 60 * 2
+_STALE_RUNNING_SECONDS = 60 * 15
 
 _lock = threading.Lock()
 _jobs: dict[str, Job] = {}
