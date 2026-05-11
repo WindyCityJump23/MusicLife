@@ -274,16 +274,16 @@ def _assign_lane(
     editorial: float,
 ) -> str:
     if track_pop >= 0.72 and not in_library:
-        return "radio_hit"
+        return "radio_hits"
     if track_pop >= 0.48:
         return "popular"
     if track_pop <= 0.35 and not is_library_artist:
-        return "deep_cut"
+        return "deep_cuts"
     if is_library_artist and track_pop > 0.42:
         return "popular"
     if editorial > 0.3:
         return "popular"
-    return "deep_cut"
+    return "deep_cuts"
 
 
 def recommend_songs(
@@ -1176,23 +1176,49 @@ def recommend_songs(
     # Sort by score
     song_results.sort(key=lambda s: s["score"], reverse=True)
 
-    MIN_RESULTS = 15
+    MIN_RESULTS = min(15, limit)
     if genre_filtered and len(song_results) < MIN_RESULTS:
         print(
             f"song_ranking: genre-filtered search produced only "
-            f"{len(song_results)} songs — supplementing from full catalog"
+            f"{len(song_results)} songs — supplementing with genre-matched artists"
         )
-        full_artists = match_artists(
+        # First pass: try to supplement with more genre-matching artists
+        # (wider pool, popularity-ordered instead of taste-ordered).
+        supp_artists = match_artists(
             client,
-            query_vector=taste_vector or None,
+            query_vector=None,
             match_count=POOL_SIZE,
+            genre_tokens=genre_tokens,
         )
-        supplement_artist_ids_set = {int(a["id"]) for a in full_artists if a.get("id") is not None}
+        supplement_artist_ids_set = {int(a["id"]) for a in supp_artists if a.get("id") is not None}
         existing_artist_ids = {int(r["artist_id"]) for r in song_results if r.get("artist_id")}
         new_artist_ids = [
             aid for aid in supplement_artist_ids_set
             if aid not in existing_artist_ids and aid not in excluded_artist_ids
         ]
+        # If genre-matched supplement is still too sparse, fall back to
+        # the full catalog but only accept artists whose genres overlap
+        # with the search tokens.
+        if len(new_artist_ids) < MIN_RESULTS - len(song_results):
+            full_artists = match_artists(
+                client,
+                query_vector=taste_vector or None,
+                match_count=POOL_SIZE,
+            )
+            for a in full_artists:
+                aid = a.get("id")
+                if aid is None:
+                    continue
+                aid_int = int(aid)
+                if aid_int in supplement_artist_ids_set or aid_int in existing_artist_ids:
+                    continue
+                if aid_int in excluded_artist_ids:
+                    continue
+                artist_genres = " ".join(g.lower() for g in (a.get("genres") or []))
+                if any(t in artist_genres for t in genre_tokens):
+                    new_artist_ids.append(aid_int)
+                    supplement_artist_ids_set.add(aid_int)
+            supp_artists = full_artists
         if new_artist_ids:
             supp_tracks = _fetch_tracks_for_artist_ids(client, new_artist_ids[:200])
             supp_by_artist: dict[int, list[dict]] = {}
@@ -1210,7 +1236,7 @@ def recommend_songs(
                     break
                 a_info = artist_scores.get(aid)
                 if not a_info:
-                    for a in full_artists:
+                    for a in supp_artists:
                         if a.get("id") is not None and int(a["id"]) == aid:
                             a_info = {
                                 "name": a.get("name") or "Unknown",
@@ -1271,9 +1297,9 @@ def recommend_songs(
 # Lane quotas as fractions of the total result set.
 # deep_cut gets the largest share — the whole point is discovery.
 _LANE_QUOTAS = {
-    "deep_cut": 0.45,
+    "deep_cuts": 0.45,
     "popular": 0.35,
-    "radio_hit": 0.20,
+    "radio_hits": 0.20,
 }
 
 
@@ -1359,16 +1385,16 @@ def _lane_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
     # Pre-sort each lane's candidates by score
     lane_pools: dict[str, list[dict]] = defaultdict(list)
     for s in pool:
-        lane_pools[s.get("lane", "deep_cut")].append(s)
+        lane_pools[s.get("lane", "deep_cuts")].append(s)
 
     lane_targets = {
         lane: max(1, int(limit * frac))
         for lane, frac in _LANE_QUOTAS.items()
     }
-    # Distribute any rounding remainder to deep_cut
+    # Distribute any rounding remainder to deep_cuts
     assigned = sum(lane_targets.values())
     if assigned < limit:
-        lane_targets["deep_cut"] += limit - assigned
+        lane_targets["deep_cuts"] += limit - assigned
 
     selected: list[dict] = []
     lane_counts: Counter[str] = Counter()
@@ -1380,7 +1406,7 @@ def _lane_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
     MAX_ARTIST_SONGS = 1
 
     # Round-robin across lanes in priority order
-    lane_order = ["deep_cut", "popular", "radio_hit"]
+    lane_order = ["deep_cuts", "popular", "radio_hits"]
     lane_cursors: dict[str, int] = {l: 0 for l in lane_order}
 
     rounds_without_progress = 0
@@ -1462,7 +1488,7 @@ def _lane_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
                 continue
             selected.append(candidate)
             used.add(key)
-            lane_counts[candidate.get("lane", "deep_cut")] += 1
+            lane_counts[candidate.get("lane", "deep_cuts")] += 1
             artist_counts[artist] += 1
 
     # Top-up pass: first preserve one artist per result; only then relax for
@@ -1600,7 +1626,7 @@ def _lane_aware_rerank(scored: list[dict], limit: int) -> list[dict]:
                 used,
                 artist_counts,
                 genre_counts,
-                strict_artist_cap=max(initial_cap, 2),
+                strict_artist_cap=initial_cap,
             )
         )
 
@@ -1612,10 +1638,12 @@ def _lane_aware_rerank(scored: list[dict], limit: int) -> list[dict]:
                 used,
                 artist_counts,
                 genre_counts,
-                strict_artist_cap=2,
+                strict_artist_cap=initial_cap,
             )
         )
 
+    # Last resort: relax artist cap only when unique artists are genuinely
+    # exhausted — allows duplicates rather than returning fewer results.
     if len(selected) < limit:
         selected.extend(
             _pick_lane_candidates(

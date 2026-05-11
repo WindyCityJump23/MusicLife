@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routes import ingest, recommend, synthesize
+from app.routes import diagnostics, ingest, recommend, synthesize
 from app.startup_check import run_checks
 
 run_checks()
@@ -30,6 +30,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(diagnostics.router, prefix="/diagnostics", tags=["diagnostics"])
 app.include_router(ingest.router, prefix="/ingest", tags=["ingest"])
 app.include_router(recommend.router, prefix="/recommend", tags=["recommend"])
 app.include_router(synthesize.router, prefix="/synthesize", tags=["synthesize"])
