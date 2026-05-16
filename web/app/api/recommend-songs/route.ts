@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 25;
+export const maxDuration = 55;
 
 /**
  * POST /api/recommend-songs

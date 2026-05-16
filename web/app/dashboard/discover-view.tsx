@@ -417,6 +417,7 @@ export default function DiscoverView({
       let interpretedPrompt = prompt.trim();
 
       // Attempt 1: Server-side song recommendations (uses tracks in DB)
+      let dbError: string | null = null;
       try {
         const songRes = await fetch(`/api/recommend-songs`, {
           method: "POST",
@@ -428,7 +429,7 @@ export default function DiscoverView({
             exclude_library: true,
             discover_run_id: crypto.randomUUID(),
             exclude_previously_shown: true,
-            history_window_runs: 50,
+            history_window_runs: 15,
             max_allowed_overlap: 0,
             novelty_mode: "strict",
           }),
@@ -474,6 +475,7 @@ export default function DiscoverView({
           }));
         }
       } catch (e) {
+        dbError = e instanceof Error ? e.message : "Request timed out";
         console.warn("recommend-songs failed, falling back to Spotify search:", e);
       }
 
@@ -506,6 +508,11 @@ export default function DiscoverView({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const artists: any[] = artistData.results ?? [];
         if (artists.length === 0 && deduped.length === 0) {
+          if (dbError) {
+            setError(`Could not load recommendations (${dbError}). Please try again.`);
+          } else {
+            setError("No recommendations found. Try a different search or adjust your weights.");
+          }
           setResults([]);
           return;
         }
@@ -620,6 +627,13 @@ export default function DiscoverView({
         }
       }
 
+      if (deduped.length === 0) {
+        setError(
+          dbError
+            ? `Could not load recommendations (${dbError}). Please try again.`
+            : "No recommendations found — try a different search or adjust your weights."
+        );
+      }
       const finalResults = spreadArtistsForDisplay(deduped, TARGET_SONGS);
 
       setResults(finalResults);
