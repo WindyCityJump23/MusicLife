@@ -195,6 +195,39 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
     except Exception:
         pass  # table may not exist yet
 
+    # ── Favorites signal ──────────────────────────────────────────
+    # Favorited tracks are an explicit positive preference signal.
+    # Each favorite adds weight equivalent to a thumbs-up (+15).
+    try:
+        fav_resp = (
+            client.table("user_favorites")
+            .select("track_id")
+            .eq("user_id", user_id)
+            .range(0, 9999)
+            .execute()
+        )
+        fav_track_ids = [
+            row.get("track_id")
+            for row in (fav_resp.data or [])
+            if row.get("track_id") is not None
+        ]
+        if fav_track_ids:
+            fav_tracks_resp = (
+                client.table("tracks")
+                .select("id,artist_id")
+                .in_("id", fav_track_ids)
+                .range(0, 9999)
+                .execute()
+            )
+            for row in (fav_tracks_resp.data or []):
+                aid = row.get("artist_id")
+                if aid is not None:
+                    artist_weights[int(aid)] = (
+                        artist_weights.get(int(aid), 0) + 15.0
+                    )
+    except Exception:
+        pass  # table may not exist yet
+
     return dict(artist_weights)
 
 
