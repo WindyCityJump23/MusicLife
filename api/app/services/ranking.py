@@ -97,7 +97,7 @@ def _percentile_rank(values: list[float]) -> list[float]:
 def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
     tracks_resp = (
         client.table("user_tracks")
-        .select("track_id,play_count,last_played_at")
+        .select("track_id,play_count,last_played_at,added_at")
         .eq("user_id", user_id)
         .range(0, 9999)
         .execute()
@@ -132,11 +132,15 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
             play_count = row.get("play_count") or 0
             weight = float(play_count if play_count > 0 else 1)
 
-            last_played_at = row.get("last_played_at")
-            if last_played_at:
+            # Apply recency decay: prefer last_played_at (actual listen),
+            # fall back to added_at (when user saved the track to Liked Songs).
+            # This ensures tracks with no play data still get differentiated
+            # by how recently they were added to the library.
+            recency_ts = row.get("last_played_at") or row.get("added_at")
+            if recency_ts:
                 try:
-                    lp = datetime.fromisoformat(last_played_at.replace("Z", "+00:00"))
-                    days_since = max((now - lp).days, 0)
+                    ts = datetime.fromisoformat(recency_ts.replace("Z", "+00:00"))
+                    days_since = max((now - ts).days, 0)
                     weight *= max(0.1, 1.0 - (days_since / 365))
                 except ValueError:
                     pass  # malformed timestamp — keep weight as-is

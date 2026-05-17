@@ -387,7 +387,7 @@ def recommend_songs(
     while True:
         _ut_resp = (
             client.table("user_tracks")
-            .select("track_id,play_count,last_played_at")
+            .select("track_id,play_count,last_played_at,added_at")
             .eq("user_id", user_id)
             .range(_ut_offset, _ut_offset + _ut_page - 1)
             .execute()
@@ -405,11 +405,27 @@ def recommend_songs(
     _AUDIO_FEATS = ("energy", "danceability", "valence", "acousticness", "instrumentalness")
     user_audio_pref: dict[str, float] | None = None
     if user_track_map:
-        # Sort by play_count descending so the most-listened tracks dominate
-        # the weighted average — not just the first 300 rows the DB returned.
+        # Sort by effective weight: play_count when available, otherwise
+        # recency of added_at so recently-liked tracks with no play data
+        # still contribute meaningfully to the audio profile.
+        def _effective_weight(tid: int) -> float:
+            _e = user_track_map[tid]
+            _pc = _e.get("play_count") or 0
+            if _pc > 0:
+                return float(_pc)
+            _added = _e.get("added_at")
+            if _added:
+                try:
+                    _a_dt = datetime.fromisoformat(_added.replace("Z", "+00:00"))
+                    _days = max((now - _a_dt).days, 0)
+                    return max(0.1, 1.0 - (_days / 365))
+                except (ValueError, AttributeError):
+                    pass
+            return 1.0
+
         _audio_ids = sorted(
             user_track_map.keys(),
-            key=lambda tid: (user_track_map[tid].get("play_count") or 0),
+            key=_effective_weight,
             reverse=True,
         )[:300]
         try:
@@ -423,8 +439,7 @@ def recommend_songs(
             _feat_weight = 0.0
             for _t in (_audio_resp.data or []):
                 _tid = _t.get("id")
-                _entry = user_track_map.get(_tid) or {}
-                _play = max(float(_entry.get("play_count") or 1), 1.0)
+                _play = max(_effective_weight(_tid), 0.1)
                 _has_feat = False
                 for _feat in _AUDIO_FEATS:
                     _v = _t.get(_feat)
@@ -1043,12 +1058,13 @@ def recommend_songs(
             if in_library:
                 # Time-decay: a track not played in 6+ months is a rediscovery,
                 # not a repeat. Penalty relaxes from 0.45 (recent) → 0.80 (stale).
+                # Falls back to added_at when no play data exists.
                 _entry = user_track_map.get(track_id) or {}
                 _staleness = 1.0
-                _lp = _entry.get("last_played_at")
-                if _lp:
+                _recency_ts = _entry.get("last_played_at") or _entry.get("added_at")
+                if _recency_ts:
                     try:
-                        _lp_dt = datetime.fromisoformat(_lp.replace("Z", "+00:00"))
+                        _lp_dt = datetime.fromisoformat(_recency_ts.replace("Z", "+00:00"))
                         _days_since = max((now - _lp_dt).days, 0)
                         _staleness = max(0.0, 1.0 - _days_since / 180)
                     except (ValueError, AttributeError):
