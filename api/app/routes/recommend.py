@@ -2,6 +2,7 @@
 The taste model.
 """
 import random as _std_random
+import time as _time
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends
@@ -130,8 +131,14 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
     attempts = 0
     run_id = req.discover_run_id or str(uuid4())
     overlap = 0.0
+    _start_time = _time.monotonic()
+    _TIME_BUDGET_SEC = 40.0
 
     for attempt in range(5):
+        if _time.monotonic() - _start_time > _TIME_BUDGET_SEC:
+            print(f"recommend_songs: time budget exhausted after {attempts} attempts, returning best_results ({len(best_results)} tracks)")
+            break
+
         attempts = attempt + 1
         local_excluded_tracks = excluded_track_ids
         local_excluded_artists = excluded_artist_ids
@@ -139,6 +146,10 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
         if not query_intent and req.novelty_mode == "graceful" and attempt >= 2:
             local_excluded_tracks = build_excluded_track_ids(history_rows, older_than_days=30)
             local_excluded_artists = build_excluded_artist_ids(history_rows, older_than_days=30)
+
+        if attempt >= 1 and len(best_results) == 0:
+            local_excluded_artists = set()
+            local_excluded_tracks = build_excluded_track_ids(history_rows, older_than_days=3)
 
         attempt_results = _recommend_songs(
             client=user_client,

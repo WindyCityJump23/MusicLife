@@ -551,6 +551,11 @@ def recommend_songs(
             f"song_ranking: hard-excluding {len(excluded_artist_ids)} recent artists; "
             f"{non_recent_artist_count} alternatives available"
         )
+    elif excluded_artist_ids and not has_explicit_prompt and non_recent_artist_count < max(limit * 3, 30):
+        print(
+            f"song_ranking: skipping hard-exclude — only {non_recent_artist_count} "
+            f"non-recent artists available (need {max(limit * 3, 30)}); using soft penalty instead"
+        )
 
     raw_affinities: list[tuple[dict, float]] = []
     for a in all_artists:
