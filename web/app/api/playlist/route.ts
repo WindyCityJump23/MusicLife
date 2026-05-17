@@ -184,7 +184,7 @@ export async function POST(request: NextRequest) {
   for (let i = 0; i < trackUris.length; i += 100) {
     const batch = trackUris.slice(i, i + 100);
     const addRes = await fetch(
-      `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
+      `https://api.spotify.com/v1/playlists/${playlistId}/items`,
       {
         method: "POST",
         headers,

@@ -104,6 +104,7 @@ type PlaylistCreateResponse = {
   playlist_id?: string;
   playlist_name?: string;
   add_tracks_client_side?: boolean;
+  server_add_error?: string;
   track_uris?: string[];
   tracks_added?: number;
   tracks_failed?: string[];
@@ -431,7 +432,7 @@ async function addSpotifyPlaylistTracksFromBrowser(
   const failed: string[] = [];
 
   async function addBatch(batch: string[]) {
-    return fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks`, {
+    return fetch(`https://api.spotify.com/v1/playlists/${playlistId}/items`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -475,6 +476,20 @@ async function addSpotifyPlaylistTracksFromBrowser(
     added: trackUris.length - failed.length,
     failed,
   };
+}
+
+async function removeSpotifyPlaylistFromBrowser(playlistId: string): Promise<boolean> {
+  if (!playlistId) return false;
+  try {
+    const accessToken = await getBrowserSpotifyToken();
+    const res = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/followers`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 function chooseFallbackTracks(tracks: any[]): any[] { // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -909,12 +924,17 @@ export default function DiscoverView({
           added = clientAdd.added;
           failed = clientAdd.failed;
         } catch (addErr) {
+          const removedEmptyPlaylist = await removeSpotifyPlaylistFromBrowser(data.playlist_id);
           setPlaylistState("error");
-          setPlaylistUrl(data.playlist_url ?? null);
-          setPlaylistError(
+          setPlaylistUrl(removedEmptyPlaylist ? null : data.playlist_url ?? null);
+          const baseMessage =
             addErr instanceof Error
-              ? `Playlist was created, but tracks could not be added: ${addErr.message}`
-              : "Playlist was created, but tracks could not be added."
+              ? addErr.message
+              : data.server_add_error || "Spotify refused the playlist item update.";
+          setPlaylistError(
+            removedEmptyPlaylist
+              ? `Spotify refused adding tracks, so the empty playlist was removed. ${baseMessage}`
+              : `Playlist was created, but tracks could not be added. ${baseMessage}`
           );
           return;
         }
@@ -1177,7 +1197,12 @@ export default function DiscoverView({
           {/* Playlist error banner */}
           {playlistState === "error" && playlistError && (
             <div className="border border-red-200 bg-red-50 rounded-lg p-3 flex items-center gap-2">
-              <span className="text-sm">\u26a0\ufe0f</span>
+              <span
+                aria-hidden="true"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-red-300 text-[11px] font-semibold text-red-600"
+              >
+                !
+              </span>
               <p className="text-sm text-red-700 flex-1">{playlistError}</p>
               {playlistUrl && (
                 <a
@@ -1196,7 +1221,7 @@ export default function DiscoverView({
                 }}
                 className="text-xs text-red-400 hover:text-red-600"
               >
-                \u2715
+                x
               </button>
             </div>
           )}

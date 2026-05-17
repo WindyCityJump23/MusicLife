@@ -136,18 +136,66 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Spotify Dev Mode can reject server-side playlist item mutation even when
-  // playlist creation succeeds. Return the playlist and exact URIs so the
-  // dashboard can add tracks directly from the browser with the same OAuth
-  // token path used for search and playback.
+  // ── Add tracks to the playlist (max 100 per request) ───────
+  const failed: string[] = [];
+  for (let i = 0; i < trackUris.length; i += 100) {
+    const batch = trackUris.slice(i, i + 100);
+    const addRes = await fetch(
+      `https://api.spotify.com/v1/playlists/${playlistId}/items`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ uris: batch }),
+      }
+    );
+
+    if (!addRes.ok) {
+      const err = await addRes.json().catch(() => ({}));
+      console.error(
+        `[playlist-from-tracks] Batch add failed HTTP ${addRes.status}:`,
+        JSON.stringify(err)
+      );
+
+      if (addRes.status === 401) {
+        return NextResponse.json(
+          { error: "Spotify session expired — please sign out and sign back in." },
+          { status: 401 }
+        );
+      }
+
+      // Some Spotify development-mode restrictions surface differently by
+      // runtime. If the server cannot add items, return the created playlist
+      // and exact URIs so the dashboard can retry from the browser.
+      if (addRes.status === 403) {
+        return NextResponse.json({
+          ok: true,
+          playlist_url: playlistUrl,
+          playlist_id: playlistId,
+          playlist_name: playlistName,
+          add_tracks_client_side: true,
+          server_add_error: err?.error?.message || "Forbidden",
+          track_uris: trackUris,
+          tracks_added: 0,
+          tracks_failed: [],
+        });
+      }
+
+      for (const uri of batch) {
+        failed.push(uri.replace("spotify:track:", ""));
+      }
+    }
+  }
+
+  const tracksAdded = trackUris.length - failed.length;
+
   return NextResponse.json({
     ok: true,
     playlist_url: playlistUrl,
     playlist_id: playlistId,
     playlist_name: playlistName,
-    add_tracks_client_side: true,
+    add_tracks_client_side: false,
     track_uris: trackUris,
-    tracks_added: 0,
-    tracks_failed: [],
+    tracks_added: tracksAdded,
+    tracks_failed: failed,
   });
 }
