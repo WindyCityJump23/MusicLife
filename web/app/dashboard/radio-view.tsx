@@ -93,9 +93,8 @@ export default function RadioView({
   }
 
   return (
-    <div className="max-w-none space-y-5">
-      <RadioHero readiness={readiness} />
-      <DiscoverView onNavigate={onNavigate} />
+    <div className="max-w-none">
+      <DiscoverView onNavigate={onNavigate} readiness={readiness} />
     </div>
   );
 }
@@ -119,35 +118,6 @@ function RadioLoading() {
         ))}
       </div>
     </div>
-  );
-}
-
-function RadioHero({ readiness }: { readiness: RadioReadiness }) {
-  return (
-    <section className="rounded-lg border border-neutral-200 bg-neutral-950 text-white overflow-hidden">
-      <div className="p-5 sm:p-6 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
-          <div>
-            <p className="text-[10px] uppercase tracking-[0.24em] text-emerald-300 font-bold">
-              MusicLife Radio
-            </p>
-            <h3 className="mt-2 text-2xl sm:text-3xl font-semibold tracking-tight">
-              Start with radio. Save the full playlist when it clicks.
-            </h3>
-            <p className="mt-2 text-sm text-white/60 max-w-xl leading-relaxed">
-              Tune a station from your taste, a mood, or current music buzz.
-              The song queue below can play like radio or become a Spotify
-              playlist.
-            </p>
-          </div>
-          <div className="grid grid-cols-3 gap-2 text-center shrink-0">
-            <Metric value={readiness.artistCount} label="artists" />
-            <Metric value={readiness.embeddedCount} label="modeled" />
-            <Metric value={readiness.playableTrackCount} label="tracks" />
-          </div>
-        </div>
-      </div>
-    </section>
   );
 }
 
@@ -214,17 +184,6 @@ function RadioSetupGate({
         </div>
       </div>
     </section>
-  );
-}
-
-function Metric({ value, label }: { value: number; label: string }) {
-  return (
-    <div className="rounded-md bg-white/8 border border-white/10 px-3 py-2 min-w-[72px]">
-      <div className="text-sm font-semibold tabular-nums">
-        {value.toLocaleString()}
-      </div>
-      <div className="text-[10px] text-white/40">{label}</div>
-    </div>
   );
 }
 

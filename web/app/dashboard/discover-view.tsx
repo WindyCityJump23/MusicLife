@@ -50,6 +50,14 @@ type DiscoveryLane = {
   subtitle: string;
 };
 
+type LaneFilterId = "all" | DiscoveryLaneId;
+
+type RadioReadinessSummary = {
+  artistCount: number;
+  embeddedCount: number;
+  playableTrackCount: number;
+};
+
 function emptyDiscoveryGroups(): Record<DiscoveryLaneId, SongRecommendation[]> {
   return {
     radio_hits: [],
@@ -82,6 +90,13 @@ const DISCOVERY_LANES: DiscoveryLane[] = [
     title: "Deep cuts / indie",
     subtitle: "Lower-popularity finds",
   },
+];
+
+const LANE_FILTERS: Array<{ id: LaneFilterId; label: string }> = [
+  { id: "all", label: "All" },
+  { id: "deep_cuts", label: "Deep cuts" },
+  { id: "popular", label: "Popular" },
+  { id: "radio_hits", label: "Radio hits" },
 ];
 
 const TARGET_SONGS = 25;
@@ -333,6 +348,48 @@ function interleaveForPlayback(songs: SongRecommendation[]): SongRecommendation[
   }
 
   return mixed;
+}
+
+function activePresetLabel(weights: Preset["weights"]): string {
+  return PRESETS.find((preset) => sameWeights(preset.weights, weights))?.label ?? "Custom";
+}
+
+function isLiveSourced(song: SongRecommendation): boolean {
+  const reasons = song.reasons.join(" ").toLowerCase();
+  return (
+    song.track_id === null ||
+    song.artist_id.startsWith("live:") ||
+    reasons.includes("live spotify") ||
+    reasons.includes("outside catalog") ||
+    reasons.includes("prompt expansion") ||
+    reasons.includes("mood expansion")
+  );
+}
+
+function laneLabel(lane: LaneFilterId): string {
+  if (lane === "all") return "All";
+  return DISCOVERY_LANES.find((item) => item.id === lane)?.title ?? "All";
+}
+
+function stationMixSummary(
+  songs: SongRecommendation[],
+  prompt: string,
+  weights: Preset["weights"]
+) {
+  const groups = groupSongsByLane(songs);
+  const liveCount = songs.filter(isLiveSourced).length;
+  return {
+    total: songs.length,
+    liveCount,
+    catalogCount: Math.max(0, songs.length - liveCount),
+    promptLabel: prompt.trim() || "Taste radio",
+    presetLabel: activePresetLabel(weights),
+    laneCounts: {
+      deep_cuts: groups.deep_cuts.length,
+      popular: groups.popular.length,
+      radio_hits: groups.radio_hits.length,
+    },
+  };
 }
 
 function trackIdentity(song: SongRecommendation): string {
@@ -682,8 +739,10 @@ function mergeCandidateSongs(
 
 export default function DiscoverView({
   onNavigate,
+  readiness,
 }: {
   onNavigate?: (view: string) => void;
+  readiness?: RadioReadinessSummary;
 }) {
   const { setQueue, playFromQueue } = usePlayer();
   const [prompt, setPrompt] = useState("");
@@ -693,6 +752,7 @@ export default function DiscoverView({
   const [loading, setLoading] = useState(false);
   const [loadingStage, setLoadingStage] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  const [laneFilter, setLaneFilter] = useState<LaneFilterId>("all");
   const [genreFilter, setGenreFilter] = useState<string>("");
   const [favoritedIds, setFavoritedIds] = useState<Set<string>>(new Set());
   const [feedbackMap, setFeedbackMap] = useState<Record<string, 1 | -1>>({});
@@ -742,6 +802,8 @@ export default function DiscoverView({
   async function handleSubmit() {
     setLoading(true);
     setError(null);
+    setLaneFilter("all");
+    setGenreFilter("");
     setPlayAllState("idle");
     setPlaylistState("idle");
     setPlaylistUrl(null);
@@ -1138,56 +1200,113 @@ export default function DiscoverView({
     }
   }
 
+  const queueSongs = results ? interleaveForPlayback(results) : [];
+  const allGenres = results
+    ? Array.from(new Set(results.flatMap((r) => r.genres.map((g) => g.toLowerCase())))).sort()
+    : [];
+  const laneSongs =
+    laneFilter === "all"
+      ? queueSongs
+      : queueSongs.filter((song) => laneForSong(song) === laneFilter);
+  const displayed = genreFilter
+    ? laneSongs.filter((r) => r.genres.some((g) => g.toLowerCase() === genreFilter))
+    : laneSongs;
+  const playableCount = displayed.filter((s) => s.spotify_track_id).length;
+  const mix = results ? stationMixSummary(results, prompt, weights) : null;
+
   return (
-    <div className="max-w-6xl space-y-5">
-      {/* Search */}
-      <div className="space-y-2">
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-            placeholder="Describe a sound, scene, mood, or reference..."
-            className="flex-1 px-4 py-2.5 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 placeholder:text-neutral-400"
-          />
-          <button
-            onClick={handleSubmit}
-            disabled={loading}
-            className="px-5 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap flex items-center gap-2"
-          >
-            {loading ? (
-              <>
-                <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
-                  <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
-                </svg>
-                {loadingStage || "Finding\u2026"}
-              </>
-            ) : results ? (
-              <>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M23 4v6h-6" />
-                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-                </svg>
-                Refresh
-              </>
-            ) : (
-              "Discover"
+    <div className="max-w-6xl space-y-4">
+      <section className="overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-sm shadow-neutral-100/70">
+        <div className="border-b border-neutral-100 bg-neutral-50/70 px-4 py-3 sm:px-5">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-emerald-600">
+                MusicLife Radio
+              </p>
+              <h3 className="mt-1 text-xl font-semibold tracking-tight text-neutral-950">
+                Tune a station, then listen in order.
+              </h3>
+              <p className="mt-1 max-w-2xl text-xs leading-relaxed text-neutral-500">
+                Build a queue from your taste, live Spotify search, and current music context.
+              </p>
+            </div>
+            {readiness && (
+              <div className="grid grid-cols-3 gap-2 text-center sm:min-w-[280px]">
+                <StationMetric value={readiness.artistCount} label="artists" />
+                <StationMetric value={readiness.embeddedCount} label="modeled" />
+                <StationMetric value={readiness.playableTrackCount} label="tracks" />
+              </div>
             )}
-          </button>
+          </div>
         </div>
 
-        {/* Mode presets + advanced toggle */}
-        <div className="space-y-2">
-          <div className="flex flex-wrap gap-1.5 items-center">
+        <div className="space-y-3 p-4 sm:p-5">
+          <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto]">
+            <input
+              type="text"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+              placeholder="Describe a sound, scene, mood, or reference..."
+              className="min-h-[42px] w-full rounded-lg border border-neutral-200 px-4 py-2.5 text-sm placeholder:text-neutral-400 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            />
+            <div className="grid grid-cols-2 gap-2 sm:flex">
+              <button
+                onClick={handleSubmit}
+                disabled={loading}
+                className="inline-flex min-h-[42px] items-center justify-center gap-2 rounded-lg bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {loading ? (
+                  <>
+                    <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
+                      <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
+                    </svg>
+                    {loadingStage || "Finding..."}
+                  </>
+                ) : results ? (
+                  "Retune"
+                ) : (
+                  "Discover"
+                )}
+              </button>
+              <button
+                onClick={() => void handlePlayAll(displayed)}
+                disabled={playAllState === "loading" || playableCount === 0}
+                className="inline-flex min-h-[42px] items-center justify-center gap-2 rounded-lg border border-neutral-200 bg-white px-4 py-2.5 text-sm font-medium text-neutral-800 transition-all hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-40"
+                title={
+                  playableCount > 0
+                    ? `Play ${playableCount} songs from this station view`
+                    : "No playable Spotify tracks in this view"
+                }
+              >
+                {playAllState === "loading" ? (
+                  <svg className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
+                    <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
+                  </svg>
+                ) : (
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                )}
+                {playAllState === "loading" ? "Starting" : "Play station"}
+              </button>
+              <div className="col-span-2 sm:col-span-1">
+                <SavePlaylistButton
+                  state={playlistState}
+                  count={results?.length ?? 0}
+                  onSave={handleSavePlaylist}
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
             {PRESETS.map((p) => {
               const isSearchMode = p.label === "Match Search";
               const unavailable = isSearchMode && !prompt;
-              const active =
-                weights.affinity === p.weights.affinity &&
-                weights.context === p.weights.context &&
-                weights.editorial === p.weights.editorial;
+              const active = sameWeights(weights, p.weights);
               return (
                 <button
                   key={p.label}
@@ -1195,12 +1314,12 @@ export default function DiscoverView({
                   disabled={unavailable}
                   title={unavailable ? "Enter a search prompt above to use this mode" : p.desc}
                   className={[
-                    "px-2.5 py-1 rounded-full text-[11px] font-medium border transition-colors",
+                    "rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
                     active
-                      ? "bg-emerald-500 border-emerald-500 text-white"
+                      ? "border-neutral-900 bg-neutral-900 text-white"
                       : unavailable
-                      ? "border-neutral-200 text-neutral-300 cursor-not-allowed bg-white"
-                      : "border-neutral-200 text-neutral-600 hover:border-emerald-300 hover:text-emerald-700 bg-white",
+                      ? "cursor-not-allowed border-neutral-200 bg-white text-neutral-300"
+                      : "border-neutral-200 bg-white text-neutral-600 hover:border-emerald-300 hover:text-emerald-700",
                   ].join(" ")}
                 >
                   {p.label}
@@ -1211,13 +1330,13 @@ export default function DiscoverView({
               onClick={() => setShowAdvanced(!showAdvanced)}
               className="ml-auto text-[11px] text-neutral-400 hover:text-neutral-600"
             >
-              {showAdvanced ? "\u25be Hide sliders" : "\u25b8 Fine-tune"}
+              {showAdvanced ? "Hide sliders" : "Fine-tune"}
             </button>
           </div>
 
           {showAdvanced && (
-            <div className="space-y-3 pt-1 pb-1 px-3 border border-neutral-100 rounded-lg bg-neutral-50/60">
-              <div className="grid grid-cols-3 gap-4 pt-2">
+            <div className="space-y-3 rounded-lg border border-neutral-100 bg-neutral-50/60 px-3 pb-3 pt-2">
+              <div className="grid gap-4 sm:grid-cols-3">
                 <WeightSlider
                   label="Taste"
                   hint="Similarity to your saved listening history"
@@ -1226,25 +1345,25 @@ export default function DiscoverView({
                 />
                 <WeightSlider
                   label="Search Match"
-                  hint={prompt ? "How closely songs match your typed prompt" : "Enter a prompt above \u2014 this signal is inactive without one"}
+                  hint={prompt ? "How closely songs match your typed prompt" : "Enter a prompt above; this signal is inactive without one"}
                   value={weights.context}
                   dimmed={!prompt}
                   onChange={(v) => setWeights({ ...weights, context: v })}
                 />
                 <WeightSlider
                   label="Buzz"
-                  hint="Artists with recent press coverage (last 45 days)"
+                  hint="Artists with recent press coverage"
                   value={weights.editorial}
                   onChange={(v) => setWeights({ ...weights, editorial: v })}
                 />
               </div>
-              <p className="text-[10px] text-neutral-400 leading-relaxed pb-2">
-                Results shuffle each time you hit Discover. Songs you&apos;ve already saved are ranked lower.
+              <p className="text-[10px] leading-relaxed text-neutral-400">
+                Retuning reshuffles the station. Songs you already saved are ranked lower.
               </p>
             </div>
           )}
         </div>
-      </div>
+      </section>
 
       {/* Loading stage indicator */}
       {loading && loadingStage && (
@@ -1276,73 +1395,14 @@ export default function DiscoverView({
       ) : results !== null && results.length === 0 && !error ? (
         <EmptyNoResults />
       ) : results !== null && results.length > 0 ? (
-        (() => {
-          // Collect unique genres for filter
-          const allGenres = Array.from(new Set(results.flatMap((r) => r.genres.map((g) => g.toLowerCase())))).sort();
-          const displayed = genreFilter
-            ? results.filter((r) => r.genres.some((g) => g.toLowerCase() === genreFilter))
-            : results;
-          const grouped = groupSongsByLane(displayed);
-          const mixedPlayback = interleaveForPlayback(displayed);
-          const playableCount = mixedPlayback.filter((s) => s.spotify_track_id).length;
-          return (
         <div className="space-y-3">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-3">
-              <p className="text-xs text-neutral-400">
-                {displayed.length} song{displayed.length !== 1 ? "s" : ""}{genreFilter ? ` in ${genreFilter}` : " recommended"}
-              </p>
-              {allGenres.length > 1 && (
-                <select
-                  value={genreFilter}
-                  onChange={(e) => setGenreFilter(e.target.value)}
-                  className="text-xs border border-neutral-200 rounded-lg px-3 py-1.5 bg-white text-neutral-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 min-h-[32px]"
-                  aria-label="Filter by genre"
-                >
-                  <option value="">All genres</option>
-                  {allGenres.map((g) => (
-                    <option key={g} value={g}>{g}</option>
-                  ))}
-                </select>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => void handlePlayAll(mixedPlayback)}
-                disabled={playAllState === "loading" || playableCount === 0}
-                className="flex items-center gap-1.5 px-3 py-1.5 min-h-[32px] rounded-lg bg-neutral-900 text-white text-xs font-medium hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                title={
-                  playableCount > 0
-                    ? `Play ${playableCount} songs as a balanced queue`
-                    : "No playable Spotify tracks in this view"
-                }
-              >
-                {playAllState === "loading" ? (
-                  <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
-                    <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
-                  </svg>
-                ) : (
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                )}
-                {playAllState === "loading" ? "Starting" : "Play all"}
-              </button>
-              <SavePlaylistButton
-                state={playlistState}
-                count={results.length}
-                onSave={handleSavePlaylist}
-              />
-            </div>
-          </div>
+          {mix && <StationMixStrip mix={mix} />}
 
           {/* Playlist success banner */}
           {playlistState === "done" && playlistUrl && (
-            <div className="border border-emerald-200 bg-emerald-50 rounded-lg p-3 flex items-center gap-3">
-              <span className="text-lg">\ud83c\udf89</span>
+            <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-emerald-800">
+                <p className="text-xs font-medium text-emerald-800">
                   Playlist created!
                   {playlistStats && (
                     <span className="font-normal text-emerald-600">
@@ -1380,14 +1440,14 @@ export default function DiscoverView({
 
           {/* Playlist error banner */}
           {playlistState === "error" && playlistError && (
-            <div className="border border-red-200 bg-red-50 rounded-lg p-3 flex items-center gap-2">
+            <div className="border border-red-200 bg-red-50 rounded-lg px-3 py-2 flex items-center gap-2">
               <span
                 aria-hidden="true"
                 className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-red-300 text-[11px] font-semibold text-red-600"
               >
                 !
               </span>
-              <p className="text-sm text-red-700 flex-1">{playlistError}</p>
+              <p className="text-xs text-red-700 flex-1">{playlistError}</p>
               {playlistUrl && (
                 <a
                   href={playlistUrl}
@@ -1410,25 +1470,168 @@ export default function DiscoverView({
             </div>
           )}
 
-          <div className="grid gap-4 2xl:grid-cols-3">
-            {DISCOVERY_LANES.map((lane) => (
-              <DiscoveryColumn
-                key={lane.id}
-                lane={lane}
-                songs={grouped[lane.id]}
-                favoritedIds={favoritedIds}
-                feedbackMap={feedbackMap}
-                currentPrompt={prompt}
-                onPlayColumn={(songs) => {
-                  void playSongs(songs);
-                }}
-              />
-            ))}
-          </div>
+          <section className="overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-sm shadow-neutral-100/70">
+            <div className="flex flex-col gap-3 border-b border-neutral-100 bg-neutral-50/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-semibold text-neutral-950">Station Queue</h3>
+                  <span className="rounded-full bg-white px-2 py-0.5 text-[11px] tabular-nums text-neutral-500 ring-1 ring-neutral-200">
+                    {displayed.length}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-xs text-neutral-500">
+                  {laneLabel(laneFilter)}
+                  {genreFilter ? `, ${genreFilter}` : ""} in play order
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5">
+                  {LANE_FILTERS.map((filter) => (
+                    <button
+                      key={filter.id}
+                      onClick={() => setLaneFilter(filter.id)}
+                      className={[
+                        "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+                        laneFilter === filter.id
+                          ? "bg-neutral-900 text-white"
+                          : "text-neutral-500 hover:bg-neutral-50 hover:text-neutral-800",
+                      ].join(" ")}
+                    >
+                      {filter.label}
+                    </button>
+                  ))}
+                </div>
+                {allGenres.length > 1 && (
+                  <select
+                    value={genreFilter}
+                    onChange={(e) => setGenreFilter(e.target.value)}
+                    className="min-h-[32px] rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs text-neutral-600 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    aria-label="Filter by genre"
+                  >
+                    <option value="">All genres</option>
+                    {allGenres.map((g) => (
+                      <option key={g} value={g}>{g}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            </div>
+
+            {displayed.length > 0 ? (
+              <div className="divide-y divide-neutral-100">
+                {displayed.map((song, i) => (
+                  <SongRow
+                    key={`${song.spotify_track_id || song.track_name}-${i}`}
+                    song={song}
+                    rank={i + 1}
+                    initialFavorited={favoritedIds.has(song.spotify_track_id)}
+                    initialFeedback={feedbackMap[song.spotify_track_id] ?? null}
+                    currentPrompt={prompt}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="px-4 py-12 text-center">
+                <p className="text-sm font-medium text-neutral-700">No songs in this view</p>
+                <p className="mt-1 text-xs text-neutral-400">
+                  Try All lanes or clear the genre filter.
+                </p>
+              </div>
+            )}
+          </section>
         </div>
-          );
-        })()
       ) : null}
+    </div>
+  );
+}
+
+function StationMetric({ value, label }: { value: number; label: string }) {
+  return (
+    <div className="rounded-md border border-neutral-200 bg-white px-3 py-2">
+      <div className="text-sm font-semibold tabular-nums text-neutral-950">
+        {value.toLocaleString()}
+      </div>
+      <div className="text-[10px] text-neutral-400">{label}</div>
+    </div>
+  );
+}
+
+function StationMixStrip({
+  mix,
+}: {
+  mix: ReturnType<typeof stationMixSummary>;
+}) {
+  const laneTotal = Math.max(
+    1,
+    mix.laneCounts.deep_cuts + mix.laneCounts.popular + mix.laneCounts.radio_hits
+  );
+
+  return (
+    <section className="rounded-lg border border-neutral-200 bg-white px-4 py-3 shadow-sm shadow-neutral-100/70">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-semibold text-neutral-950">Station Mix</h3>
+            <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] text-neutral-500">
+              {mix.presetLabel}
+            </span>
+            <span className="truncate rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">
+              {mix.promptLabel}
+            </span>
+          </div>
+          <p className="mt-1 text-xs leading-relaxed text-neutral-500">
+            {mix.total} songs: {mix.catalogCount} catalog-ranked and {mix.liveCount} live Spotify sourced.
+          </p>
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[360px]">
+          <MixTile
+            label="Deep cuts"
+            value={mix.laneCounts.deep_cuts}
+            pct={mix.laneCounts.deep_cuts / laneTotal}
+            tone="bg-violet-500"
+          />
+          <MixTile
+            label="Popular"
+            value={mix.laneCounts.popular}
+            pct={mix.laneCounts.popular / laneTotal}
+            tone="bg-amber-500"
+          />
+          <MixTile
+            label="Radio hits"
+            value={mix.laneCounts.radio_hits}
+            pct={mix.laneCounts.radio_hits / laneTotal}
+            tone="bg-emerald-500"
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MixTile({
+  label,
+  value,
+  pct,
+  tone,
+}: {
+  label: string;
+  value: number;
+  pct: number;
+  tone: string;
+}) {
+  return (
+    <div className="rounded-md border border-neutral-100 bg-neutral-50 px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] text-neutral-500">{label}</span>
+        <span className="text-[11px] font-semibold tabular-nums text-neutral-800">{value}</span>
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-neutral-200">
+        <div
+          className={`h-full rounded-full ${tone}`}
+          style={{ width: value === 0 ? "0%" : `${Math.max(4, Math.round(pct * 100))}%` }}
+        />
+      </div>
     </div>
   );
 }
@@ -1596,11 +1799,11 @@ function SongRow({
         className={[
           compact
             ? "grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-2 px-4 py-3.5 hover:bg-neutral-50 transition-colors"
-            : "flex items-center gap-2 px-3 py-2.5 hover:bg-neutral-50 transition-colors",
+            : "flex items-start gap-3 px-4 py-3.5 hover:bg-neutral-50 transition-colors",
         ].join(" ")}
       >
         {/* Rank — hidden on mobile */}
-        <span className={["text-right text-xs tabular-nums text-neutral-300 font-medium shrink-0", compact ? "hidden" : "hidden sm:block w-6"].join(" ")}>
+        <span className={["text-right text-xs tabular-nums text-neutral-300 font-medium shrink-0", compact ? "hidden" : "hidden sm:block w-6 pt-3"].join(" ")}>
           {rank}
         </span>
 
@@ -1611,7 +1814,7 @@ function SongRow({
           title={`Play ${song.track_name}`}
           className={[
             "shrink-0 rounded-full flex items-center justify-center bg-neutral-900 text-white hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-40",
-            compact ? "w-10 h-10" : "w-9 h-9 sm:w-8 sm:h-8",
+            compact ? "w-10 h-10" : "w-11 h-11",
           ].join(" ")}
         >
           {playState === "loading" ? (
@@ -1634,7 +1837,7 @@ function SongRow({
                 "text-neutral-900",
                 compact
                   ? "block text-sm font-semibold leading-snug line-clamp-2 break-words"
-                  : "text-sm font-medium truncate",
+                  : "block text-sm font-semibold leading-snug line-clamp-2 break-words",
               ].join(" ")}
             >
               {song.track_name}
@@ -1660,16 +1863,21 @@ function SongRow({
           >
             Why: {explanation.summary}
           </p>
-          {/* Source badge — shown when this song has editorial coverage */}
-          {song.top_mention?.source && (
-            <SourceBadge mention={song.top_mention} />
-          )}
-          {/* Lane pill */}
-          {lane && (
-            <span className={`inline-block text-[9px] font-medium rounded-full px-1.5 py-0.5 mt-0.5 ${lane.className}`}>
-              {lane.label}
-            </span>
-          )}
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            {lane && (
+              <span className={`inline-block text-[9px] font-medium rounded-full px-1.5 py-0.5 ${lane.className}`}>
+                {lane.label}
+              </span>
+            )}
+            {isLiveSourced(song) && (
+              <span className="inline-block rounded-full bg-blue-50 px-1.5 py-0.5 text-[9px] font-medium text-blue-600">
+                Live Spotify
+              </span>
+            )}
+            {song.top_mention?.source && (
+              <SourceBadge mention={song.top_mention} />
+            )}
+          </div>
         </div>
 
         {/* Duration — desktop only */}
@@ -1683,7 +1891,7 @@ function SongRow({
         <div
           className={[
             "shrink-0 rounded-full flex items-center justify-center text-[10px] font-bold",
-            compact ? "w-9 h-9 text-xs" : "w-8 h-8 sm:w-10 sm:h-10 sm:text-xs",
+            compact ? "w-9 h-9 text-xs" : "w-10 h-10 text-xs",
           ].join(" ")}
           style={{
             background:
@@ -1703,7 +1911,9 @@ function SongRow({
         <div
           className={[
             "flex items-center gap-0 shrink-0",
-            compact ? "col-start-2 col-span-2 row-start-2 justify-self-start" : "",
+            compact
+              ? "col-start-2 col-span-2 row-start-2 justify-self-start"
+              : "rounded-full border border-neutral-100 bg-neutral-50 px-1 py-0.5",
           ].join(" ")}
         >
           {/* Thumbs up */}
@@ -1788,7 +1998,7 @@ function SongRow({
             onClick={() => setExpanded(!expanded)}
             className={[
               "shrink-0 text-neutral-300 hover:text-neutral-500 transition-colors text-xs",
-              compact ? "col-start-3 row-start-2 self-center justify-self-end" : "",
+              compact ? "col-start-3 row-start-2 self-center justify-self-end" : "pt-3",
             ].join(" ")}
             title="More info"
           >
@@ -1799,7 +2009,7 @@ function SongRow({
 
       {/* Expanded details */}
       {expanded && (
-        <div className={["px-3 pb-3 space-y-2", compact ? "sm:pl-[4.75rem]" : "pl-12"].join(" ")}>
+        <div className={["px-3 pb-3 space-y-2", compact ? "sm:pl-[4.75rem]" : "sm:pl-[6.5rem] sm:pr-6"].join(" ")}>
           <div className="bg-white border border-neutral-100 rounded-md px-3 py-2">
             <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
               Why this song
@@ -2036,7 +2246,7 @@ function SavePlaylistButton({
     return (
       <button
         onClick={onSave}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 text-xs font-medium hover:bg-emerald-100 transition-colors"
+        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-100 sm:w-auto"
         title="Create another playlist"
       >
         <svg
@@ -2058,7 +2268,7 @@ function SavePlaylistButton({
     <button
       onClick={onSave}
       disabled={state === "saving" || count === 0}
-      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1DB954] text-white text-xs font-medium hover:bg-[#1aa34a] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+      className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#1DB954] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-[#1aa34a] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
       title={`Save ${count} songs as a Spotify playlist`}
     >
       {state === "saving" ? (
