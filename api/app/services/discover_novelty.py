@@ -174,5 +174,12 @@ def persist_discover_run(
         payload.pop("lanes", None)
         payload.pop("prompt_mode", None)
         payload.pop("result_meta", None)
-        resp = client.table("discover_history").insert(payload).execute()
+        try:
+            resp = (
+                client.table("discover_history")
+                .upsert(payload, on_conflict="user_id,list_signature")
+                .execute()
+            )
+        except Exception:
+            return payload
     return (resp.data or [payload])[0]
