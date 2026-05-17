@@ -179,15 +179,18 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
         if not query_intent and req.novelty_mode == "graceful" and overlap > req.max_allowed_overlap:
             continue
 
-        persist_discover_run(
-            user_client,
-            req.user_id,
-            track_ids,
-            req.prompt,
-            req.weights,
-            run_id=run_id,
-            results=attempt_results,
-        )
+        try:
+            persist_discover_run(
+                user_client,
+                req.user_id,
+                track_ids,
+                req.prompt,
+                req.weights,
+                run_id=run_id,
+                results=attempt_results,
+            )
+        except Exception as e:
+            print(f"persist_discover_run failed (non-fatal): {e}")
         return {
             "results": attempt_results,
             "query_intent": query_intent.as_response() if query_intent else None,
@@ -203,15 +206,18 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
     track_ids = [r.get("spotify_track_id") for r in best_results if r.get("spotify_track_id")]
     result_artist_ids = [int(r["artist_id"]) for r in best_results if r.get("artist_id")]
     signature = signature_from_ordered(track_ids)
-    persist_discover_run(
-        user_client,
-        req.user_id,
-        track_ids,
-        req.prompt,
-        req.weights,
-        run_id=run_id,
-        results=best_results,
-    )
+    try:
+        persist_discover_run(
+            user_client,
+            req.user_id,
+            track_ids,
+            req.prompt,
+            req.weights,
+            run_id=run_id,
+            results=best_results,
+        )
+    except Exception as e:
+        print(f"persist_discover_run failed (non-fatal): {e}")
     return {
         "results": best_results,
         "query_intent": query_intent.as_response() if query_intent else None,
