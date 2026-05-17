@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _API_DIR = Path(__file__).parent.parent
@@ -460,6 +461,109 @@ def eval_prompted_search_scans_track_catalog() -> EvalResult:
     )
 
 
+def eval_zero_play_added_at_tracks_do_not_crash() -> EvalResult:
+    """Zero-play saved tracks with added_at should be valid song-ranking input."""
+    now = datetime.now(timezone.utc)
+    scenario = UserScenario(
+        user_id="zero_play_added_at_song_test",
+        library_artist_ids=[1],
+        played_track_ids=[],
+        top_artist_ids=[1],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        user_tracks=[
+            {
+                "track_id": 101,
+                "play_count": 0,
+                "added_at": (now - timedelta(days=12)).isoformat(),
+            }
+        ],
+    )
+    try:
+        results = recommend_songs(
+            client=build_mock_client(scenario, artists=JAZZ_ARTISTS[:1], tracks=TRACKS[:2]),
+            user_id=scenario.user_id,
+            taste_vector=JAZZ_TASTE_VECTOR,
+            prompt_vector=None,
+            weights=_weights(),
+            exclude_library=False,
+            limit=10,
+        )
+    except Exception as exc:
+        return EvalResult(
+            name="zero_play_added_at_tracks_do_not_crash",
+            passed=False,
+            score=0.0,
+            details=f"recommend_songs raised {type(exc).__name__}: {exc}",
+        )
+    return EvalResult(
+        name="zero_play_added_at_tracks_do_not_crash",
+        passed=len(results) > 0,
+        score=1.0 if results else 0.0,
+        details=f"returned={len(results)}",
+    )
+
+
+def eval_audio_profile_prefers_recent_saves_without_play_counts() -> EvalResult:
+    """When play counts are absent, recent saves should steer audio-feature fit."""
+    now = datetime.now(timezone.utc)
+    artist = _make_artist(740, "Audio Profile Artist", ["jazz"], vec_seed=70, popularity=70)
+
+    recent_profile = _make_track(1740, "Recent Bright Save", 740, popularity=40, vec_seed=1740)
+    old_profile = _make_track(1741, "Old Dark Save", 740, popularity=40, vec_seed=1741)
+    aligned = _make_track(1742, "Aligned Discovery", 740, popularity=55, vec_seed=1742)
+    mismatch = _make_track(1743, "Mismatched Discovery", 740, popularity=55, vec_seed=1742)
+
+    for track in (recent_profile, aligned):
+        track.update({"energy": 1.0, "danceability": 1.0, "valence": 1.0, "acousticness": 0.0})
+    for track in (old_profile, mismatch):
+        track.update({"energy": 0.0, "danceability": 0.0, "valence": 0.0, "acousticness": 1.0})
+
+    scenario = UserScenario(
+        user_id="audio_profile_recent_save_test",
+        library_artist_ids=[740],
+        played_track_ids=[],
+        top_artist_ids=[740],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        user_tracks=[
+            {
+                "track_id": 1740,
+                "play_count": 0,
+                "added_at": (now - timedelta(days=5)).isoformat(),
+            },
+            {
+                "track_id": 1741,
+                "play_count": 0,
+                "added_at": (now - timedelta(days=3 * 365)).isoformat(),
+            },
+        ],
+    )
+    results = recommend_songs(
+        client=build_mock_client(
+            scenario,
+            artists=[artist],
+            tracks=[recent_profile, old_profile, aligned, mismatch],
+            mentions=[],
+        ),
+        user_id=scenario.user_id,
+        taste_vector=JAZZ_TASTE_VECTOR,
+        prompt_vector=None,
+        weights=_weights(),
+        exclude_library=False,
+        limit=10,
+        exploration_seed=1,
+    )
+    by_name = {r["track_name"]: r for r in results}
+    aligned_score = by_name.get("Aligned Discovery", {}).get("score", 0.0)
+    mismatch_score = by_name.get("Mismatched Discovery", {}).get("score", 0.0)
+    passed = aligned_score > mismatch_score
+    return EvalResult(
+        name="audio_profile_prefers_recent_saves_without_play_counts",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"aligned={aligned_score:.4f}, mismatch={mismatch_score:.4f}",
+    )
+
+
 # ── Suite runner ─────────────────────────────────────────────────
 
 
@@ -478,4 +582,6 @@ def run_suite() -> list[EvalResult]:
         eval_vibe_query_extracts_complaint_sentence(),
         eval_vibe_query_expands_activity_metaphor(),
         eval_prompted_search_scans_track_catalog(),
+        eval_zero_play_added_at_tracks_do_not_crash(),
+        eval_audio_profile_prefers_recent_saves_without_play_counts(),
     ]

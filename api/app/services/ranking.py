@@ -19,6 +19,10 @@ from datetime import datetime, timezone
 
 from supabase import Client
 
+from app.services.preference_weights import (
+    favorite_preference_weight,
+    track_preference_weight,
+)
 from app.services.vector_rpc import (
     match_artists,
     max_mention_similarity_per_artist,
@@ -94,6 +98,13 @@ def _percentile_rank(values: list[float]) -> list[float]:
 
 # ── Data helpers ─────────────────────────────────────────────────
 
+def _int_or_none(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
     tracks_resp = (
         client.table("user_tracks")
@@ -117,35 +128,19 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
         )
         tracks_map = tracks_map_resp.data or []
         track_to_artist = {
-            row["id"]: row.get("artist_id")
+            int(row["id"]): row.get("artist_id")
             for row in tracks_map
             if row.get("id") is not None
         }
 
         now = datetime.now(timezone.utc)
         for row in user_tracks:
-            track_id = row.get("track_id")
+            track_id = _int_or_none(row.get("track_id"))
             artist_id = track_to_artist.get(track_id)
             if artist_id is None:
                 continue
 
-            play_count = row.get("play_count") or 0
-            weight = float(play_count if play_count > 0 else 1)
-
-            # Apply recency decay: prefer last_played_at (actual listen),
-            # fall back to added_at (when user saved the track to Liked Songs).
-            # This ensures tracks with no play data still get differentiated
-            # by how recently they were added to the library.
-            recency_ts = row.get("last_played_at") or row.get("added_at")
-            if recency_ts:
-                try:
-                    ts = datetime.fromisoformat(recency_ts.replace("Z", "+00:00"))
-                    days_since = max((now - ts).days, 0)
-                    weight *= max(0.1, 1.0 - (days_since / 365))
-                except ValueError:
-                    pass  # malformed timestamp — keep weight as-is
-
-            artist_weights[int(artist_id)] += weight
+            artist_weights[int(artist_id)] += track_preference_weight(row, now)
 
     # ── Top-artist signal ────────────────────────────────────────
     # Spotify /me/top/artists rankings populate user_top_artists during
@@ -200,35 +195,106 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
         pass  # table may not exist yet
 
     # ── Favorites signal ──────────────────────────────────────────
-    # Favorited tracks are an explicit positive preference signal.
-    # Each favorite adds weight equivalent to a thumbs-up (+15).
+    # Favorited tracks are an explicit positive preference signal. Resolve by
+    # internal track_id first, Spotify track ID second, then exact unique artist
+    # name for favorites created before the track was cataloged.
     try:
         fav_resp = (
             client.table("user_favorites")
-            .select("track_id")
+            .select("track_id,spotify_track_id,artist_name,created_at")
             .eq("user_id", user_id)
             .range(0, 9999)
             .execute()
         )
-        fav_track_ids = [
-            row.get("track_id")
-            for row in (fav_resp.data or [])
-            if row.get("track_id") is not None
-        ]
+        fav_rows = fav_resp.data or []
+
+        fav_track_ids = sorted({
+            tid
+            for tid in (_int_or_none(row.get("track_id")) for row in fav_rows)
+            if tid is not None
+        })
+        fav_spotify_ids = sorted({
+            str(row.get("spotify_track_id"))
+            for row in fav_rows
+            if row.get("spotify_track_id")
+        })
+
+        track_to_artist_by_id: dict[int, int] = {}
+        track_to_artist_by_spotify: dict[str, int] = {}
+        fav_track_rows: list[dict] = []
         if fav_track_ids:
-            fav_tracks_resp = (
+            fav_track_rows.extend(
                 client.table("tracks")
-                .select("id,artist_id")
+                .select("id,spotify_track_id,artist_id")
                 .in_("id", fav_track_ids)
                 .range(0, 9999)
                 .execute()
+                .data
+                or []
             )
-            for row in (fav_tracks_resp.data or []):
-                aid = row.get("artist_id")
-                if aid is not None:
-                    artist_weights[int(aid)] = (
-                        artist_weights.get(int(aid), 0) + 15.0
-                    )
+        if fav_spotify_ids:
+            fav_track_rows.extend(
+                client.table("tracks")
+                .select("id,spotify_track_id,artist_id")
+                .in_("spotify_track_id", fav_spotify_ids)
+                .range(0, 9999)
+                .execute()
+                .data
+                or []
+            )
+        for row in fav_track_rows:
+            aid = row.get("artist_id")
+            if aid is not None:
+                tid = _int_or_none(row.get("id"))
+                if tid is not None:
+                    track_to_artist_by_id[tid] = int(aid)
+                spotify_id = row.get("spotify_track_id")
+                if spotify_id:
+                    track_to_artist_by_spotify[str(spotify_id)] = int(aid)
+
+        unresolved_names = {
+            str(row.get("artist_name")).strip()
+            for row in fav_rows
+            if row.get("artist_name")
+            and _int_or_none(row.get("track_id")) not in track_to_artist_by_id
+            and str(row.get("spotify_track_id")) not in track_to_artist_by_spotify
+        }
+        name_to_artist: dict[str, int] = {}
+        if unresolved_names:
+            artists_resp = (
+                client.table("artists")
+                .select("id,name")
+                .in_("name", sorted(unresolved_names))
+                .range(0, 9999)
+                .execute()
+            )
+            candidates: dict[str, list[int]] = defaultdict(list)
+            for row in (artists_resp.data or []):
+                aid = _int_or_none(row.get("id"))
+                name = row.get("name")
+                if aid is not None and name:
+                    candidates[str(name).strip().casefold()].append(aid)
+            name_to_artist = {
+                name: ids[0]
+                for name, ids in candidates.items()
+                if len(ids) == 1
+            }
+
+        now = datetime.now(timezone.utc)
+        for row in fav_rows:
+            aid: int | None = None
+            tid = _int_or_none(row.get("track_id"))
+            if tid is not None:
+                aid = track_to_artist_by_id.get(tid)
+            if aid is None and row.get("spotify_track_id"):
+                aid = track_to_artist_by_spotify.get(str(row["spotify_track_id"]))
+            if aid is None and row.get("artist_name"):
+                aid = name_to_artist.get(str(row["artist_name"]).strip().casefold())
+            if aid is not None:
+                artist_weights[aid] = (
+                    artist_weights.get(aid, 0.0)
+                    + favorite_preference_weight(row.get("created_at"), now)
+                )
     except Exception:
         pass  # table may not exist yet
 
