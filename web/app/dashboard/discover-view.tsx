@@ -131,6 +131,78 @@ function laneBadge(song: SongRecommendation): { label: string; className: string
   return { label: "Radio hit", className: "bg-emerald-50 text-emerald-600" };
 }
 
+function pct(value: number | undefined): number {
+  return Math.round(Math.max(0, Math.min(1, value ?? 0)) * 100);
+}
+
+function topSignal(song: SongRecommendation): { label: string; value: number } {
+  const signals = [
+    { label: "Taste", value: song.signals.affinity ?? 0 },
+    { label: "Search", value: song.signals.context ?? 0 },
+    { label: "Buzz", value: song.signals.editorial ?? 0 },
+  ];
+  return signals.sort((a, b) => b.value - a.value)[0] ?? signals[0];
+}
+
+function readableReason(reason: string): string {
+  const normalized = reason.trim();
+  const lower = normalized.toLowerCase();
+  if (lower === "matches your taste") return "matches your taste profile";
+  if (lower === "matches your search") return "matches your prompt";
+  if (lower === "fits your vibe") return "fits the current blend";
+  if (lower === "popular track") return "has strong Spotify traction";
+  if (lower === "new release") return "recent release";
+  if (lower === "already in your library") return "familiar from your library";
+  if (lower === "recently surfaced") return "recently surfaced in MusicLife";
+  if (lower === "curated pick") return "balanced discovery pick";
+  return normalized.charAt(0).toLowerCase() + normalized.slice(1);
+}
+
+function buildWhyExplanation(
+  song: SongRecommendation,
+  currentPrompt: string
+): { summary: string; details: string[] } {
+  const leader = topSignal(song);
+  const details: string[] = [];
+  const seen = new Set<string>();
+
+  function add(detail: string | null | undefined) {
+    const clean = detail?.trim();
+    if (!clean) return;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    details.push(clean);
+  }
+
+  add(`${leader.label} is the strongest signal at ${pct(leader.value)}%.`);
+  song.reasons.slice(0, 3).forEach((reason) => {
+    add(`It ${readableReason(reason)}.`);
+  });
+  if (currentPrompt.trim() && (song.signals.context ?? 0) > 0.15) {
+    add(`It lines up with "${currentPrompt.trim()}".`);
+  }
+  if (song.top_mention?.source) {
+    add(`It has recent context from ${song.top_mention.source}.`);
+  }
+  if ((song.signals.novelty ?? 0) >= 0.65) {
+    add("It should feel more discovery than repeat listen.");
+  } else if ((song.signals.familiarity ?? 0) >= 0.45) {
+    add("It stays close to music you already know.");
+  }
+  if (song.genres.length > 0) {
+    add(`Genre fit: ${song.genres.slice(0, 3).join(", ")}.`);
+  }
+
+  const source = song.top_mention?.source ? `, with ${song.top_mention.source} context` : "";
+  const summary =
+    song.reasons.length > 0
+      ? `${readableReason(song.reasons[0])}; ${leader.label.toLowerCase()} ${pct(leader.value)}%${source}`
+      : `${leader.label} ${pct(leader.value)}%${source}`;
+
+  return { summary, details };
+}
+
 function targetLaneCounts(total: number): { radio_hits: number; deep_cuts: number } {
   if (total <= 1) return { radio_hits: total, deep_cuts: 0 };
   if (total === 2) return { radio_hits: 1, deep_cuts: 1 };
@@ -1124,6 +1196,7 @@ function SongRow({
 
   const matchPct = Math.round(song.score * 100);
   const lane = laneBadge(song);
+  const explanation = buildWhyExplanation(song, currentPrompt);
   const minutes = Math.floor(song.duration_ms / 60000);
   const seconds = Math.floor((song.duration_ms % 60000) / 1000);
   const duration =
@@ -1241,6 +1314,15 @@ function SongRow({
             {song.album_name && (
               <span className="text-neutral-400 hidden sm:inline"> &middot; {song.album_name}</span>
             )}
+          </p>
+          <p
+            className={[
+              "text-[10px] text-neutral-400 mt-1 leading-snug",
+              compact ? "line-clamp-2" : "truncate",
+            ].join(" ")}
+            title={explanation.summary}
+          >
+            Why: {explanation.summary}
           </p>
           {/* Source badge — shown when this song has editorial coverage */}
           {song.top_mention?.source && (
@@ -1382,6 +1464,19 @@ function SongRow({
       {/* Expanded details */}
       {expanded && (
         <div className={["px-3 pb-3 space-y-2", compact ? "sm:pl-[4.75rem]" : "pl-12"].join(" ")}>
+          <div className="bg-white border border-neutral-100 rounded-md px-3 py-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
+              Why this song
+            </p>
+            <ul className="mt-1.5 space-y-1">
+              {explanation.details.slice(0, 5).map((detail) => (
+                <li key={detail} className="text-[11px] leading-relaxed text-neutral-600">
+                  {detail}
+                </li>
+              ))}
+            </ul>
+          </div>
+
           {/* Signal breakdown */}
           <div className="flex gap-3 text-[10px] flex-wrap">
             <SignalPill label="Taste" value={song.signals.affinity} color="emerald" />
