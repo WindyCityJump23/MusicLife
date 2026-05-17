@@ -140,7 +140,7 @@ export async function POST(request: NextRequest) {
   const failed: string[] = [];
   for (let i = 0; i < trackUris.length; i += 100) {
     const batch = trackUris.slice(i, i + 100);
-    const addRes = await fetch(
+    let addRes = await fetch(
       `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
       {
         method: "POST",
@@ -149,9 +149,66 @@ export async function POST(request: NextRequest) {
       }
     );
 
+    // Token may have expired between playlist creation and track addition —
+    // refresh once and retry before giving up.
+    if (addRes.status === 401) {
+      const errBody = await addRes.json().catch(() => ({}));
+      console.error(
+        `[playlist-from-tracks] Batch add got 401, refreshing token:`,
+        JSON.stringify(errBody)
+      );
+      const refreshRes = await fetch(
+        `${request.nextUrl.origin}/api/auth/token`,
+        { headers: { cookie: cookieHeader }, cache: "no-store" }
+      );
+      if (refreshRes.ok) {
+        const newToken = (await refreshRes.json()).access_token;
+        if (newToken) {
+          headers.Authorization = `Bearer ${newToken}`;
+          addRes = await fetch(
+            `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
+            {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ uris: batch }),
+            }
+          );
+        }
+      }
+    }
+
     if (!addRes.ok) {
-      // Some tracks might have invalid IDs — try one by one
-      for (const uri of batch) {
+      const err = await addRes.json().catch(() => ({}));
+      console.error(
+        `[playlist-from-tracks] Batch add failed HTTP ${addRes.status}:`,
+        JSON.stringify(err)
+      );
+
+      // Systemic errors (auth/permission) will fail identically for every
+      // track — surface the real error instead of silently skipping all.
+      if (addRes.status === 403) {
+        return NextResponse.json(
+          {
+            error:
+              err?.error?.message ||
+              "Spotify rejected adding tracks — please sign out and sign back in to refresh permissions.",
+          },
+          { status: 403 }
+        );
+      }
+      if (addRes.status === 401) {
+        return NextResponse.json(
+          { error: "Spotify session expired — please sign out and sign back in." },
+          { status: 401 }
+        );
+      }
+
+      // Non-auth error (likely 400 — some individual track URIs are invalid).
+      // Fall back to one-by-one, but cap consecutive failures to avoid
+      // hammering the API when the error is actually systemic.
+      let consecutiveFailures = 0;
+      for (let j = 0; j < batch.length; j++) {
+        const uri = batch[j];
         const singleRes = await fetch(
           `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
           {
@@ -161,7 +218,22 @@ export async function POST(request: NextRequest) {
           }
         );
         if (!singleRes.ok) {
+          const singleErr = await singleRes.json().catch(() => ({}));
+          console.error(
+            `[playlist-from-tracks] Single add failed for ${uri} HTTP ${singleRes.status}:`,
+            JSON.stringify(singleErr)
+          );
           failed.push(uri.replace("spotify:track:", ""));
+          consecutiveFailures++;
+          if (consecutiveFailures >= 5) {
+            // Remaining tracks will almost certainly fail too
+            for (let k = j + 1; k < batch.length; k++) {
+              failed.push(batch[k].replace("spotify:track:", ""));
+            }
+            break;
+          }
+        } else {
+          consecutiveFailures = 0;
         }
       }
     }
