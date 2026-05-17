@@ -72,7 +72,7 @@ export async function GET(request: NextRequest) {
     musicLifePlaylists.map(async (pl) => {
       try {
         const tracksRes = await fetch(
-          `https://api.spotify.com/v1/playlists/${pl.id}/tracks?limit=100&fields=items(track(name,uri,duration_ms,artists(name),album(name,images),external_urls))`,
+          `https://api.spotify.com/v1/playlists/${pl.id}/items?limit=100&fields=items(track(name,uri,duration_ms,artists(name),album(name,images),external_urls))`,
           { headers }
         );
 
