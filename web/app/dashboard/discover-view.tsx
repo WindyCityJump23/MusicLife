@@ -97,6 +97,18 @@ type DiscoverCachePayload = {
   results: SongRecommendation[];
 };
 
+type PlaylistCreateResponse = {
+  ok?: boolean;
+  error?: string;
+  playlist_url?: string;
+  playlist_id?: string;
+  playlist_name?: string;
+  add_tracks_client_side?: boolean;
+  track_uris?: string[];
+  tracks_added?: number;
+  tracks_failed?: string[];
+};
+
 function laneForSong(song: SongRecommendation): DiscoveryLaneId {
   // Prefer backend-assigned lane when available
   if (song.lane) {
@@ -388,6 +400,81 @@ function writeDiscoverCache(
   } catch {
     /* Ignore storage quota/privacy-mode failures. */
   }
+}
+
+function toSpotifyTrackUris(trackIdsOrUris: string[]): string[] {
+  return trackIdsOrUris
+    .filter((id) => typeof id === "string" && id.trim().length > 0)
+    .map((id) => (id.startsWith("spotify:track:") ? id : `spotify:track:${id}`));
+}
+
+async function getBrowserSpotifyToken(): Promise<string> {
+  const tokenRes = await fetch("/api/auth/token", { cache: "no-store" });
+  const tokenData = await tokenRes.json().catch(() => ({}));
+  if (!tokenRes.ok || !tokenData.access_token) {
+    throw new Error(
+      tokenRes.status === 401
+        ? "Spotify session expired. Please sign out and back in."
+        : "Could not get a Spotify access token."
+    );
+  }
+  return tokenData.access_token;
+}
+
+async function addSpotifyPlaylistTracksFromBrowser(
+  playlistId: string,
+  trackUris: string[]
+): Promise<{ added: number; failed: string[] }> {
+  if (!playlistId) throw new Error("Playlist was created without a Spotify ID.");
+
+  let accessToken = await getBrowserSpotifyToken();
+  const failed: string[] = [];
+
+  async function addBatch(batch: string[]) {
+    return fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ uris: batch }),
+    });
+  }
+
+  for (let i = 0; i < trackUris.length; i += 100) {
+    const batch = trackUris.slice(i, i + 100);
+    let addRes = await addBatch(batch);
+
+    if (addRes.status === 401) {
+      accessToken = await getBrowserSpotifyToken();
+      addRes = await addBatch(batch);
+    }
+
+    if (addRes.ok) continue;
+
+    const err = await addRes.json().catch(() => ({}));
+    if (addRes.status === 401) {
+      throw new Error("Spotify session expired. Please sign out and back in.");
+    }
+    if (addRes.status === 403) {
+      throw new Error(
+        err?.error?.message ||
+          "Spotify blocked adding tracks to this playlist. Make sure your Spotify account is allowed for this app."
+      );
+    }
+
+    for (const uri of batch) {
+      const singleRes = await addBatch([uri]);
+      if (!singleRes.ok) {
+        failed.push(uri.replace("spotify:track:", ""));
+      }
+    }
+  }
+
+  return {
+    added: trackUris.length - failed.length,
+    failed,
+  };
 }
 
 function chooseFallbackTracks(tracks: any[]): any[] { // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -784,7 +871,7 @@ export default function DiscoverView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ track_ids: trackIds, name, description }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data: PlaylistCreateResponse = await res.json().catch(() => ({}));
       if (!res.ok) {
         setPlaylistState("error");
         const errMsg = data.error ?? `Failed to create playlist (HTTP ${res.status})`;
@@ -803,11 +890,41 @@ export default function DiscoverView({
         }
         return;
       }
+
+      if (!data.playlist_id) {
+        setPlaylistState("error");
+        setPlaylistError("Spotify created a playlist response without an ID. Please try again.");
+        return;
+      }
+
+      const trackUris = Array.isArray(data.track_uris) && data.track_uris.length > 0
+        ? data.track_uris
+        : toSpotifyTrackUris(trackIds);
+      let added = data.tracks_added ?? 0;
+      let failed = data.tracks_failed ?? [];
+
+      if (data.add_tracks_client_side || added === 0) {
+        try {
+          const clientAdd = await addSpotifyPlaylistTracksFromBrowser(data.playlist_id, trackUris);
+          added = clientAdd.added;
+          failed = clientAdd.failed;
+        } catch (addErr) {
+          setPlaylistState("error");
+          setPlaylistUrl(data.playlist_url ?? null);
+          setPlaylistError(
+            addErr instanceof Error
+              ? `Playlist was created, but tracks could not be added: ${addErr.message}`
+              : "Playlist was created, but tracks could not be added."
+          );
+          return;
+        }
+      }
+
       setPlaylistState("done");
-      setPlaylistUrl(data.playlist_url);
+      setPlaylistUrl(data.playlist_url ?? null);
       setPlaylistStats({
-        added: data.tracks_added,
-        failed: data.tracks_failed ?? [],
+        added,
+        failed,
       });
     } catch (err) {
       setPlaylistState("error");
@@ -1062,6 +1179,16 @@ export default function DiscoverView({
             <div className="border border-red-200 bg-red-50 rounded-lg p-3 flex items-center gap-2">
               <span className="text-sm">\u26a0\ufe0f</span>
               <p className="text-sm text-red-700 flex-1">{playlistError}</p>
+              {playlistUrl && (
+                <a
+                  href={playlistUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="shrink-0 px-3 py-1.5 rounded-lg border border-red-200 text-red-600 text-xs font-medium hover:bg-red-100 transition-colors"
+                >
+                  Open playlist
+                </a>
+              )}
               <button
                 onClick={() => {
                   setPlaylistState("idle");
