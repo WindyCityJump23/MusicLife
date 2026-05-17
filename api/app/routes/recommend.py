@@ -74,6 +74,12 @@ class RecommendSongsRequest(BaseModel):
         return {k: v / total for k, v in weights.items()}
 
 
+class LiveCandidateIntentsRequest(BaseModel):
+    user_id: str
+    prompt: str | None = None
+    limit: int = Field(default=8, ge=1, le=12)
+
+
 @router.post("", response_model=RecommendResponse)
 def recommend(req: RecommendRequest, credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme)):
     token = require_bearer_token(credentials)
@@ -216,6 +222,25 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
         "artist_overlap_ratio": round(artist_overlap_ratio(result_artist_ids, excluded_artist_ids), 4),
         "novelty_mode_used": "graceful",
     }
+
+
+@router.post("/songs/live-intents")
+def live_candidate_intents(
+    req: LiveCandidateIntentsRequest,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+    user_client = get_user_scoped_supabase(token)
+    from app.services.live_candidate_intents import build_live_candidate_intents
+
+    return build_live_candidate_intents(
+        client=user_client,
+        user_id=req.user_id,
+        prompt=req.prompt,
+        limit=req.limit,
+    )
+
 
 def _build_taste_vector(client, user_id: str) -> list[float]:
     from app.services.ranking import build_taste_vector

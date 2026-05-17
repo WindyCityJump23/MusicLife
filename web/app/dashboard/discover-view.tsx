@@ -87,7 +87,11 @@ const DISCOVERY_LANES: DiscoveryLane[] = [
 const TARGET_SONGS = 25;
 const FALLBACK_ARTIST_SEARCH_LIMIT = 15;
 const FALLBACK_TRACK_SEARCH_LIMIT = 20;
-const DISCOVER_CACHE_KEY = "musiclife:discover:last-results";
+const LIVE_EXPANSION_INTENT_LIMIT = 7;
+const LIVE_EXPANSION_TRACK_LIMIT = 12;
+const LIVE_EXPANSION_TRACKS_PER_INTENT = 5;
+const LIVE_EXPANSION_POOL_TARGET = 40;
+const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v2";
 const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
 
 type DiscoverCachePayload = {
@@ -108,6 +112,17 @@ type PlaylistCreateResponse = {
   track_uris?: string[];
   tracks_added?: number;
   tracks_failed?: string[];
+};
+
+type LiveSearchIntent = {
+  query: string;
+  label?: string;
+  reason?: string;
+};
+
+type LiveCandidateIntentsResponse = {
+  intents?: LiveSearchIntent[];
+  source?: "anthropic" | "heuristic";
 };
 
 function laneForSong(song: SongRecommendation): DiscoveryLaneId {
@@ -167,6 +182,13 @@ function readableReason(reason: string): string {
   if (lower === "new release") return "recent release";
   if (lower === "already in your library") return "familiar from your library";
   if (lower === "recently surfaced") return "recently surfaced in MusicLife";
+  if (lower === "live spotify search") return "came from a live Spotify search outside the catalog";
+  if (lower === "outside catalog") return "was sourced outside the local catalog";
+  if (lower === "prompt expansion") return "matches a live expansion of your prompt";
+  if (lower === "mood expansion") return "matches a live mood expansion";
+  if (lower === "fresh genre search") return "came from a fresh live genre search";
+  if (lower === "deep search") return "came from a deeper live search";
+  if (lower === "recent search") return "came from a recent-year live search";
   if (lower === "curated pick") return "balanced discovery pick";
   return normalized.charAt(0).toLowerCase() + normalized.slice(1);
 }
@@ -509,6 +531,155 @@ function chooseFallbackTracks(tracks: any[]): any[] { // eslint-disable-line @ty
   return [0, 1, 2, 3, 4].map((i) => sorted[Math.round(i * step)]);
 }
 
+function releaseFreshness(releaseDate: string | null | undefined): number {
+  if (!releaseDate) return 0.35;
+  const year = Number.parseInt(releaseDate.slice(0, 4), 10);
+  if (!Number.isFinite(year)) return 0.35;
+  const age = Math.max(new Date().getFullYear() - year, 0);
+  if (age <= 1) return 1;
+  if (age <= 3) return 0.75;
+  if (age <= 6) return 0.5;
+  return 0.25;
+}
+
+function liveTrackScore(track: any, intentIndex: number, trackIndex: number): number { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const popularity = Math.max(0, Math.min(1, (track?.popularity ?? 50) / 100));
+  const rankScore = 1 - Math.min(trackIndex, LIVE_EXPANSION_TRACK_LIMIT - 1) / LIVE_EXPANSION_TRACK_LIMIT;
+  const intentScore = 1 - Math.min(intentIndex, LIVE_EXPANSION_INTENT_LIMIT - 1) / LIVE_EXPANSION_INTENT_LIMIT;
+  const freshness = releaseFreshness(track?.album?.release_date);
+  const popularityShape = popularity > 0.78 ? -0.04 : popularity < 0.35 ? 0.07 : 0.04;
+
+  return Number(
+    Math.max(
+      0.05,
+      Math.min(0.92, 0.48 + rankScore * 0.16 + intentScore * 0.08 + freshness * 0.08 + popularityShape)
+    ).toFixed(4)
+  );
+}
+
+function liveTrackToRecommendation(
+  track: any, // eslint-disable-line @typescript-eslint/no-explicit-any
+  intent: LiveSearchIntent,
+  intentIndex: number,
+  trackIndex: number,
+  hasPrompt: boolean
+): SongRecommendation | null {
+  const artist = track?.artists?.[0];
+  if (!track?.id || !track?.name || !artist?.name) return null;
+
+  const popularity = Math.max(0, Math.min(1, (track.popularity ?? 50) / 100));
+  const freshness = releaseFreshness(track.album?.release_date);
+  const novelty = Math.max(0.25, Math.min(1, 1 - popularity * 0.55 + freshness * 0.25));
+  const score = liveTrackScore(track, intentIndex, trackIndex);
+  const recommendation: SongRecommendation = {
+    track_id: null,
+    track_name: track.name,
+    artist_id: `live:${artist.id ?? artist.name}`,
+    artist_name: artist.name,
+    album_name: track.album?.name ?? "",
+    release_date: track.album?.release_date ?? null,
+    duration_ms: track.duration_ms ?? 0,
+    explicit: track.explicit ?? false,
+    spotify_track_id: track.id,
+    score,
+    novelty_score: novelty,
+    familiarity_score: 0,
+    signals: {
+      affinity: Math.max(0.25, score - 0.14),
+      context: hasPrompt ? Math.max(0.25, score - 0.08) : 0.15,
+      editorial: 0,
+      track_popularity: popularity,
+      novelty,
+      familiarity: 0,
+    },
+    genres: [],
+    reasons: ["Live Spotify search", intent.label ?? "Outside catalog"],
+    mention_count: 0,
+    top_mention: null,
+  };
+  recommendation.lane = laneForSong(recommendation);
+  return recommendation;
+}
+
+function shouldRunLiveExpansion(songs: SongRecommendation[], currentPrompt: string): boolean {
+  if (songs.length < TARGET_SONGS) return true;
+  if (songs.length < LIVE_EXPANSION_POOL_TARGET) return true;
+  if (currentPrompt.trim()) return true;
+  return new Set(songs.map((song) => artistIdentity(song))).size < Math.min(20, TARGET_SONGS);
+}
+
+async function fetchLiveCandidateSongs(
+  currentPrompt: string,
+  existingSongs: SongRecommendation[]
+): Promise<SongRecommendation[]> {
+  if (!shouldRunLiveExpansion(existingSongs, currentPrompt)) return [];
+
+  const intentRes = await fetch("/api/live-candidate-intents", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prompt: currentPrompt || null,
+      limit: LIVE_EXPANSION_INTENT_LIMIT,
+    }),
+  });
+  if (!intentRes.ok) return [];
+  const intentData: LiveCandidateIntentsResponse = await intentRes.json().catch(() => ({}));
+  const intents = (intentData.intents ?? []).filter((intent) => intent.query?.trim());
+  if (intents.length === 0) return [];
+
+  const accessToken = await getBrowserSpotifyToken();
+  const spotifyHeaders = { Authorization: `Bearer ${accessToken}` };
+
+  const batches = await Promise.all(
+    intents.map(async (intent, intentIndex) => {
+      try {
+        const searchRes = await fetch(
+          `https://api.spotify.com/v1/search?q=${encodeURIComponent(intent.query)}&type=track&market=US&limit=${LIVE_EXPANSION_TRACK_LIMIT}`,
+          { headers: spotifyHeaders }
+        );
+        if (!searchRes.ok) return [];
+        const data = await searchRes.json();
+        const tracks = chooseFallbackTracks(data.tracks?.items ?? []).slice(0, LIVE_EXPANSION_TRACKS_PER_INTENT);
+        return tracks
+          .map((track, trackIndex) =>
+            liveTrackToRecommendation(track, intent, intentIndex, trackIndex, Boolean(currentPrompt.trim()))
+          )
+          .filter((song): song is SongRecommendation => Boolean(song));
+      } catch {
+        return [];
+      }
+    })
+  );
+
+  return batches.flat().sort((a, b) => b.score - a.score);
+}
+
+function mergeCandidateSongs(
+  baseSongs: SongRecommendation[],
+  liveSongs: SongRecommendation[]
+): SongRecommendation[] {
+  const merged = [...baseSongs];
+  const seen = new Set(baseSongs.map(trackIdentity));
+  const artistCounts = new Map<string, number>();
+
+  for (const song of baseSongs) {
+    const artistKey = artistIdentity(song);
+    artistCounts.set(artistKey, (artistCounts.get(artistKey) ?? 0) + 1);
+  }
+
+  for (const song of liveSongs) {
+    const trackKey = trackIdentity(song);
+    if (!trackKey || seen.has(trackKey)) continue;
+    const artistKey = artistIdentity(song);
+    if ((artistCounts.get(artistKey) ?? 0) >= 2) continue;
+    seen.add(trackKey);
+    artistCounts.set(artistKey, (artistCounts.get(artistKey) ?? 0) + 1);
+    merged.push(song);
+  }
+
+  return merged.sort((a, b) => b.score - a.score).slice(0, LIVE_EXPANSION_POOL_TARGET);
+}
+
 export default function DiscoverView({
   onNavigate,
 }: {
@@ -799,6 +970,19 @@ export default function DiscoverView({
           deduped.push(song);
           if (deduped.length >= TARGET_SONGS) break;
         }
+      }
+
+      try {
+        const livePrompt = interpretedPrompt || prompt;
+        if (shouldRunLiveExpansion(deduped, livePrompt)) {
+          setLoadingStage("Expanding live search beyond the catalog\u2026");
+          const liveSongs = await fetchLiveCandidateSongs(livePrompt, deduped);
+          if (liveSongs.length > 0) {
+            deduped = mergeCandidateSongs(deduped, liveSongs);
+          }
+        }
+      } catch (e) {
+        console.warn("live candidate expansion failed:", e);
       }
 
       if (deduped.length === 0) {
