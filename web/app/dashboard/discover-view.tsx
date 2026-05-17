@@ -97,6 +97,18 @@ type DiscoverCachePayload = {
   results: SongRecommendation[];
 };
 
+type PlaylistCreateResponse = {
+  ok?: boolean;
+  error?: string;
+  playlist_url?: string;
+  playlist_id?: string;
+  playlist_name?: string;
+  add_tracks_client_side?: boolean;
+  track_uris?: string[];
+  tracks_added?: number;
+  tracks_failed?: string[];
+};
+
 function laneForSong(song: SongRecommendation): DiscoveryLaneId {
   // Prefer backend-assigned lane when available
   if (song.lane) {
@@ -129,6 +141,78 @@ function laneBadge(song: SongRecommendation): { label: string; className: string
     return { label: "Popular", className: "bg-amber-50 text-amber-600" };
   }
   return { label: "Radio hit", className: "bg-emerald-50 text-emerald-600" };
+}
+
+function pct(value: number | undefined): number {
+  return Math.round(Math.max(0, Math.min(1, value ?? 0)) * 100);
+}
+
+function topSignal(song: SongRecommendation): { label: string; value: number } {
+  const signals = [
+    { label: "Taste", value: song.signals.affinity ?? 0 },
+    { label: "Search", value: song.signals.context ?? 0 },
+    { label: "Buzz", value: song.signals.editorial ?? 0 },
+  ];
+  return signals.sort((a, b) => b.value - a.value)[0] ?? signals[0];
+}
+
+function readableReason(reason: string): string {
+  const normalized = reason.trim();
+  const lower = normalized.toLowerCase();
+  if (lower === "matches your taste") return "matches your taste profile";
+  if (lower === "matches your search") return "matches your prompt";
+  if (lower === "fits your vibe") return "fits the current blend";
+  if (lower === "popular track") return "has strong Spotify traction";
+  if (lower === "new release") return "recent release";
+  if (lower === "already in your library") return "familiar from your library";
+  if (lower === "recently surfaced") return "recently surfaced in MusicLife";
+  if (lower === "curated pick") return "balanced discovery pick";
+  return normalized.charAt(0).toLowerCase() + normalized.slice(1);
+}
+
+function buildWhyExplanation(
+  song: SongRecommendation,
+  currentPrompt: string
+): { summary: string; details: string[] } {
+  const leader = topSignal(song);
+  const details: string[] = [];
+  const seen = new Set<string>();
+
+  function add(detail: string | null | undefined) {
+    const clean = detail?.trim();
+    if (!clean) return;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    details.push(clean);
+  }
+
+  add(`${leader.label} is the strongest signal at ${pct(leader.value)}%.`);
+  song.reasons.slice(0, 3).forEach((reason) => {
+    add(`It ${readableReason(reason)}.`);
+  });
+  if (currentPrompt.trim() && (song.signals.context ?? 0) > 0.15) {
+    add(`It lines up with "${currentPrompt.trim()}".`);
+  }
+  if (song.top_mention?.source) {
+    add(`It has recent context from ${song.top_mention.source}.`);
+  }
+  if ((song.signals.novelty ?? 0) >= 0.65) {
+    add("It should feel more discovery than repeat listen.");
+  } else if ((song.signals.familiarity ?? 0) >= 0.45) {
+    add("It stays close to music you already know.");
+  }
+  if (song.genres.length > 0) {
+    add(`Genre fit: ${song.genres.slice(0, 3).join(", ")}.`);
+  }
+
+  const source = song.top_mention?.source ? `, with ${song.top_mention.source} context` : "";
+  const summary =
+    song.reasons.length > 0
+      ? `${readableReason(song.reasons[0])}; ${leader.label.toLowerCase()} ${pct(leader.value)}%${source}`
+      : `${leader.label} ${pct(leader.value)}%${source}`;
+
+  return { summary, details };
 }
 
 function targetLaneCounts(total: number): { radio_hits: number; deep_cuts: number } {
@@ -316,6 +400,81 @@ function writeDiscoverCache(
   } catch {
     /* Ignore storage quota/privacy-mode failures. */
   }
+}
+
+function toSpotifyTrackUris(trackIdsOrUris: string[]): string[] {
+  return trackIdsOrUris
+    .filter((id) => typeof id === "string" && id.trim().length > 0)
+    .map((id) => (id.startsWith("spotify:track:") ? id : `spotify:track:${id}`));
+}
+
+async function getBrowserSpotifyToken(): Promise<string> {
+  const tokenRes = await fetch("/api/auth/token", { cache: "no-store" });
+  const tokenData = await tokenRes.json().catch(() => ({}));
+  if (!tokenRes.ok || !tokenData.access_token) {
+    throw new Error(
+      tokenRes.status === 401
+        ? "Spotify session expired. Please sign out and back in."
+        : "Could not get a Spotify access token."
+    );
+  }
+  return tokenData.access_token;
+}
+
+async function addSpotifyPlaylistTracksFromBrowser(
+  playlistId: string,
+  trackUris: string[]
+): Promise<{ added: number; failed: string[] }> {
+  if (!playlistId) throw new Error("Playlist was created without a Spotify ID.");
+
+  let accessToken = await getBrowserSpotifyToken();
+  const failed: string[] = [];
+
+  async function addBatch(batch: string[]) {
+    return fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ uris: batch }),
+    });
+  }
+
+  for (let i = 0; i < trackUris.length; i += 100) {
+    const batch = trackUris.slice(i, i + 100);
+    let addRes = await addBatch(batch);
+
+    if (addRes.status === 401) {
+      accessToken = await getBrowserSpotifyToken();
+      addRes = await addBatch(batch);
+    }
+
+    if (addRes.ok) continue;
+
+    const err = await addRes.json().catch(() => ({}));
+    if (addRes.status === 401) {
+      throw new Error("Spotify session expired. Please sign out and back in.");
+    }
+    if (addRes.status === 403) {
+      throw new Error(
+        err?.error?.message ||
+          "Spotify blocked adding tracks to this playlist. Make sure your Spotify account is allowed for this app."
+      );
+    }
+
+    for (const uri of batch) {
+      const singleRes = await addBatch([uri]);
+      if (!singleRes.ok) {
+        failed.push(uri.replace("spotify:track:", ""));
+      }
+    }
+  }
+
+  return {
+    added: trackUris.length - failed.length,
+    failed,
+  };
 }
 
 function chooseFallbackTracks(tracks: any[]): any[] { // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -712,7 +871,7 @@ export default function DiscoverView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ track_ids: trackIds, name, description }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data: PlaylistCreateResponse = await res.json().catch(() => ({}));
       if (!res.ok) {
         setPlaylistState("error");
         const errMsg = data.error ?? `Failed to create playlist (HTTP ${res.status})`;
@@ -731,11 +890,41 @@ export default function DiscoverView({
         }
         return;
       }
+
+      if (!data.playlist_id) {
+        setPlaylistState("error");
+        setPlaylistError("Spotify created a playlist response without an ID. Please try again.");
+        return;
+      }
+
+      const trackUris = Array.isArray(data.track_uris) && data.track_uris.length > 0
+        ? data.track_uris
+        : toSpotifyTrackUris(trackIds);
+      let added = data.tracks_added ?? 0;
+      let failed = data.tracks_failed ?? [];
+
+      if (data.add_tracks_client_side || added === 0) {
+        try {
+          const clientAdd = await addSpotifyPlaylistTracksFromBrowser(data.playlist_id, trackUris);
+          added = clientAdd.added;
+          failed = clientAdd.failed;
+        } catch (addErr) {
+          setPlaylistState("error");
+          setPlaylistUrl(data.playlist_url ?? null);
+          setPlaylistError(
+            addErr instanceof Error
+              ? `Playlist was created, but tracks could not be added: ${addErr.message}`
+              : "Playlist was created, but tracks could not be added."
+          );
+          return;
+        }
+      }
+
       setPlaylistState("done");
-      setPlaylistUrl(data.playlist_url);
+      setPlaylistUrl(data.playlist_url ?? null);
       setPlaylistStats({
-        added: data.tracks_added,
-        failed: data.tracks_failed ?? [],
+        added,
+        failed,
       });
     } catch (err) {
       setPlaylistState("error");
@@ -990,6 +1179,16 @@ export default function DiscoverView({
             <div className="border border-red-200 bg-red-50 rounded-lg p-3 flex items-center gap-2">
               <span className="text-sm">\u26a0\ufe0f</span>
               <p className="text-sm text-red-700 flex-1">{playlistError}</p>
+              {playlistUrl && (
+                <a
+                  href={playlistUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="shrink-0 px-3 py-1.5 rounded-lg border border-red-200 text-red-600 text-xs font-medium hover:bg-red-100 transition-colors"
+                >
+                  Open playlist
+                </a>
+              )}
               <button
                 onClick={() => {
                   setPlaylistState("idle");
@@ -1124,6 +1323,7 @@ function SongRow({
 
   const matchPct = Math.round(song.score * 100);
   const lane = laneBadge(song);
+  const explanation = buildWhyExplanation(song, currentPrompt);
   const minutes = Math.floor(song.duration_ms / 60000);
   const seconds = Math.floor((song.duration_ms % 60000) / 1000);
   const duration =
@@ -1241,6 +1441,15 @@ function SongRow({
             {song.album_name && (
               <span className="text-neutral-400 hidden sm:inline"> &middot; {song.album_name}</span>
             )}
+          </p>
+          <p
+            className={[
+              "text-[10px] text-neutral-400 mt-1 leading-snug",
+              compact ? "line-clamp-2" : "truncate",
+            ].join(" ")}
+            title={explanation.summary}
+          >
+            Why: {explanation.summary}
           </p>
           {/* Source badge — shown when this song has editorial coverage */}
           {song.top_mention?.source && (
@@ -1382,6 +1591,19 @@ function SongRow({
       {/* Expanded details */}
       {expanded && (
         <div className={["px-3 pb-3 space-y-2", compact ? "sm:pl-[4.75rem]" : "pl-12"].join(" ")}>
+          <div className="bg-white border border-neutral-100 rounded-md px-3 py-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
+              Why this song
+            </p>
+            <ul className="mt-1.5 space-y-1">
+              {explanation.details.slice(0, 5).map((detail) => (
+                <li key={detail} className="text-[11px] leading-relaxed text-neutral-600">
+                  {detail}
+                </li>
+              ))}
+            </ul>
+          </div>
+
           {/* Signal breakdown */}
           <div className="flex gap-3 text-[10px] flex-wrap">
             <SignalPill label="Taste" value={song.signals.affinity} color="emerald" />

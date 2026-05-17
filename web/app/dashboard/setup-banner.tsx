@@ -1,15 +1,41 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import SetupAllButton from "./SetupAllButton";
+import SetupAllButton, { type SetupStatusSnapshot } from "./SetupAllButton";
+
+type ReadinessStats = {
+  artistCount?: number;
+  trackCount?: number;
+  playableTrackCount?: number;
+  modeledTrackCount?: number;
+  mentionCount?: number;
+};
 
 const STEP_LABELS = [
-  "Import listening history",
-  "Learn your taste",
-  "Build your radio model",
-  "Add music context",
-  "Prepare song catalog",
-  "Model songs",
+  {
+    title: "Import Spotify library",
+    body: "Saved songs, artists, and recent plays",
+  },
+  {
+    title: "Learn artist taste",
+    body: "Genres and artist metadata",
+  },
+  {
+    title: "Model artist similarity",
+    body: "Taste vectors for recommendations",
+  },
+  {
+    title: "Add music context",
+    body: "Editorial and source signals",
+  },
+  {
+    title: "Prepare playable songs",
+    body: "Spotify tracks for your artists",
+  },
+  {
+    title: "Model song matches",
+    body: "Track-level search and audio context",
+  },
 ];
 
 export default function SetupBanner({
@@ -18,6 +44,8 @@ export default function SetupBanner({
   onSetupComplete?: () => void;
 }) {
   const [completedSteps, setCompletedSteps] = useState<Set<number>>(new Set());
+  const [stats, setStats] = useState<ReadinessStats | null>(null);
+  const [setupStatus, setSetupStatus] = useState<SetupStatusSnapshot | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const checkedRef = useRef(false);
 
@@ -34,6 +62,7 @@ export default function SetupBanner({
         if (steps?.tracks) done.add(5);
         if (steps?.modeledTracks) done.add(6);
         setCompletedSteps(done);
+        setStats(data.stats ?? null);
       })
       .catch(() => {});
   }
@@ -51,21 +80,27 @@ export default function SetupBanner({
 
   const allDone = completedSteps.size >= 6;
   const noneStarted = completedSteps.size === 0;
+  const isRunning = setupStatus?.state === "running";
+  const firstMissingStep =
+    STEP_LABELS.findIndex((_, i) => !completedSteps.has(i + 1)) + 1 || STEP_LABELS.length;
+  const activeStep = isRunning && setupStatus.step > 0 ? setupStatus.step : firstMissingStep;
 
   if (allDone || dismissed) return null;
 
   return (
-    <div className="rounded-xl border border-emerald-200 bg-gradient-to-br from-emerald-50 to-white p-4 sm:p-5 space-y-3 mb-4 lg:mb-6">
+    <div className="rounded-xl border border-emerald-200 bg-white p-4 sm:p-5 space-y-4 mb-4 lg:mb-6 shadow-sm shadow-emerald-100/60">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-neutral-900 flex items-center gap-2">
             <span className="text-base">🎶</span>
-            {noneStarted ? "Set up your music profile" : "Profile setup in progress"}
+            {noneStarted ? "Build your music profile" : isRunning ? "Building your music profile" : "Profile setup in progress"}
           </h3>
           <p className="text-xs text-neutral-500 mt-1 leading-relaxed">
             {noneStarted
-              ? "One click imports your Spotify taste and builds your personal radio model. Takes about 2 minutes."
-              : `${completedSteps.size} of 6 steps complete. Run setup to finish the remaining steps.`}
+              ? "MusicLife needs one setup pass before Discover feels personal. Larger libraries can take several minutes, and you can come back while it runs."
+              : isRunning
+              ? setupStatus?.message || `${completedSteps.size} of 6 steps complete.`
+              : `${completedSteps.size} of 6 steps complete. Continue setup to finish the remaining steps.`}
           </p>
         </div>
         <button
@@ -79,29 +114,108 @@ export default function SetupBanner({
         </button>
       </div>
 
-      {/* Step indicators */}
-      <div className="flex gap-1">
-        {STEP_LABELS.map((label, i) => (
-          <div
-            key={i}
-            className={[
-              "h-1.5 flex-1 rounded-full transition-colors",
-              completedSteps.has(i + 1)
-                ? "bg-emerald-500"
-                : "bg-neutral-200",
-            ].join(" ")}
-            title={`Step ${i + 1}: ${label}`}
-          />
-        ))}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <SetupStat label="Saved tracks" value={stats?.trackCount} />
+        <SetupStat label="Artists" value={stats?.artistCount} />
+        <SetupStat label="Playable songs" value={stats?.playableTrackCount} />
+        <SetupStat label="Modeled songs" value={stats?.modeledTrackCount} />
       </div>
 
-      <div className="max-w-xs">
+      <div className="space-y-2">
+        <div className="flex gap-1">
+          {STEP_LABELS.map((step, i) => (
+            <div
+              key={step.title}
+              className={[
+                "h-1.5 flex-1 rounded-full transition-colors",
+                completedSteps.has(i + 1)
+                  ? "bg-emerald-500"
+                  : activeStep === i + 1
+                  ? "bg-emerald-300"
+                  : "bg-neutral-200",
+              ].join(" ")}
+              title={`Step ${i + 1}: ${step.title}`}
+            />
+          ))}
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          {STEP_LABELS.map((step, i) => {
+            const stepNumber = i + 1;
+            const done = completedSteps.has(stepNumber);
+            const active = !done && activeStep === stepNumber;
+            return (
+              <div
+                key={step.title}
+                className={[
+                  "rounded-lg border px-3 py-2 min-h-[64px]",
+                  done
+                    ? "border-emerald-100 bg-emerald-50/80"
+                    : active
+                    ? "border-emerald-200 bg-white"
+                    : "border-neutral-100 bg-neutral-50/70",
+                ].join(" ")}
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    className={[
+                      "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold",
+                      done
+                        ? "bg-emerald-500 text-white"
+                        : active
+                        ? "bg-emerald-100 text-emerald-700"
+                        : "bg-neutral-200 text-neutral-500",
+                    ].join(" ")}
+                  >
+                    {done ? "✓" : stepNumber}
+                  </span>
+                  <p className="text-xs font-medium text-neutral-800 truncate">
+                    {step.title}
+                  </p>
+                </div>
+                <p className="mt-1 pl-7 text-[10px] leading-snug text-neutral-500">
+                  {active && isRunning ? setupStatus?.message || step.body : step.body}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {stats?.mentionCount ? (
+        <p className="text-[10px] text-neutral-400 leading-relaxed">
+          Current context includes {stats.mentionCount.toLocaleString()} music-source mention
+          {stats.mentionCount === 1 ? "" : "s"} for discovery and buzz signals.
+        </p>
+      ) : null}
+
+      <div className="max-w-sm">
         <SetupAllButton
           isReady={false}
           onProgress={checkReadiness}
           onComplete={onSetupComplete}
+          onStatusChange={setSetupStatus}
         />
       </div>
+    </div>
+  );
+}
+
+function SetupStat({
+  label,
+  value,
+}: {
+  label: string;
+  value?: number;
+}) {
+  return (
+    <div className="rounded-lg border border-neutral-100 bg-neutral-50/70 px-3 py-2">
+      <p className="text-[10px] font-medium uppercase tracking-wide text-neutral-400">
+        {label}
+      </p>
+      <p className="mt-0.5 text-sm font-semibold tabular-nums text-neutral-900">
+        {typeof value === "number" ? value.toLocaleString() : "—"}
+      </p>
     </div>
   );
 }

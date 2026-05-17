@@ -9,7 +9,15 @@ type JobStatusResponse = {
   total_steps?: number | null;
 };
 
-type RunState = "idle" | "running" | "success" | "error";
+export type RunState = "idle" | "running" | "success" | "error";
+
+export type SetupStatusSnapshot = {
+  state: RunState;
+  message: string;
+  step: number;
+  totalSteps: number;
+  partialSuccess: boolean;
+};
 
 const TOTAL_STEPS = 6;
 const STORAGE_KEY = "musiclife.setupAll.jobId";
@@ -25,10 +33,12 @@ export default function SetupAllButton({
   isReady = false,
   onProgress,
   onComplete,
+  onStatusChange,
 }: {
   isReady?: boolean;
   onProgress?: () => void;
   onComplete?: () => void;
+  onStatusChange?: (status: SetupStatusSnapshot) => void;
 }) {
   const [state, setState]     = useState<RunState>("idle");
   const [message, setMessage] = useState("");
@@ -44,6 +54,16 @@ export default function SetupAllButton({
   const onCompleteRef = useRef(onComplete);
   onProgressRef.current = onProgress;
   onCompleteRef.current = onComplete;
+
+  useEffect(() => {
+    onStatusChange?.({
+      state,
+      message,
+      step,
+      totalSteps: TOTAL_STEPS,
+      partialSuccess,
+    });
+  }, [message, onStatusChange, partialSuccess, state, step]);
 
   const cleanup = useCallback(() => {
     if (intervalRef.current) {
