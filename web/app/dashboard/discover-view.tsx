@@ -358,7 +358,7 @@ function isLiveSourced(song: SongRecommendation): boolean {
   const reasons = song.reasons.join(" ").toLowerCase();
   return (
     song.track_id === null ||
-    song.artist_id.startsWith("live:") ||
+    String(song.artist_id).startsWith("live:") ||
     reasons.includes("live spotify") ||
     reasons.includes("outside catalog") ||
     reasons.includes("prompt expansion") ||
@@ -378,10 +378,24 @@ function stationMixSummary(
 ) {
   const groups = groupSongsByLane(songs);
   const liveCount = songs.filter(isLiveSourced).length;
+  const catalogCount = Math.max(0, songs.length - liveCount);
+  const hasPrompt = Boolean(prompt.trim());
+  let sourceInsight = "Catalog had enough strong modeled matches, so live search stayed in reserve.";
+  if (liveCount > 0 && catalogCount > 0) {
+    sourceInsight = hasPrompt
+      ? "Expanded outside the catalog for this prompt while keeping modeled tracks as the base."
+      : "Added live Spotify matches to keep the station fresh beyond the modeled catalog.";
+  } else if (liveCount > 0) {
+    sourceInsight = "Built from live Spotify because the catalog did not return enough playable matches.";
+  } else if (songs.length === 0) {
+    sourceInsight = "Tune the station to see whether the queue comes from the catalog, live Spotify, or both.";
+  }
+
   return {
     total: songs.length,
     liveCount,
-    catalogCount: Math.max(0, songs.length - liveCount),
+    catalogCount,
+    sourceInsight,
     promptLabel: prompt.trim() || "Taste radio",
     presetLabel: activePresetLabel(weights),
     laneCounts: {
@@ -400,7 +414,7 @@ function trackIdentity(song: SongRecommendation): string {
 }
 
 function artistIdentity(song: SongRecommendation): string {
-  return (song.artist_id || song.artist_name).toLowerCase();
+  return String(song.artist_id || song.artist_name).toLowerCase();
 }
 
 function spreadArtistsForDisplay(
@@ -1231,10 +1245,16 @@ export default function DiscoverView({
               </p>
             </div>
             {readiness && (
-              <div className="grid grid-cols-3 gap-2 text-center sm:min-w-[280px]">
-                <StationMetric value={readiness.artistCount} label="artists" />
-                <StationMetric value={readiness.embeddedCount} label="modeled" />
-                <StationMetric value={readiness.playableTrackCount} label="tracks" />
+              <div className="space-y-2 sm:min-w-[320px]">
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <StationMetric value={readiness.artistCount} label="taste artists" />
+                  <StationMetric value={readiness.embeddedCount} label="modeled" />
+                  <StationMetric value={readiness.playableTrackCount} label="catalog tracks" />
+                </div>
+                <div className="flex items-center justify-center gap-1.5 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-[11px] font-medium text-emerald-700">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
+                  Live Spotify expansion enabled
+                </div>
               </div>
             )}
           </div>
@@ -1551,7 +1571,7 @@ function StationMetric({ value, label }: { value: number; label: string }) {
       <div className="text-sm font-semibold tabular-nums text-neutral-950">
         {value.toLocaleString()}
       </div>
-      <div className="text-[10px] text-neutral-400">{label}</div>
+      <div className="text-[10px] leading-tight text-neutral-400">{label}</div>
     </div>
   );
 }
@@ -1561,6 +1581,7 @@ function StationMixStrip({
 }: {
   mix: ReturnType<typeof stationMixSummary>;
 }) {
+  const sourceTotal = Math.max(1, mix.catalogCount + mix.liveCount);
   const laneTotal = Math.max(
     1,
     mix.laneCounts.deep_cuts + mix.laneCounts.popular + mix.laneCounts.radio_hits
@@ -1568,7 +1589,7 @@ function StationMixStrip({
 
   return (
     <section className="rounded-lg border border-neutral-200 bg-white px-4 py-3 shadow-sm shadow-neutral-100/70">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-semibold text-neutral-950">Station Mix</h3>
@@ -1582,27 +1603,57 @@ function StationMixStrip({
           <p className="mt-1 text-xs leading-relaxed text-neutral-500">
             {mix.total} songs: {mix.catalogCount} catalog-ranked and {mix.liveCount} live Spotify sourced.
           </p>
+          <p className="mt-1 text-xs leading-relaxed text-neutral-400">
+            {mix.sourceInsight}
+          </p>
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[360px]">
-          <MixTile
-            label="Deep cuts"
-            value={mix.laneCounts.deep_cuts}
-            pct={mix.laneCounts.deep_cuts / laneTotal}
-            tone="bg-violet-500"
-          />
-          <MixTile
-            label="Popular"
-            value={mix.laneCounts.popular}
-            pct={mix.laneCounts.popular / laneTotal}
-            tone="bg-amber-500"
-          />
-          <MixTile
-            label="Radio hits"
-            value={mix.laneCounts.radio_hits}
-            pct={mix.laneCounts.radio_hits / laneTotal}
-            tone="bg-emerald-500"
-          />
+        <div className="grid gap-3 xl:min-w-[560px]">
+          <div>
+            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-400">
+              Source mix
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <MixTile
+                label="Catalog-ranked"
+                value={mix.catalogCount}
+                pct={mix.catalogCount / sourceTotal}
+                tone="bg-neutral-800"
+              />
+              <MixTile
+                label="Live Spotify"
+                value={mix.liveCount}
+                pct={mix.liveCount / sourceTotal}
+                tone="bg-emerald-500"
+              />
+            </div>
+          </div>
+
+          <div>
+            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-400">
+              Discovery balance
+            </p>
+            <div className="grid gap-2 sm:grid-cols-3">
+              <MixTile
+                label="Deep cuts"
+                value={mix.laneCounts.deep_cuts}
+                pct={mix.laneCounts.deep_cuts / laneTotal}
+                tone="bg-violet-500"
+              />
+              <MixTile
+                label="Popular"
+                value={mix.laneCounts.popular}
+                pct={mix.laneCounts.popular / laneTotal}
+                tone="bg-amber-500"
+              />
+              <MixTile
+                label="Radio hits"
+                value={mix.laneCounts.radio_hits}
+                pct={mix.laneCounts.radio_hits / laneTotal}
+                tone="bg-emerald-500"
+              />
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -1869,9 +1920,13 @@ function SongRow({
                 {lane.label}
               </span>
             )}
-            {isLiveSourced(song) && (
+            {isLiveSourced(song) ? (
               <span className="inline-block rounded-full bg-blue-50 px-1.5 py-0.5 text-[9px] font-medium text-blue-600">
                 Live Spotify
+              </span>
+            ) : (
+              <span className="inline-block rounded-full bg-neutral-100 px-1.5 py-0.5 text-[9px] font-medium text-neutral-500">
+                Catalog-ranked
               </span>
             )}
             {song.top_mention?.source && (
