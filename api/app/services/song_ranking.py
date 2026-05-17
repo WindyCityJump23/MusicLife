@@ -34,6 +34,7 @@ from app.services.ranking import (
     _parse_vector,
     _percentile_rank,
 )
+from app.services.preference_weights import recency_multiplier, track_preference_weight
 from app.services.vector_rpc import (
     match_artists,
     max_mention_similarity_per_artist,
@@ -399,29 +400,18 @@ def recommend_songs(
             break
         _ut_offset += _ut_page
 
+    now = datetime.now(timezone.utc)
+
     # ── User audio feature profile ─────────────────────────────
     # Build a sound fingerprint from the user's most-played library tracks.
-    # Weighted by play_count so frequently-heard tracks dominate the profile.
+    # Weighted by play_count plus save/listen recency so recent no-play saves
+    # can influence the sound profile without erasing long-term taste.
     _AUDIO_FEATS = ("energy", "danceability", "valence", "acousticness", "instrumentalness")
     user_audio_pref: dict[str, float] | None = None
     if user_track_map:
-        # Sort by effective weight: play_count when available, otherwise
-        # recency of added_at so recently-liked tracks with no play data
-        # still contribute meaningfully to the audio profile.
         def _effective_weight(tid: int) -> float:
-            _e = user_track_map[tid]
-            _pc = _e.get("play_count") or 0
-            if _pc > 0:
-                return float(_pc)
-            _added = _e.get("added_at")
-            if _added:
-                try:
-                    _a_dt = datetime.fromisoformat(_added.replace("Z", "+00:00"))
-                    _days = max((now - _a_dt).days, 0)
-                    return max(0.1, 1.0 - (_days / 365))
-                except (ValueError, AttributeError):
-                    pass
-            return 1.0
+            _entry = user_track_map.get(tid)
+            return track_preference_weight(_entry, now) if _entry else 1.0
 
         _audio_ids = sorted(
             user_track_map.keys(),
@@ -488,7 +478,6 @@ def recommend_songs(
         if aid is not None:
             mentions_by_artist[int(aid)].append(m)
 
-    now = datetime.now(timezone.utc)
     recent_window_days = 45
 
     effective_prompt_vector = prompt_vector if prompt_vector else taste_vector
@@ -1060,16 +1049,9 @@ def recommend_songs(
                 # not a repeat. Penalty relaxes from 0.45 (recent) → 0.80 (stale).
                 # Falls back to added_at when no play data exists.
                 _entry = user_track_map.get(track_id) or {}
-                _staleness = 1.0
                 _recency_ts = _entry.get("last_played_at") or _entry.get("added_at")
-                if _recency_ts:
-                    try:
-                        _lp_dt = datetime.fromisoformat(_recency_ts.replace("Z", "+00:00"))
-                        _days_since = max((now - _lp_dt).days, 0)
-                        _staleness = max(0.0, 1.0 - _days_since / 180)
-                    except (ValueError, AttributeError):
-                        pass
-                track_boost *= 0.45 + 0.35 * (1.0 - _staleness)
+                _freshness = recency_multiplier(_recency_ts, now, floor=0.0, half_life_days=90.0)
+                track_boost *= 0.45 + 0.35 * (1.0 - _freshness)
             elif is_library_artist:
                 track_boost *= 0.90  # Very mild — new song from a known artist = great find
 

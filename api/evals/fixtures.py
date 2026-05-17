@@ -416,6 +416,8 @@ class UserScenario:
     taste_vector: list[float]
     playlist_artist_ids: list[int] = field(default_factory=list)
     feedback: list[dict] = field(default_factory=list)  # [{"artist_id": int, "spotify_track_id": str, "feedback": 1|-1}]
+    favorites: list[dict] = field(default_factory=list)
+    user_tracks: list[dict] = field(default_factory=list)
     description: str = ""
 
 
@@ -462,15 +464,21 @@ def build_mock_client(
     mentions = mentions if mentions is not None else (RECENT_MENTIONS + STALE_MENTIONS)
     sources = sources if sources is not None else SOURCES
 
-    user_tracks = [
-        {
-            "user_id": scenario.user_id,
-            "track_id": tid,
-            "play_count": 5,
-            "last_played_at": datetime.now(timezone.utc).isoformat(),
-        }
-        for tid in scenario.played_track_ids
-    ]
+    if scenario.user_tracks:
+        user_tracks = [
+            {"user_id": scenario.user_id, **row}
+            for row in scenario.user_tracks
+        ]
+    else:
+        user_tracks = [
+            {
+                "user_id": scenario.user_id,
+                "track_id": tid,
+                "play_count": 5,
+                "last_played_at": datetime.now(timezone.utc).isoformat(),
+            }
+            for tid in scenario.played_track_ids
+        ]
 
     user_top_artists = [
         {
@@ -498,6 +506,17 @@ def build_mock_client(
         }
         for i, row in enumerate(scenario.feedback)
     ]
+    user_favorites = [
+        {
+            "user_id": scenario.user_id,
+            "track_id": row.get("track_id"),
+            "spotify_track_id": row.get("spotify_track_id", f"sp_fav_{i}"),
+            "artist_name": row.get("artist_name"),
+            "track_name": row.get("track_name"),
+            "created_at": row.get("created_at", datetime.now(timezone.utc).isoformat()),
+        }
+        for i, row in enumerate(scenario.favorites)
+    ]
 
     return MockSupabaseClient(
         {
@@ -510,5 +529,6 @@ def build_mock_client(
             "playlists": playlists,
             "playlist_items": playlist_items,
             "user_feedback": user_feedback,
+            "user_favorites": user_favorites,
         }
     )

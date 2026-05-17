@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Make `app` importable when running from the api/ directory or repo root.
@@ -20,7 +21,13 @@ _API_DIR = Path(__file__).parent.parent
 if str(_API_DIR) not in sys.path:
     sys.path.insert(0, str(_API_DIR))
 
-from app.services.ranking import _diversity_rerank, _percentile_rank, rank_candidates
+from app.services.preference_weights import track_preference_weight
+from app.services.ranking import (
+    _diversity_rerank,
+    _get_user_artist_weights,
+    _percentile_rank,
+    rank_candidates,
+)
 from evals.fixtures import (
     ALL_ARTISTS,
     ELEC_ARTISTS,
@@ -37,6 +44,7 @@ from evals.fixtures import (
     UserScenario,
     _make_artist,
     _make_mention,
+    _make_track,
     _rand_vec,
     build_mock_client,
 )
@@ -509,6 +517,127 @@ def eval_thumbs_up_boosts_artist() -> EvalResult:
     )
 
 
+def eval_saved_track_recency_weights_gentle() -> EvalResult:
+    """Recent zero-play saves should outweigh old saves without erasing them."""
+    now = datetime.now(timezone.utc)
+    recent_artist = _make_artist(720, "Recent Save Artist", ["jazz"], vec_seed=60, popularity=70)
+    old_artist = _make_artist(721, "Old Save Artist", ["jazz"], vec_seed=61, popularity=70)
+    recent_track = _make_track(1720, "Recent Save Track", 720, popularity=50, vec_seed=1720)
+    old_track = _make_track(1721, "Old Save Track", 721, popularity=50, vec_seed=1721)
+    scenario = UserScenario(
+        user_id="saved_recency_test",
+        library_artist_ids=[720, 721],
+        played_track_ids=[],
+        top_artist_ids=[],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        user_tracks=[
+            {
+                "track_id": 1720,
+                "play_count": 0,
+                "added_at": (now - timedelta(days=7)).isoformat(),
+            },
+            {
+                "track_id": 1721,
+                "play_count": 0,
+                "added_at": (now - timedelta(days=3 * 365)).isoformat(),
+            },
+        ],
+    )
+    client = build_mock_client(
+        scenario,
+        artists=[recent_artist, old_artist],
+        tracks=[recent_track, old_track],
+        mentions=[],
+    )
+    weights = _get_user_artist_weights(client, scenario.user_id)
+    recent = weights.get(720, 0.0)
+    old = weights.get(721, 0.0)
+    passed = recent > old * 2 and old > 0.35
+    return EvalResult(
+        name="saved_track_recency_weights_gentle",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"recent={recent:.3f}, old={old:.3f}, ratio={recent / max(old, 0.001):.1f}",
+    )
+
+
+def eval_old_saved_tracks_keep_meaningful_weight() -> EvalResult:
+    """Gentle decay should keep long-term library taste above the old 0.1 floor."""
+    now = datetime.now(timezone.utc)
+    weight = track_preference_weight(
+        {
+            "play_count": 0,
+            "added_at": (now - timedelta(days=5 * 365)).isoformat(),
+        },
+        now,
+    )
+    passed = weight >= 0.35
+    return EvalResult(
+        name="old_saved_tracks_keep_meaningful_weight",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"5-year zero-play save weight={weight:.3f}",
+    )
+
+
+def eval_last_played_takes_priority_over_added_at() -> EvalResult:
+    """Recent listens should beat old listens even when added_at points the other way."""
+    now = datetime.now(timezone.utc)
+    recent_play = track_preference_weight(
+        {
+            "play_count": 0,
+            "added_at": (now - timedelta(days=1000)).isoformat(),
+            "last_played_at": (now - timedelta(days=3)).isoformat(),
+        },
+        now,
+    )
+    old_play = track_preference_weight(
+        {
+            "play_count": 0,
+            "added_at": (now - timedelta(days=3)).isoformat(),
+            "last_played_at": (now - timedelta(days=1000)).isoformat(),
+        },
+        now,
+    )
+    passed = recent_play > old_play * 2
+    return EvalResult(
+        name="last_played_takes_priority_over_added_at",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"recent_play={recent_play:.3f}, old_play={old_play:.3f}",
+    )
+
+
+def eval_null_track_favorite_resolves_by_artist_name() -> EvalResult:
+    """Favorites without internal track IDs should still contribute when safely resolvable."""
+    artist = _make_artist(730, "Resolvable Favorite Artist", ["jazz"], vec_seed=62, popularity=70)
+    scenario = UserScenario(
+        user_id="favorite_null_track_test",
+        library_artist_ids=[],
+        played_track_ids=[],
+        top_artist_ids=[],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        favorites=[
+            {
+                "track_id": None,
+                "spotify_track_id": "missing_spotify_track",
+                "artist_name": "Resolvable Favorite Artist",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ],
+    )
+    client = build_mock_client(scenario, artists=[artist], tracks=[], mentions=[])
+    weights = _get_user_artist_weights(client, scenario.user_id)
+    weight = weights.get(730, 0.0)
+    passed = weight >= 14.0
+    return EvalResult(
+        name="null_track_favorite_resolves_by_artist_name",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"favorite artist weight={weight:.3f}",
+    )
+
+
 # ── Suite runner ─────────────────────────────────────────────────
 
 
@@ -526,4 +655,8 @@ def run_suite() -> list[EvalResult]:
         eval_diversity_rerank_pool_size(),
         eval_thumbs_down_penalizes_artist(),
         eval_thumbs_up_boosts_artist(),
+        eval_saved_track_recency_weights_gentle(),
+        eval_old_saved_tracks_keep_meaningful_weight(),
+        eval_last_played_takes_priority_over_added_at(),
+        eval_null_track_favorite_resolves_by_artist_name(),
     ]

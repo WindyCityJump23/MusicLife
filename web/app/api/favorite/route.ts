@@ -1,8 +1,163 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
+
+type SpotifyTrack = {
+  id: string;
+  name: string;
+  duration_ms?: number;
+  explicit?: boolean;
+  popularity?: number;
+  album?: {
+    name?: string;
+    release_date?: string;
+    release_date_precision?: string;
+  };
+  artists?: Array<{
+    id?: string;
+    name?: string;
+  }>;
+};
+
+type ResolvedFavoriteTrack = {
+  trackId: number | null;
+  trackName: string | undefined;
+  artistName: string | undefined;
+};
+
+function normalizeSpotifyReleaseDate(track: SpotifyTrack): string | null {
+  const releaseDate = track.album?.release_date;
+  if (!releaseDate) return null;
+  if (/^\d{4}$/.test(releaseDate)) return `${releaseDate}-01-01`;
+  if (/^\d{4}-\d{2}$/.test(releaseDate)) return `${releaseDate}-01`;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(releaseDate)) return releaseDate;
+  return null;
+}
+
+async function fetchSpotifyTrack(
+  accessToken: string,
+  spotifyTrackId: string
+): Promise<SpotifyTrack | null> {
+  const res = await fetch(`https://api.spotify.com/v1/tracks/${spotifyTrackId}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    cache: "no-store",
+  });
+  if (!res.ok) return null;
+  return (await res.json().catch(() => null)) as SpotifyTrack | null;
+}
+
+async function resolveTrackForFavorite({
+  sb,
+  spotifyTrackId,
+  accessToken,
+  fallbackTrackName,
+  fallbackArtistName,
+}: {
+  sb: SupabaseClient;
+  spotifyTrackId: string;
+  accessToken: string;
+  fallbackTrackName?: string;
+  fallbackArtistName?: string;
+}): Promise<ResolvedFavoriteTrack> {
+  const { data: existingTrack } = await sb
+    .from("tracks")
+    .select("id,name,artist_id")
+    .eq("spotify_track_id", spotifyTrackId)
+    .maybeSingle();
+
+  if (existingTrack?.id) {
+    let resolvedArtistName = fallbackArtistName;
+    if (!resolvedArtistName && existingTrack.artist_id) {
+      const { data: artistRow } = await sb
+        .from("artists")
+        .select("name")
+        .eq("id", existingTrack.artist_id)
+        .maybeSingle();
+      resolvedArtistName = artistRow?.name ?? undefined;
+    }
+    return {
+      trackId: Number(existingTrack.id),
+      trackName: existingTrack.name ?? fallbackTrackName,
+      artistName: resolvedArtistName,
+    };
+  }
+
+  const spotifyTrack = await fetchSpotifyTrack(accessToken, spotifyTrackId);
+  if (!spotifyTrack?.id) {
+    return {
+      trackId: null,
+      trackName: fallbackTrackName,
+      artistName: fallbackArtistName,
+    };
+  }
+
+  const primaryArtist = (spotifyTrack.artists ?? []).find((artist) => artist.id) ?? spotifyTrack.artists?.[0];
+  let artistId: number | null = null;
+  if (primaryArtist?.id) {
+    const { data: artistRow } = await sb
+      .from("artists")
+      .upsert(
+        {
+          spotify_artist_id: primaryArtist.id,
+          name: primaryArtist.name ?? fallbackArtistName ?? "Unknown Artist",
+        },
+        { onConflict: "spotify_artist_id" }
+      )
+      .select("id")
+      .maybeSingle();
+    artistId = artistRow?.id ? Number(artistRow.id) : null;
+  } else if (primaryArtist?.name || fallbackArtistName) {
+    const { data: artistRow } = await sb
+      .from("artists")
+      .select("id")
+      .eq("name", primaryArtist?.name ?? fallbackArtistName)
+      .maybeSingle();
+    artistId = artistRow?.id ? Number(artistRow.id) : null;
+  }
+
+  const { data: trackRow } = await sb
+    .from("tracks")
+    .upsert(
+      {
+        spotify_track_id: spotifyTrack.id,
+        artist_id: artistId,
+        name: spotifyTrack.name,
+        album_name: spotifyTrack.album?.name ?? null,
+        duration_ms: spotifyTrack.duration_ms ?? null,
+        explicit: spotifyTrack.explicit ?? null,
+        popularity: spotifyTrack.popularity ?? null,
+        release_date: normalizeSpotifyReleaseDate(spotifyTrack),
+      },
+      { onConflict: "spotify_track_id" }
+    )
+    .select("id")
+    .maybeSingle();
+
+  return {
+    trackId: trackRow?.id ? Number(trackRow.id) : null,
+    trackName: spotifyTrack.name,
+    artistName: primaryArtist?.name ?? fallbackArtistName,
+  };
+}
+
+async function insertUserTrackForFavorite(
+  sb: SupabaseClient,
+  userId: string,
+  trackId: number | null
+) {
+  if (!trackId) return;
+  await sb.from("user_tracks").upsert(
+    {
+      user_id: userId,
+      track_id: trackId,
+      added_at: new Date().toISOString(),
+      play_count: 0,
+    },
+    { onConflict: "user_id,track_id", ignoreDuplicates: true }
+  );
+}
 
 /**
  * POST /api/favorite
@@ -105,20 +260,22 @@ export async function POST(request: NextRequest) {
     const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
     const sb = createClient(sbUrl, sbKey, { auth: { persistSession: false } });
 
-    // Look up the internal track_id if we have it
-    const { data: trackRow } = await sb
-      .from("tracks")
-      .select("id")
-      .eq("spotify_track_id", spotifyTrackId)
-      .maybeSingle();
+    const resolvedTrack = await resolveTrackForFavorite({
+      sb,
+      spotifyTrackId,
+      accessToken,
+      fallbackTrackName: trackName,
+      fallbackArtistName: artistName,
+    });
+    await insertUserTrackForFavorite(sb, user.userId, resolvedTrack.trackId);
 
     await sb.from("user_favorites").upsert(
       {
         user_id: user.userId,
-        track_id: trackRow?.id ?? null,
+        track_id: resolvedTrack.trackId,
         spotify_track_id: spotifyTrackId,
-        track_name: trackName ?? null,
-        artist_name: artistName ?? null,
+        track_name: resolvedTrack.trackName ?? trackName ?? null,
+        artist_name: resolvedTrack.artistName ?? artistName ?? null,
         score: score ?? null,
         source,
       },
