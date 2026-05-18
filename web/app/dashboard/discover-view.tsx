@@ -1221,7 +1221,7 @@ export default function DiscoverView({
           return;
         }
 
-        const promptForLiveSearch = interpretedPrompt || prompt;
+        const promptForLiveSearch = prompt.trim() || interpretedPrompt;
         if (promptForLiveSearch.trim()) {
           setLoadingStage("Searching Spotify for your prompt\u2026");
           const promptSongs = await fetchPromptSpotifySongs(promptForLiveSearch, accessToken);
