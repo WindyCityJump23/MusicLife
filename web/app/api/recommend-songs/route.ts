@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
+import { supabaseServer } from "@/lib/supabase-server";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 55;
@@ -26,6 +27,21 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json().catch(() => ({}));
+  const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+  let tasteStrategy = body.taste_strategy ?? null;
+
+  if (!prompt && tasteStrategy === null && body.use_taste_strategy !== false) {
+    try {
+      const { data } = await supabaseServer()
+        .from("user_taste_strategy")
+        .select("genre_boosts,genre_avoids,discovery_mix,live_expansion,freshness")
+        .eq("user_id", user.userId)
+        .maybeSingle();
+      tasteStrategy = data ?? null;
+    } catch (err) {
+      console.warn("recommend-songs: taste strategy unavailable", err);
+    }
+  }
 
   const upstream = await fetch(`${apiUrl}/recommend/songs`, {
     method: "POST",
@@ -35,7 +51,7 @@ export async function POST(req: NextRequest) {
     },
     body: JSON.stringify({
       user_id: user.userId,
-      prompt: body.prompt ?? null,
+      prompt: prompt || null,
       weights: body.weights ?? { affinity: 0.4, context: 0.4, editorial: 0.2 },
       limit: body.limit ?? 30,
       exclude_library: body.exclude_library ?? false,
@@ -44,6 +60,7 @@ export async function POST(req: NextRequest) {
       history_window_runs: body.history_window_runs ?? 15,
       max_allowed_overlap: body.max_allowed_overlap ?? 0,
       novelty_mode: body.novelty_mode ?? "strict",
+      taste_strategy: prompt ? null : tasteStrategy,
     }),
   });
 

@@ -42,6 +42,7 @@ from app.services.vector_rpc import (
 )
 
 DISCOVERY_LANES = ("deep_cuts", "popular", "radio_hits")
+DEFAULT_DISCOVERY_MIX = {"deep_cuts": 38.0, "popular": 38.0, "radio_hits": 24.0}
 
 _GENRE_PHRASES = {
     "alternative rock",
@@ -268,6 +269,80 @@ def classify_prompt(prompt_text: str) -> str:
     return "genre"
 
 
+def _clean_strategy(taste_strategy: dict | None) -> dict:
+    if not isinstance(taste_strategy, dict):
+        return {}
+
+    def _clean_list(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            text = str(item or "").strip().lower()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            cleaned.append(text[:48])
+            if len(cleaned) >= 12:
+                break
+        return cleaned
+
+    live = taste_strategy.get("live_expansion")
+    freshness = taste_strategy.get("freshness")
+    mix = taste_strategy.get("discovery_mix")
+    if not isinstance(mix, dict):
+        mix = {}
+
+    def _mix_value(key: str) -> float:
+        value = mix.get(key)
+        if value is None:
+            value = DEFAULT_DISCOVERY_MIX[key]
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return DEFAULT_DISCOVERY_MIX[key]
+
+    return {
+        "genre_boosts": _clean_list(taste_strategy.get("genre_boosts")),
+        "genre_avoids": _clean_list(taste_strategy.get("genre_avoids")),
+        "discovery_mix": {
+            "deep_cuts": _mix_value("deep_cuts"),
+            "popular": _mix_value("popular"),
+            "radio_hits": _mix_value("radio_hits"),
+        },
+        "live_expansion": live if live in {"auto", "catalog", "live"} else "auto",
+        "freshness": freshness if freshness in {"newer", "balanced", "timeless"} else "balanced",
+    }
+
+
+def _genre_strategy_multiplier(genres: list[str], strategy: dict) -> float:
+    if not strategy:
+        return 1.0
+    genre_text = " ".join(g.lower() for g in genres)
+    boosted = strategy.get("genre_boosts") or []
+    avoided = strategy.get("genre_avoids") or []
+    boost_hits = sum(1 for genre in boosted if genre and genre in genre_text)
+    avoid_hits = sum(1 for genre in avoided if genre and genre in genre_text)
+    multiplier = 1.0 + min(boost_hits, 3) * 0.08 - min(avoid_hits, 3) * 0.12
+    return max(0.62, min(1.28, multiplier))
+
+
+def _freshness_strategy_multiplier(release_age_days: int | None, track_pop: float, strategy: dict) -> float:
+    freshness = strategy.get("freshness") if strategy else "balanced"
+    if freshness == "newer":
+        if release_age_days is not None and release_age_days <= 540:
+            return 1.10
+        if release_age_days is not None and release_age_days > 3650:
+            return 0.94
+    elif freshness == "timeless":
+        if track_pop >= 0.68:
+            return 1.06
+        if release_age_days is not None and release_age_days <= 180:
+            return 0.96
+    return 1.0
+
+
 def _assign_lane(
     track_pop: float,
     in_library: bool,
@@ -299,6 +374,7 @@ def recommend_songs(
     excluded_track_ids: set[str] | None = None,
     excluded_artist_ids: set[int] | None = None,
     exploration_seed: int | None = None,
+    taste_strategy: dict | None = None,
 ) -> list[dict]:
     """Return a ranked list of song-level recommendations.
 
@@ -308,6 +384,7 @@ def recommend_songs(
     genre filters rather than just embedding similarity.
     """
 
+    strategy = _clean_strategy(taste_strategy)
     artist_weights = _get_user_artist_weights(client, user_id)
     library_artist_ids = _get_user_library_artist_ids(client, user_id)
     previously_recommended = _get_previously_recommended_artist_ids(client, user_id)
@@ -1077,6 +1154,10 @@ def recommend_songs(
                 _audio_match = 1.0 - math.sqrt(_diff_sq / 4.0)
                 track_boost *= 0.88 + 0.12 * _audio_match
 
+            strategy_genre_mult = _genre_strategy_multiplier(a_info["genres"], strategy)
+            strategy_freshness_mult = _freshness_strategy_multiplier(release_age, track_pop, strategy)
+            track_boost *= strategy_genre_mult * strategy_freshness_mult
+
             # Track-level feedback: stronger signal than artist-level because
             # "I don't like THIS song" is more precise than "I don't like this artist"
             spotify_track_id = track.get("spotify_track_id") or ""
@@ -1136,6 +1217,10 @@ def recommend_songs(
                 reasons.append("Deep cut from an artist you love")
             if aid in excluded_artist_ids:
                 reasons.append("Recently surfaced")
+            if strategy_genre_mult > 1.0:
+                reasons.append("Fits your taste strategy")
+            elif strategy_genre_mult < 1.0:
+                reasons.append("Softened by your taste strategy")
             if not reasons:
                 reasons.append("Curated pick")
 
@@ -1292,7 +1377,7 @@ def recommend_songs(
     # The old path sorted one blended list and let hits crowd out discovery.
     # This enforces a Pandora-like station mix: some recognizable anchors,
     # plenty of solid popular cuts, and a real deep-cut lane.
-    diverse = _lane_aware_rerank(song_results, max(limit, 0))
+    diverse = _lane_aware_rerank(song_results, max(limit, 0), strategy)
 
     return diverse
 
@@ -1505,9 +1590,28 @@ def _lane_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
     return selected
 
 
-def _lane_targets(limit: int) -> dict[str, int]:
+def _lane_targets(limit: int, strategy: dict | None = None) -> dict[str, int]:
     if limit <= 0:
         return {lane: 0 for lane in DISCOVERY_LANES}
+    mix = (strategy or {}).get("discovery_mix") if strategy else None
+    if isinstance(mix, dict):
+        deep_pct = max(0.0, min(100.0, float(mix.get("deep_cuts") or 0.0)))
+        popular_pct = max(0.0, min(100.0, float(mix.get("popular") or 0.0)))
+        hits_pct = max(0.0, min(100.0, float(mix.get("radio_hits") or 0.0)))
+        total = deep_pct + popular_pct + hits_pct
+        if total > 0:
+            radio_hits = max(0, round(limit * (hits_pct / total)))
+            deep_cuts = max(0, round(limit * (deep_pct / total)))
+            if limit >= 3:
+                radio_hits = max(1, radio_hits)
+                deep_cuts = max(1, deep_cuts)
+            popular = max(0, limit - radio_hits - deep_cuts)
+            return {
+                "deep_cuts": deep_cuts,
+                "popular": popular,
+                "radio_hits": radio_hits,
+            }
+
     radio_hits = max(1, round(limit * 0.18))
     deep_cuts = max(2, round(limit * 0.38))
     popular = max(0, limit - radio_hits - deep_cuts)
@@ -1575,7 +1679,7 @@ def _pick_lane_candidates(
     return picks
 
 
-def _lane_aware_rerank(scored: list[dict], limit: int) -> list[dict]:
+def _lane_aware_rerank(scored: list[dict], limit: int, strategy: dict | None = None) -> list[dict]:
     if not scored or limit <= 0:
         return []
 
@@ -1598,7 +1702,7 @@ def _lane_aware_rerank(scored: list[dict], limit: int) -> list[dict]:
             reverse=True,
         )
 
-    targets = _lane_targets(limit)
+    targets = _lane_targets(limit, strategy)
     selected: list[dict] = []
     used: set[str] = set()
     artist_counts: Counter[str] = Counter()

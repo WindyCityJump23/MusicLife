@@ -58,6 +58,18 @@ type RadioReadinessSummary = {
   playableTrackCount: number;
 };
 
+type TasteStrategy = {
+  genre_boosts: string[];
+  genre_avoids: string[];
+  discovery_mix: {
+    deep_cuts: number;
+    popular: number;
+    radio_hits: number;
+  };
+  live_expansion: "auto" | "catalog" | "live";
+  freshness: "newer" | "balanced" | "timeless";
+};
+
 function emptyDiscoveryGroups(): Record<DiscoveryLaneId, SongRecommendation[]> {
   return {
     radio_hits: [],
@@ -113,6 +125,7 @@ type DiscoverCachePayload = {
   savedAt: number;
   prompt: string;
   weights: Preset["weights"];
+  strategyKey: string;
   results: SongRecommendation[];
 };
 
@@ -380,7 +393,7 @@ function stationMixSummary(
   const liveCount = songs.filter(isLiveSourced).length;
   const catalogCount = Math.max(0, songs.length - liveCount);
   const hasPrompt = Boolean(prompt.trim());
-  let sourceInsight = "Catalog had enough strong modeled matches, so live search stayed in reserve.";
+  let sourceInsight = "Catalog had enough strong modeled matches. Live Spotify is only used when the catalog needs expansion or your prompt asks for fresher outside-catalog matches.";
   if (liveCount > 0 && catalogCount > 0) {
     sourceInsight = hasPrompt
       ? "Expanded outside the catalog for this prompt while keeping modeled tracks as the base."
@@ -463,14 +476,29 @@ function sameWeights(a: Preset["weights"], b: Preset["weights"]): boolean {
   return a.affinity === b.affinity && a.context === b.context && a.editorial === b.editorial;
 }
 
-function readDiscoverCache(prompt: string, weights: Preset["weights"]): SongRecommendation[] | null {
+function strategyCacheKey(strategy: TasteStrategy | null): string {
+  return strategy ? JSON.stringify(strategy) : "default";
+}
+
+function readDiscoverCache(
+  prompt: string,
+  weights: Preset["weights"],
+  strategyKey: string
+): SongRecommendation[] | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.sessionStorage.getItem(DISCOVER_CACHE_KEY);
     if (!raw) return null;
     const cached = JSON.parse(raw) as DiscoverCachePayload;
     const fresh = Date.now() - cached.savedAt < DISCOVER_CACHE_TTL_MS;
-    if (!fresh || cached.prompt !== prompt || !sameWeights(cached.weights, weights)) return null;
+    if (
+      !fresh ||
+      cached.prompt !== prompt ||
+      !sameWeights(cached.weights, weights) ||
+      cached.strategyKey !== strategyKey
+    ) {
+      return null;
+    }
     return Array.isArray(cached.results) ? cached.results : null;
   } catch {
     return null;
@@ -480,6 +508,7 @@ function readDiscoverCache(prompt: string, weights: Preset["weights"]): SongReco
 function writeDiscoverCache(
   prompt: string,
   weights: Preset["weights"],
+  strategyKey: string,
   results: SongRecommendation[]
 ): void {
   if (typeof window === "undefined") return;
@@ -488,6 +517,7 @@ function writeDiscoverCache(
       savedAt: Date.now(),
       prompt,
       weights,
+      strategyKey,
       results,
     };
     window.sessionStorage.setItem(DISCOVER_CACHE_KEY, JSON.stringify(payload));
@@ -672,7 +702,13 @@ function liveTrackToRecommendation(
   return recommendation;
 }
 
-function shouldRunLiveExpansion(songs: SongRecommendation[], currentPrompt: string): boolean {
+function shouldRunLiveExpansion(
+  songs: SongRecommendation[],
+  currentPrompt: string,
+  strategy: TasteStrategy | null
+): boolean {
+  if (strategy?.live_expansion === "catalog" && !currentPrompt.trim()) return false;
+  if (strategy?.live_expansion === "live" && !currentPrompt.trim()) return true;
   if (songs.length < TARGET_SONGS) return true;
   if (songs.length < LIVE_EXPANSION_POOL_TARGET) return true;
   if (currentPrompt.trim()) return true;
@@ -681,9 +717,10 @@ function shouldRunLiveExpansion(songs: SongRecommendation[], currentPrompt: stri
 
 async function fetchLiveCandidateSongs(
   currentPrompt: string,
-  existingSongs: SongRecommendation[]
+  existingSongs: SongRecommendation[],
+  strategy: TasteStrategy | null
 ): Promise<SongRecommendation[]> {
-  if (!shouldRunLiveExpansion(existingSongs, currentPrompt)) return [];
+  if (!shouldRunLiveExpansion(existingSongs, currentPrompt, strategy)) return [];
 
   const intentRes = await fetch("/api/live-candidate-intents", {
     method: "POST",
@@ -780,13 +817,35 @@ export default function DiscoverView({
     failed: string[];
   } | null>(null);
   const [playAllState, setPlayAllState] = useState<"idle" | "loading">("idle");
+  const [tasteStrategy, setTasteStrategy] = useState<TasteStrategy | null>(null);
+  const [tasteStrategyLoaded, setTasteStrategyLoaded] = useState(false);
   const autoLoadedRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/taste-strategy", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled) setTasteStrategy(data.strategy ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setTasteStrategy(null);
+      })
+      .finally(() => {
+        if (!cancelled) setTasteStrategyLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Auto-load recommendations on first mount
   useEffect(() => {
+    if (!tasteStrategyLoaded) return;
     if (autoLoadedRef.current) return;
     autoLoadedRef.current = true;
-    const cached = readDiscoverCache(prompt, weights);
+    const currentStrategyKey = strategyCacheKey(tasteStrategy);
+    const cached = readDiscoverCache(prompt, weights, currentStrategyKey);
     if (cached) {
       setResults(cached);
       setQueue(toQueueTracks(cached));
@@ -795,7 +854,7 @@ export default function DiscoverView({
     }
     handleSubmit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [tasteStrategyLoaded]);
 
   async function refreshTrackState(songs: SongRecommendation[]) {
     const trackIds = songs.map((s) => s.spotify_track_id).filter(Boolean);
@@ -829,6 +888,7 @@ export default function DiscoverView({
         context: weights.context / 100,
         editorial: weights.editorial / 100,
       };
+      const currentStrategyKey = strategyCacheKey(tasteStrategy);
 
       // Try DB-based song recommendations first (faster, better ranking)
       // Falls back to client-side Spotify Search if DB has no tracks
@@ -853,6 +913,7 @@ export default function DiscoverView({
             history_window_runs: 15,
             max_allowed_overlap: 0,
             novelty_mode: "strict",
+            taste_strategy: prompt.trim() ? null : tasteStrategy,
           }),
         });
         if (songRes.ok) {
@@ -945,7 +1006,7 @@ export default function DiscoverView({
         if (!accessToken) {
           if (deduped.length > 0) {
             setResults(deduped);
-            writeDiscoverCache(prompt, weights, deduped);
+            writeDiscoverCache(prompt, weights, currentStrategyKey, deduped);
             setQueue(toQueueTracks(deduped));
             void refreshTrackState(deduped);
             return;
@@ -1050,9 +1111,9 @@ export default function DiscoverView({
 
       try {
         const livePrompt = interpretedPrompt || prompt;
-        if (shouldRunLiveExpansion(deduped, livePrompt)) {
+        if (shouldRunLiveExpansion(deduped, livePrompt, tasteStrategy)) {
           setLoadingStage("Expanding live search beyond the catalog\u2026");
-          const liveSongs = await fetchLiveCandidateSongs(livePrompt, deduped);
+          const liveSongs = await fetchLiveCandidateSongs(livePrompt, deduped, tasteStrategy);
           if (liveSongs.length > 0) {
             deduped = mergeCandidateSongs(deduped, liveSongs);
           }
@@ -1071,7 +1132,7 @@ export default function DiscoverView({
       const finalResults = spreadArtistsForDisplay(deduped, TARGET_SONGS);
 
       setResults(finalResults);
-      writeDiscoverCache(prompt, weights, finalResults);
+      writeDiscoverCache(prompt, weights, currentStrategyKey, finalResults);
 
       // Set the player queue so songs auto-advance
       setQueue(toQueueTracks(finalResults));
@@ -1253,7 +1314,7 @@ export default function DiscoverView({
                 </div>
                 <div className="flex items-center justify-center gap-1.5 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-[11px] font-medium text-emerald-700">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
-                  Live Spotify expansion enabled
+                  Live Spotify expansion {tasteStrategy?.live_expansion ?? "auto"}
                 </div>
               </div>
             )}
@@ -1625,6 +1686,11 @@ function StationMixStrip({
                 value={mix.liveCount}
                 pct={mix.liveCount / sourceTotal}
                 tone="bg-emerald-500"
+                hint={
+                  mix.liveCount === 0
+                    ? "Why 0? The catalog already filled the station with strong modeled matches."
+                    : "Tracks found from Spotify search outside the modeled catalog."
+                }
               />
             </div>
           </div>
@@ -1665,11 +1731,13 @@ function MixTile({
   value,
   pct,
   tone,
+  hint,
 }: {
   label: string;
   value: number;
   pct: number;
   tone: string;
+  hint?: string;
 }) {
   return (
     <div className="rounded-md border border-neutral-100 bg-neutral-50 px-3 py-2">
@@ -1683,6 +1751,9 @@ function MixTile({
           style={{ width: value === 0 ? "0%" : `${Math.max(4, Math.round(pct * 100))}%` }}
         />
       </div>
+      {hint && (
+        <p className="mt-1.5 text-[10px] leading-snug text-neutral-400">{hint}</p>
+      )}
     </div>
   );
 }

@@ -51,6 +51,33 @@ class RecommendResponse(BaseModel):
     query_intent: dict | None = None
 
 
+class DiscoveryMixPreference(BaseModel):
+    deep_cuts: float = Field(default=38, ge=0, le=100)
+    popular: float = Field(default=38, ge=0, le=100)
+    radio_hits: float = Field(default=24, ge=0, le=100)
+
+
+class TasteStrategyPreference(BaseModel):
+    genre_boosts: list[str] = Field(default_factory=list, max_length=12)
+    genre_avoids: list[str] = Field(default_factory=list, max_length=12)
+    discovery_mix: DiscoveryMixPreference = Field(default_factory=DiscoveryMixPreference)
+    live_expansion: str = Field(default="auto", pattern="^(auto|catalog|live)$")
+    freshness: str = Field(default="balanced", pattern="^(newer|balanced|timeless)$")
+
+    @field_validator("genre_boosts", "genre_avoids")
+    @classmethod
+    def validate_genres(cls, genres: list[str]) -> list[str]:
+        seen: set[str] = set()
+        cleaned: list[str] = []
+        for genre in genres:
+            text = str(genre or "").strip().lower()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            cleaned.append(text[:48])
+        return cleaned
+
+
 class RecommendSongsRequest(BaseModel):
     user_id: str
     prompt: str | None = None
@@ -62,6 +89,7 @@ class RecommendSongsRequest(BaseModel):
     max_allowed_overlap: float = Field(default=0.0, ge=0.0, le=1.0)
     novelty_mode: str = Field(default="strict", pattern="^(strict|graceful)$")
     discover_run_id: str | None = None
+    taste_strategy: TasteStrategyPreference | None = None
 
     @field_validator("weights")
     @classmethod
@@ -169,6 +197,7 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             excluded_track_ids=local_excluded_tracks,
             excluded_artist_ids=local_excluded_artists,
             exploration_seed=request_base_seed + attempt,
+            taste_strategy=req.taste_strategy.model_dump() if req.taste_strategy and not query_intent else None,
         )
 
         if len(attempt_results) > len(best_results):
