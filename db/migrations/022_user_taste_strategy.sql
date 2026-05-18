@@ -1,3 +1,11 @@
+create or replace function public.set_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
 create table if not exists public.user_taste_strategy (
   user_id uuid primary key references public.users(id) on delete cascade,
   genre_boosts text[] not null default '{}',
