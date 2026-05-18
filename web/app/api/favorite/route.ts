@@ -148,15 +148,31 @@ async function insertUserTrackForFavorite(
   trackId: number | null
 ) {
   if (!trackId) return;
-  await sb.from("user_tracks").upsert(
-    {
-      user_id: userId,
-      track_id: trackId,
-      added_at: new Date().toISOString(),
-      play_count: 0,
-    },
-    { onConflict: "user_id,track_id", ignoreDuplicates: true }
-  );
+
+  const { data: existing } = await sb
+    .from("user_tracks")
+    .select("added_at")
+    .eq("user_id", userId)
+    .eq("track_id", trackId)
+    .maybeSingle();
+
+  if (existing) {
+    if (!existing.added_at) {
+      await sb
+        .from("user_tracks")
+        .update({ added_at: new Date().toISOString() })
+        .eq("user_id", userId)
+        .eq("track_id", trackId);
+    }
+    return;
+  }
+
+  await sb.from("user_tracks").insert({
+    user_id: userId,
+    track_id: trackId,
+    added_at: new Date().toISOString(),
+    play_count: 0,
+  });
 }
 
 /**
