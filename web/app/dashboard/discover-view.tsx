@@ -119,7 +119,7 @@ const LIVE_EXPANSION_TRACK_LIMIT = 12;
 const LIVE_EXPANSION_TRACKS_PER_INTENT = 5;
 const LIVE_EXPANSION_POOL_TARGET = 40;
 const FRESH_AIR_TARGET_RATIO = 0.25;
-const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v3";
+const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v4";
 const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
 
 type DiscoverCachePayload = {
@@ -173,6 +173,13 @@ type SpotifySearchTrack = {
 type SpotifySearchArtist = {
   id?: string;
   name?: string;
+};
+
+type PromptSpotifySongsResponse = {
+  results?: SongRecommendation[];
+  artist_count?: number;
+  track_search_count?: number;
+  error?: string;
 };
 
 function laneForSong(song: SongRecommendation): DiscoveryLaneId {
@@ -873,6 +880,22 @@ async function fetchPromptSpotifySongs(
   const promptText = currentPrompt.trim();
   if (!promptText) return [];
 
+  try {
+    const promptRes = await fetch("/api/prompt-spotify-songs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: promptText, limit: LIVE_EXPANSION_POOL_TARGET }),
+    });
+    if (promptRes.ok) {
+      const promptData: PromptSpotifySongsResponse = await promptRes.json().catch(() => ({}));
+      if ((promptData.results ?? []).length > 0) {
+        return promptData.results ?? [];
+      }
+    }
+  } catch (err) {
+    console.warn("server Spotify prompt fallback failed, trying browser fallback:", err);
+  }
+
   const rawQueries = [
     promptText,
     `${promptText} songs`,
@@ -1357,7 +1380,9 @@ export default function DiscoverView({
       const finalResults = shapeStationForFreshAir(deduped, TARGET_SONGS);
 
       setResults(finalResults);
-      writeDiscoverCache(prompt, weights, currentStrategyKey, finalResults);
+      if (finalResults.length > 0) {
+        writeDiscoverCache(prompt, weights, currentStrategyKey, finalResults);
+      }
 
       // Set the player queue so songs auto-advance
       setQueue(toQueueTracks(finalResults));
