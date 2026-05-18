@@ -119,6 +119,7 @@ const LIVE_EXPANSION_TRACK_LIMIT = 12;
 const LIVE_EXPANSION_TRACKS_PER_INTENT = 5;
 const LIVE_EXPANSION_POOL_TARGET = 40;
 const FRESH_AIR_TARGET_RATIO = 0.25;
+const PROMPT_LIVE_TARGET_RATIO = 0.4;
 const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v4";
 const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -422,11 +423,11 @@ function stationMixSummary(
   const liveCount = songs.filter(isLiveSourced).length;
   const catalogCount = Math.max(0, songs.length - liveCount);
   const hasPrompt = Boolean(prompt.trim());
-  const targetFreshAir = freshAirTarget(songs.length);
+  const targetFreshAir = hasPrompt ? promptAirTarget(songs.length) : freshAirTarget(songs.length);
   let sourceInsight = "MusicLife now reserves outside air for freshness when Spotify can supply strong live candidates, even when the catalog is healthy.";
   if (liveCount > 0 && catalogCount > 0) {
     sourceInsight = hasPrompt
-      ? "Expanded outside the catalog for this prompt while keeping modeled tracks as the base."
+      ? `Expanded outside the catalog for this prompt while keeping modeled tracks as support. Target: about ${targetFreshAir} of ${songs.length}.`
       : `Added outside-air Spotify matches to keep the station fresh beyond the modeled catalog. Target: about ${targetFreshAir} of ${songs.length}.`;
   } else if (liveCount > 0) {
     sourceInsight = "Built from live Spotify because the catalog did not return enough playable matches.";
@@ -499,6 +500,11 @@ function freshAirTarget(total: number): number {
   return Math.max(1, Math.ceil(total * FRESH_AIR_TARGET_RATIO));
 }
 
+function promptAirTarget(total: number): number {
+  if (total <= 0) return 0;
+  return Math.max(1, Math.ceil(total * PROMPT_LIVE_TARGET_RATIO));
+}
+
 function interleaveFreshAir(
   catalogSongs: SongRecommendation[],
   liveSongs: SongRecommendation[],
@@ -548,14 +554,18 @@ function interleaveFreshAir(
 
 function shapeStationForFreshAir(
   songs: SongRecommendation[],
-  target: number
+  target: number,
+  options: { promptMode?: boolean } = {}
 ): SongRecommendation[] {
   const liveCandidates = songs.filter(isLiveSourced);
   if (liveCandidates.length === 0) {
     return spreadArtistsForDisplay(songs, target);
   }
 
-  const desiredLiveCount = Math.min(liveCandidates.length, freshAirTarget(target));
+  const desiredLiveCount = Math.min(
+    liveCandidates.length,
+    options.promptMode ? promptAirTarget(target) : freshAirTarget(target)
+  );
   const liveSongs = spreadArtistsForDisplay(liveCandidates, desiredLiveCount);
   const liveKeys = new Set(liveSongs.map(trackIdentity));
   const catalogCandidates = songs.filter((song) => !liveKeys.has(trackIdentity(song)) && !isLiveSourced(song));
@@ -1194,6 +1204,31 @@ export default function DiscoverView({
         console.warn("recommend-songs failed, falling back to Spotify search:", e);
       }
 
+      const promptForLiveSearch = prompt.trim() || interpretedPrompt;
+      let accessToken: string | null = null;
+
+      async function ensureSpotifyAccessToken(): Promise<string | null> {
+        if (accessToken) return accessToken;
+        const tokenRes = await fetch("/api/auth/token");
+        const tokenData = await tokenRes.json().catch(() => ({}));
+        accessToken = tokenData.access_token ?? null;
+        return accessToken;
+      }
+
+      // A typed prompt is a steering command, not a suggestion. Always ask
+      // Spotify directly for that prompt so a full catalog response cannot
+      // bury the artist or scene the user actually requested.
+      if (promptForLiveSearch.trim()) {
+        setLoadingStage("Searching Spotify for your prompt\u2026");
+        const token = await ensureSpotifyAccessToken();
+        if (token) {
+          const promptSongs = await fetchPromptSpotifySongs(promptForLiveSearch, token);
+          if (promptSongs.length > 0) {
+            deduped = mergeCandidateSongs(deduped, promptSongs);
+          }
+        }
+      }
+
       // Attempt 2: Supplement with real-time Spotify Search
       // If DB returned fewer than the target, fill remaining slots with live
       // Spotify results from high-scoring artists. This also runs as a full
@@ -1204,11 +1239,9 @@ export default function DiscoverView({
             ? `Found ${deduped.length} songs, searching Spotify for more\u2026`
             : "Searching Spotify for songs\u2026"
         );
-        const tokenRes = await fetch("/api/auth/token");
-        const tokenData = await tokenRes.json().catch(() => ({}));
-        const accessToken = tokenData.access_token;
+        const token = await ensureSpotifyAccessToken();
 
-        if (!accessToken) {
+        if (!token) {
           if (deduped.length > 0) {
             setResults(deduped);
             writeDiscoverCache(prompt, weights, currentStrategyKey, deduped);
@@ -1219,15 +1252,6 @@ export default function DiscoverView({
           setError("Spotify session expired and no tracks in catalog \u2014 please sign out and back in, then re-run 'Set up music profile'");
           setResults([]);
           return;
-        }
-
-        const promptForLiveSearch = prompt.trim() || interpretedPrompt;
-        if (promptForLiveSearch.trim()) {
-          setLoadingStage("Searching Spotify for your prompt\u2026");
-          const promptSongs = await fetchPromptSpotifySongs(promptForLiveSearch, accessToken);
-          if (promptSongs.length > 0) {
-            deduped = mergeCandidateSongs(deduped, promptSongs);
-          }
         }
 
         let artists: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -1262,7 +1286,7 @@ export default function DiscoverView({
         }
 
         setLoadingStage("Fetching songs from Spotify\u2026");
-        const spotifyHeaders = { Authorization: `Bearer ${accessToken}` };
+        const spotifyHeaders = { Authorization: `Bearer ${token}` };
         // Only search for artists we don't already have songs for from DB results
         const existingArtists = new Set(deduped.map(s => s.artist_name.toLowerCase()));
         const missingArtists = artists.filter((a: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -1377,7 +1401,9 @@ export default function DiscoverView({
             : "No recommendations found — try a different search or adjust your weights."
         );
       }
-      const finalResults = shapeStationForFreshAir(deduped, TARGET_SONGS);
+      const finalResults = shapeStationForFreshAir(deduped, TARGET_SONGS, {
+        promptMode: Boolean(prompt.trim()),
+      });
 
       setResults(finalResults);
       if (finalResults.length > 0) {
