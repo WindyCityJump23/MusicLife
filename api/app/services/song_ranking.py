@@ -612,9 +612,18 @@ def recommend_songs(
                 genre_totals[g.lower()] += w
         if genre_totals:
             max_w = max(genre_totals.values())
-            user_genre_weights = {
-                g: v / max_w for g, v in genre_totals.items()
-            }
+            # max_w can be 0 (or negative) when every contributing artist's
+            # weight nets to zero — e.g. play-count signal exactly canceled
+            # by thumbs-down feedback. The `if genre_totals` check above
+            # only catches an *empty* dict, not all-zero values, so without
+            # this guard the dict comprehension raises ZeroDivisionError
+            # and /recommend-songs returns 500. Skip normalization in that
+            # case; the downstream genre-boost path treats an empty
+            # user_genre_weights as "no signal" and degrades gracefully.
+            if max_w > 0:
+                user_genre_weights = {
+                    g: v / max_w for g, v in genre_totals.items()
+                }
 
     # ── Phase 1: Score each artist (same as artist-level engine) ─
     # NOTE: We include library artists in scoring (don't skip them)
