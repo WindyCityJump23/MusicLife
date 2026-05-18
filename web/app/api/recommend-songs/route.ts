@@ -6,6 +6,13 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 55;
 const UPSTREAM_TIMEOUT_MS = 18_000;
 
+export async function GET() {
+  return NextResponse.json(
+    { error: "Use POST /api/recommend-songs for discovery." },
+    { status: 405 }
+  );
+}
+
 /**
  * POST /api/recommend-songs
  *
@@ -71,6 +78,12 @@ export async function POST(req: NextRequest) {
     });
   } catch (err) {
     const timedOut = err instanceof Error && err.name === "AbortError";
+    console.warn(
+      timedOut
+        ? "recommend-songs: upstream catalog search timed out; client should use Spotify fallback"
+        : "recommend-songs: upstream catalog search failed; client should use Spotify fallback",
+      err
+    );
     return NextResponse.json(
       {
         error: timedOut

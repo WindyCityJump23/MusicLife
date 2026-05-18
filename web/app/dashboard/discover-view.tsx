@@ -154,6 +154,27 @@ type LiveCandidateIntentsResponse = {
   source?: "anthropic" | "heuristic";
 };
 
+type SpotifySearchTrack = {
+  id?: string;
+  name?: string;
+  popularity?: number;
+  duration_ms?: number;
+  explicit?: boolean;
+  album?: {
+    name?: string;
+    release_date?: string;
+  };
+  artists?: Array<{
+    id?: string;
+    name?: string;
+  }>;
+};
+
+type SpotifySearchArtist = {
+  id?: string;
+  name?: string;
+};
+
 function laneForSong(song: SongRecommendation): DiscoveryLaneId {
   // Prefer backend-assigned lane when available
   if (song.lane) {
@@ -860,6 +881,50 @@ async function fetchPromptSpotifySongs(
   ];
   const queries = rawQueries.filter((query, index) => rawQueries.indexOf(query) === index);
   const spotifyHeaders = { Authorization: `Bearer ${accessToken}` };
+  const artistMatches: SpotifySearchArtist[] = [];
+
+  try {
+    const artistRes = await fetch(
+      `https://api.spotify.com/v1/search?q=${encodeURIComponent(promptText)}&type=artist&market=US&limit=3`,
+      { headers: spotifyHeaders }
+    );
+    if (artistRes.ok) {
+      const artistData = await artistRes.json();
+      artistMatches.push(...((artistData.artists?.items ?? []) as SpotifySearchArtist[]).filter((artist) => artist.id));
+    }
+  } catch {}
+
+  const artistTrackBatches = await Promise.all(
+    artistMatches.map(async (artist, artistIndex) => {
+      if (!artist.id) return [];
+      try {
+        const topTracksRes = await fetch(
+          `https://api.spotify.com/v1/artists/${encodeURIComponent(artist.id)}/top-tracks?market=US`,
+          { headers: spotifyHeaders }
+        );
+        if (!topTracksRes.ok) return [];
+        const topTracksData = await topTracksRes.json();
+        return ((topTracksData.tracks ?? []) as SpotifySearchTrack[])
+          .slice(0, LIVE_EXPANSION_TRACKS_PER_INTENT)
+          .map((track, trackIndex) =>
+            liveTrackToRecommendation(
+              track,
+              {
+                query: artist.name ?? promptText,
+                label: "Prompt artist match",
+                reason: "Uses Spotify top tracks for the artist you typed.",
+              },
+              artistIndex,
+              trackIndex,
+              true
+            )
+          )
+          .filter((song): song is SongRecommendation => Boolean(song));
+      } catch {
+        return [];
+      }
+    })
+  );
 
   const batches = await Promise.all(
     queries.map(async (query, queryIndex) => {
@@ -892,7 +957,16 @@ async function fetchPromptSpotifySongs(
     })
   );
 
-  return batches.flat().sort((a, b) => b.score - a.score);
+  const allSongs = [...artistTrackBatches.flat(), ...batches.flat()];
+  const seen = new Set<string>();
+  return allSongs
+    .sort((a, b) => b.score - a.score)
+    .filter((song) => {
+      const key = trackIdentity(song);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 function mergeCandidateSongs(
