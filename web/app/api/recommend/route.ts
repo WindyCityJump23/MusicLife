@@ -30,5 +30,10 @@ export async function POST(req: NextRequest) {
   });
 
   const data = await upstream.json().catch(() => ({}));
+  console.info("recommend: upstream response", {
+    status: upstream.status,
+    prompt: typeof body.prompt === "string" && body.prompt.trim() ? body.prompt.trim() : null,
+    result_count: Array.isArray(data.results) ? data.results.length : 0,
+  });
   return NextResponse.json(data, { status: upstream.status });
 }

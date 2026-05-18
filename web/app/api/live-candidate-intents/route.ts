@@ -38,5 +38,11 @@ export async function POST(req: NextRequest) {
   });
 
   const data = await upstream.json().catch(() => ({}));
+  console.info("live-candidate-intents: upstream response", {
+    status: upstream.status,
+    prompt: typeof body.prompt === "string" && body.prompt.trim() ? body.prompt.trim() : null,
+    intent_count: Array.isArray(data.intents) ? data.intents.length : 0,
+    source: data.source ?? null,
+  });
   return NextResponse.json(data, { status: upstream.status });
 }

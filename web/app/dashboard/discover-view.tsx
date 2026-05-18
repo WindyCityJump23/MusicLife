@@ -1272,9 +1272,9 @@ export default function DiscoverView({
         const songArrays = await Promise.all(
           missingArtists.slice(0, FALLBACK_ARTIST_SEARCH_LIMIT).map(async (artist: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
             try {
-              const queries = interpretedPrompt
+              const queries = promptForLiveSearch
                 ? [
-                    `artist:${artist.artist_name} ${interpretedPrompt}`,
+                    `artist:${artist.artist_name} ${promptForLiveSearch}`,
                     `artist:${artist.artist_name}`,
                   ]
                 : [`artist:${artist.artist_name}`];
@@ -1358,7 +1358,7 @@ export default function DiscoverView({
       }
 
       try {
-        const livePrompt = interpretedPrompt || prompt;
+        const livePrompt = prompt.trim() || interpretedPrompt;
         if (shouldRunLiveExpansion(deduped, livePrompt, tasteStrategy)) {
           setLoadingStage("Expanding live search beyond the catalog\u2026");
           const liveSongs = await fetchLiveCandidateSongs(livePrompt, deduped, tasteStrategy);

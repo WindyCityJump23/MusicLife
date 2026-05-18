@@ -97,5 +97,11 @@ export async function POST(req: NextRequest) {
   }
 
   const data = await upstream.json().catch(() => ({}));
+  console.info("recommend-songs: upstream response", {
+    status: upstream.status,
+    prompt: prompt || null,
+    result_count: Array.isArray(data.results) ? data.results.length : 0,
+    query_search_phrase: data.query_intent?.search_phrase ?? null,
+  });
   return NextResponse.json(data, { status: upstream.status });
 }
