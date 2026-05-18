@@ -845,6 +845,56 @@ async function fetchLiveCandidateSongs(
   return batches.flat().sort((a, b) => b.score - a.score);
 }
 
+async function fetchPromptSpotifySongs(
+  currentPrompt: string,
+  accessToken: string
+): Promise<SongRecommendation[]> {
+  const promptText = currentPrompt.trim();
+  if (!promptText) return [];
+
+  const rawQueries = [
+    promptText,
+    `${promptText} songs`,
+    `${promptText} top tracks`,
+    `artist:${promptText}`,
+  ];
+  const queries = rawQueries.filter((query, index) => rawQueries.indexOf(query) === index);
+  const spotifyHeaders = { Authorization: `Bearer ${accessToken}` };
+
+  const batches = await Promise.all(
+    queries.map(async (query, queryIndex) => {
+      try {
+        const searchRes = await fetch(
+          `https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=track&market=US&limit=${LIVE_EXPANSION_TRACK_LIMIT}`,
+          { headers: spotifyHeaders }
+        );
+        if (!searchRes.ok) return [];
+        const data = await searchRes.json();
+        const tracks = chooseFallbackTracks(data.tracks?.items ?? []);
+        return tracks
+          .map((track, trackIndex) =>
+            liveTrackToRecommendation(
+              track,
+              {
+                query,
+                label: "Prompt Spotify search",
+                reason: "Searches Spotify directly for your typed artist, song, or scene.",
+              },
+              queryIndex,
+              trackIndex,
+              true
+            )
+          )
+          .filter((song): song is SongRecommendation => Boolean(song));
+      } catch {
+        return [];
+      }
+    })
+  );
+
+  return batches.flat().sort((a, b) => b.score - a.score);
+}
+
 function mergeCandidateSongs(
   baseSongs: SongRecommendation[],
   liveSongs: SongRecommendation[]
@@ -1038,6 +1088,9 @@ export default function DiscoverView({
                 }
               : null,
           }));
+        } else {
+          const songData = await songRes.json().catch(() => ({}));
+          dbError = songData.error ?? songData.detail ?? `Catalog search failed (${songRes.status})`;
         }
       } catch (e) {
         dbError = e instanceof Error ? e.message : "Request timed out";
@@ -1054,34 +1107,6 @@ export default function DiscoverView({
             ? `Found ${deduped.length} songs, searching Spotify for more\u2026`
             : "Searching Spotify for songs\u2026"
         );
-        const artistRes = await fetch(`/api/recommend`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            prompt: interpretedPrompt || prompt || null,
-            weights: normalized,
-            limit: 25,  // Request extra to allow diversity filtering
-          }),
-        });
-        const artistData = await artistRes.json().catch(() => ({}));
-        if (!artistRes.ok) {
-          setError(artistData.error ?? artistData.detail ?? "Failed to get recommendations");
-          setResults([]);
-          return;
-        }
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const artists: any[] = artistData.results ?? [];
-        if (artists.length === 0 && deduped.length === 0) {
-          if (dbError) {
-            setError(`Could not load recommendations (${dbError}). Please try again.`);
-          } else {
-            setError("No recommendations found. Try a different search or adjust your weights.");
-          }
-          setResults([]);
-          return;
-        }
-
         const tokenRes = await fetch("/api/auth/token");
         const tokenData = await tokenRes.json().catch(() => ({}));
         const accessToken = tokenData.access_token;
@@ -1099,11 +1124,54 @@ export default function DiscoverView({
           return;
         }
 
+        const promptForLiveSearch = interpretedPrompt || prompt;
+        if (promptForLiveSearch.trim()) {
+          setLoadingStage("Searching Spotify for your prompt\u2026");
+          const promptSongs = await fetchPromptSpotifySongs(promptForLiveSearch, accessToken);
+          if (promptSongs.length > 0) {
+            deduped = mergeCandidateSongs(deduped, promptSongs);
+          }
+        }
+
+        let artists: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
+        if (deduped.length < TARGET_SONGS) {
+          const artistRes = await fetch(`/api/recommend`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              prompt: promptForLiveSearch || null,
+              weights: normalized,
+              limit: 25,  // Request extra to allow diversity filtering
+            }),
+          });
+          const artistData = await artistRes.json().catch(() => ({}));
+          if (artistRes.ok) {
+            artists = artistData.results ?? [];
+          } else if (deduped.length === 0) {
+            setError(artistData.error ?? artistData.detail ?? dbError ?? "Failed to get recommendations");
+            setResults([]);
+            return;
+          }
+        }
+
+        if (artists.length === 0 && deduped.length === 0) {
+          setError(
+            dbError
+              ? `Could not load recommendations (${dbError}). Please try again.`
+              : "No recommendations found. Try a different search or adjust your weights."
+          );
+          setResults([]);
+          return;
+        }
+
         setLoadingStage("Fetching songs from Spotify\u2026");
         const spotifyHeaders = { Authorization: `Bearer ${accessToken}` };
         // Only search for artists we don't already have songs for from DB results
         const existingArtists = new Set(deduped.map(s => s.artist_name.toLowerCase()));
-        const missingArtists = artists.filter((a: any) => !existingArtists.has(a.artist_name.toLowerCase())); // eslint-disable-line @typescript-eslint/no-explicit-any
+        const missingArtists = artists.filter((a: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+          const artistName = String(a.artist_name ?? "").trim().toLowerCase();
+          return artistName && !existingArtists.has(artistName);
+        });
         const songArrays = await Promise.all(
           missingArtists.slice(0, FALLBACK_ARTIST_SEARCH_LIMIT).map(async (artist: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
             try {
