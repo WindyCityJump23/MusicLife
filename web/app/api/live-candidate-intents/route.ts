@@ -19,6 +19,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json().catch(() => ({}));
+  const strategy = body.taste_strategy ?? null;
 
   const upstream = await fetch(`${apiUrl}/recommend/songs/live-intents`, {
     method: "POST",
@@ -30,6 +31,9 @@ export async function POST(req: NextRequest) {
       user_id: user.userId,
       prompt: body.prompt ?? null,
       limit: body.limit ?? 8,
+      genre_boosts: Array.isArray(strategy?.genre_boosts) ? strategy.genre_boosts : [],
+      genre_avoids: Array.isArray(strategy?.genre_avoids) ? strategy.genre_avoids : [],
+      freshness: strategy?.freshness ?? "balanced",
     }),
   });
 

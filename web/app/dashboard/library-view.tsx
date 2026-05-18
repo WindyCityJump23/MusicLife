@@ -71,22 +71,74 @@ const DEFAULT_STRATEGY: TasteStrategy = {
   freshness: "balanced",
 };
 
-const LANE_META: Array<{ id: LaneKey; label: string; help: string }> = [
-  { id: "deep_cuts", label: "Deep cuts", help: "Lower-popularity finds and new-to-you artists" },
-  { id: "popular", label: "Popular", help: "Known, but less obvious songs" },
-  { id: "radio_hits", label: "Radio hits", help: "Recognizable anchors that keep stations grounded" },
+const LANE_META: Array<{ id: LaneKey; label: string; help: string; feeling: string }> = [
+  {
+    id: "deep_cuts",
+    label: "Take me further out",
+    help: "Lower-popularity finds and new-to-you artists",
+    feeling: "Exploratory",
+  },
+  {
+    id: "popular",
+    label: "Keep one foot familiar",
+    help: "Known, but less obvious songs",
+    feeling: "Connected",
+  },
+  {
+    id: "radio_hits",
+    label: "Stay close to my core",
+    help: "Recognizable anchors that keep stations grounded",
+    feeling: "Grounded",
+  },
 ];
 
 const LIVE_OPTIONS: Array<{ id: TasteStrategy["live_expansion"]; label: string; body: string }> = [
-  { id: "auto", label: "Auto", body: "Use live Spotify when the catalog needs help." },
-  { id: "catalog", label: "Catalog first", body: "Prefer modeled MusicLife matches." },
-  { id: "live", label: "Fresh reach", body: "Expand outside the catalog more often." },
+  { id: "auto", label: "Balanced air", body: "Use the catalog as the spine while leaving room for fresh Spotify finds." },
+  { id: "catalog", label: "Close to core", body: "Stay nearest to modeled MusicLife matches, with outside air still in reserve." },
+  { id: "live", label: "Wide open", body: "Keep a larger window open for outside-catalog Spotify discoveries." },
 ];
 
 const FRESHNESS_OPTIONS: Array<{ id: TasteStrategy["freshness"]; label: string; body: string }> = [
-  { id: "newer", label: "Newer", body: "Tilt toward recent releases and fresh context." },
-  { id: "balanced", label: "Balanced", body: "Blend new songs with durable favorites." },
-  { id: "timeless", label: "Timeless", body: "Let older high-confidence songs compete." },
+  { id: "newer", label: "Make it feel current", body: "Tilt toward recent releases and fresh context." },
+  { id: "balanced", label: "Now and lasting", body: "Blend new songs with durable favorites." },
+  { id: "timeless", label: "Timeless pull", body: "Let older high-confidence songs compete." },
+];
+
+const POINT_OF_VIEW_PRESETS: Array<{
+  title: string;
+  body: string;
+  mix: DiscoveryMix;
+  live_expansion: TasteStrategy["live_expansion"];
+  freshness: TasteStrategy["freshness"];
+}> = [
+  {
+    title: "Take me further out",
+    body: "Open the edges of the station and let newer outside-catalog tracks breathe.",
+    mix: { deep_cuts: 55, popular: 30, radio_hits: 15 },
+    live_expansion: "live",
+    freshness: "newer",
+  },
+  {
+    title: "Keep one foot familiar",
+    body: "Let discovery move, but keep enough known gravity that the station feels like yours.",
+    mix: { deep_cuts: 30, popular: 45, radio_hits: 25 },
+    live_expansion: "auto",
+    freshness: "balanced",
+  },
+  {
+    title: "Make it feel current",
+    body: "Prioritize recent context and leave a steady lane for fresh Spotify finds.",
+    mix: { deep_cuts: 38, popular: 42, radio_hits: 20 },
+    live_expansion: "live",
+    freshness: "newer",
+  },
+  {
+    title: "Stay close to my core",
+    body: "Use your taste model as the center of gravity and add only careful outside air.",
+    mix: { deep_cuts: 22, popular: 46, radio_hits: 32 },
+    live_expansion: "catalog",
+    freshness: "timeless",
+  },
 ];
 
 function normalizeGenre(value: string): string {
@@ -126,6 +178,74 @@ function updateMix(mix: DiscoveryMix, lane: LaneKey, value: number): DiscoveryMi
 
 function sameStrategy(a: TasteStrategy, b: TasteStrategy): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function strongestLane(mix: DiscoveryMix): LaneKey {
+  return (Object.keys(mix) as LaneKey[]).sort((a, b) => mix[b] - mix[a])[0] ?? "popular";
+}
+
+function buildTasteThesis(
+  data: LibraryData,
+  topGenres: Array<{ genre: string; count: number }>,
+  strategy: TasteStrategy
+): { headline: string; body: string; cues: string[] } {
+  const coreGenres = topGenres.slice(0, 3).map((item) => item.genre);
+  const core = coreGenres.length > 0 ? coreGenres.join(", ") : "your saved artists";
+  const lane = strongestLane(strategy.discovery_mix);
+  const laneText =
+    lane === "deep_cuts"
+      ? "curious and edge-seeking"
+      : lane === "radio_hits"
+        ? "anchored and high-recognition"
+        : "balanced between known songs and discovery";
+  const freshnessText =
+    strategy.freshness === "newer"
+      ? "with a clear bias toward what feels current"
+      : strategy.freshness === "timeless"
+        ? "with room for older high-confidence records"
+        : "without losing the thread between new and lasting";
+  const liveText =
+    strategy.live_expansion === "live"
+      ? "MusicLife will keep more outside air in the next station."
+      : strategy.live_expansion === "catalog"
+        ? "MusicLife will keep the catalog as the center of gravity while still checking for outside air."
+        : "MusicLife will use the catalog as the spine and add outside air when it improves the run.";
+  const readiness = data.readiness.radioReady
+    ? "The model is ready to make song-level calls."
+    : "The model is still learning, so setup progress will improve the thesis.";
+
+  return {
+    headline: `Your taste reads as ${laneText}.`,
+    body: `The strongest signals are ${core}, ${freshnessText}. ${liveText}`,
+    cues: [
+      `${data.stats.artistCount.toLocaleString()} artists in the taste graph`,
+      `${data.stats.modeledTrackCount.toLocaleString()} modeled songs`,
+      readiness,
+    ],
+  };
+}
+
+function pointOfViewSentence(strategy: TasteStrategy): string {
+  const lane = strongestLane(strategy.discovery_mix);
+  const lanePhrase =
+    lane === "deep_cuts"
+      ? "take you further out"
+      : lane === "radio_hits"
+        ? "stay close to your core"
+        : "keep one foot familiar";
+  const freshnessPhrase =
+    strategy.freshness === "newer"
+      ? "make it feel current"
+      : strategy.freshness === "timeless"
+        ? "trust timeless fit"
+        : "balance fresh records with durable favorites";
+  const livePhrase =
+    strategy.live_expansion === "live"
+      ? "with a wider outside-air lane"
+      : strategy.live_expansion === "catalog"
+        ? "with the catalog as the center of gravity"
+        : "with fresh Spotify finds held in reserve";
+  return `Next Radio should ${lanePhrase}, ${freshnessPhrase}, ${livePhrase}.`;
 }
 
 export default function LibraryView({
@@ -210,6 +330,10 @@ export default function LibraryView({
       .slice(0, 12);
   }, [data]);
 
+  const tasteThesis = useMemo(() => {
+    return data ? buildTasteThesis(data, topGenres, strategy) : null;
+  }, [data, topGenres, strategy]);
+
   const dirty = !sameStrategy(strategy, savedStrategy);
 
   function addGenre(kind: "boost" | "avoid", rawGenre: string) {
@@ -240,6 +364,16 @@ export default function LibraryView({
       ...current,
       genre_boosts: kind === "boost" ? current.genre_boosts.filter((g) => g !== genre) : current.genre_boosts,
       genre_avoids: kind === "avoid" ? current.genre_avoids.filter((g) => g !== genre) : current.genre_avoids,
+    }));
+    setSaveMessage(null);
+  }
+
+  function applyPointOfViewPreset(preset: (typeof POINT_OF_VIEW_PRESETS)[number]) {
+    setStrategy((current) => ({
+      ...current,
+      discovery_mix: normalizeMix(preset.mix),
+      live_expansion: preset.live_expansion,
+      freshness: preset.freshness,
     }));
     setSaveMessage(null);
   }
@@ -340,10 +474,10 @@ export default function LibraryView({
               Taste Profile
             </p>
             <h3 className="mt-1 text-xl font-semibold tracking-tight text-neutral-950">
-              Shape what MusicLife recommends next.
+              Here is what MusicLife thinks your taste is.
             </h3>
             <p className="mt-1 max-w-2xl text-sm leading-relaxed text-neutral-500">
-              Your Spotify history builds the model. These strategy controls tell Radio how adventurous, current, and genre-focused to be.
+              Your Spotify history builds the model. Your station point of view tells Radio how far to reach, how current to feel, and which genres should carry more gravity.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -382,15 +516,47 @@ export default function LibraryView({
           <ReadinessPill label="Song catalog" done={data.readiness.steps.tracks} detail={`${data.readiness.playableTrackCount}/${data.readiness.requiredPlayableTrackCount} playable`} />
           <ReadinessPill label="Music context" done={data.readiness.steps.context} detail={`${data.stats.mentionCount.toLocaleString()} mentions`} />
         </div>
+
+        {tasteThesis && (
+          <div className="mt-4 rounded-lg border border-emerald-100 bg-emerald-50/70 p-4">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-700">
+              Taste thesis
+            </p>
+            <h3 className="mt-1 text-base font-semibold text-neutral-950">{tasteThesis.headline}</h3>
+            <p className="mt-1 max-w-3xl text-sm leading-relaxed text-neutral-600">
+              {tasteThesis.body}
+            </p>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {tasteThesis.cues.map((cue) => (
+                <span key={cue} className="rounded-full border border-emerald-100 bg-white/80 px-2.5 py-1 text-[11px] text-emerald-800">
+                  {cue}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="grid gap-4 lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
         <div className="space-y-4 rounded-lg border border-neutral-200 bg-white p-4 shadow-sm shadow-neutral-100/70">
           <div>
-            <h3 className="text-base font-semibold text-neutral-950">Discovery strategy</h3>
+            <h3 className="text-base font-semibold text-neutral-950">Station point of view</h3>
             <p className="mt-1 text-xs leading-relaxed text-neutral-500">
-              Saved strategy applies to Radio when you start from Taste radio. Typed prompts still steer that run directly.
+              Choose the sentence your next station should finish. Saved choices apply to Taste radio; typed prompts still steer that single run directly.
             </p>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2">
+            {POINT_OF_VIEW_PRESETS.map((preset) => (
+              <button
+                key={preset.title}
+                onClick={() => applyPointOfViewPreset(preset)}
+                className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-3 text-left transition-colors hover:border-emerald-200 hover:bg-emerald-50"
+              >
+                <span className="block text-sm font-semibold text-neutral-900">{preset.title}</span>
+                <span className="mt-1 block text-xs leading-relaxed text-neutral-500">{preset.body}</span>
+              </button>
+            ))}
           </div>
 
           <div className="space-y-3">
@@ -446,14 +612,15 @@ export default function LibraryView({
 
           <div className="space-y-3 border-t border-neutral-100 pt-4">
             <div>
-              <p className="text-sm font-medium text-neutral-900">Discovery mix</p>
-              <p className="text-xs text-neutral-500">Set the default lane balance for unprompted Radio sessions.</p>
+              <p className="text-sm font-medium text-neutral-900">How far should Radio reach?</p>
+              <p className="text-xs text-neutral-500">The percentages stay precise, but the intent is musical: distance, familiarity, and grounding.</p>
             </div>
             {LANE_META.map((lane) => (
               <MixSlider
                 key={lane.id}
                 label={lane.label}
                 help={lane.help}
+                feeling={lane.feeling}
                 value={strategy.discovery_mix[lane.id]}
                 onChange={(value) =>
                   setStrategy((current) => ({
@@ -467,7 +634,7 @@ export default function LibraryView({
 
           <div className="grid gap-3 border-t border-neutral-100 pt-4 md:grid-cols-2">
             <OptionGroup
-              title="Live Spotify expansion"
+              title="Outside air"
               options={LIVE_OPTIONS}
               value={strategy.live_expansion}
               onChange={(value) => setStrategy((current) => ({ ...current, live_expansion: value as TasteStrategy["live_expansion"] }))}
@@ -483,15 +650,15 @@ export default function LibraryView({
 
         <aside className="space-y-4">
           <section className="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm shadow-neutral-100/70">
-            <h3 className="text-base font-semibold text-neutral-950">Next Radio preview</h3>
+            <h3 className="text-base font-semibold text-neutral-950">How that will sound</h3>
             <p className="mt-1 text-xs leading-relaxed text-neutral-500">
-              The next unprompted station will use this shape before track-level feedback and novelty checks.
+              {pointOfViewSentence(strategy)}
             </p>
             <div className="mt-4 space-y-2">
               {LANE_META.map((lane) => (
                 <div key={lane.id}>
                   <div className="mb-1 flex items-center justify-between text-xs">
-                    <span className="text-neutral-500">{lane.label}</span>
+                    <span className="text-neutral-500">{lane.feeling}</span>
                     <span className="font-medium tabular-nums text-neutral-900">{strategy.discovery_mix[lane.id]}%</span>
                   </div>
                   <div className="h-2 overflow-hidden rounded-full bg-neutral-100">
@@ -505,10 +672,10 @@ export default function LibraryView({
             </div>
             <div className="mt-4 rounded-lg bg-neutral-50 p-3 text-xs leading-relaxed text-neutral-500">
               {strategy.live_expansion === "catalog"
-                ? "Catalog-first mode explains why Live Spotify can stay at 0 when modeled matches are strong."
+                ? "Close-to-core mode still allows outside air, but the modeled catalog remains the station's center."
                 : strategy.live_expansion === "live"
-                  ? "Fresh reach mode will look outside the catalog more aggressively."
-                  : "Auto mode keeps live Spotify in reserve until the catalog needs expansion."}
+                  ? "Wide-open mode gives the next station a larger live Spotify window."
+                  : "Balanced-air mode keeps the catalog as the spine and reserves room for fresh Spotify finds."}
             </div>
           </section>
 
@@ -637,11 +804,13 @@ function GenreChipRow({
 function MixSlider({
   label,
   help,
+  feeling,
   value,
   onChange,
 }: {
   label: string;
   help: string;
+  feeling: string;
   value: number;
   onChange: (value: number) => void;
 }) {
@@ -650,7 +819,9 @@ function MixSlider({
       <div className="mb-1 flex items-center justify-between gap-2">
         <div>
           <p className="text-xs font-medium text-neutral-800">{label}</p>
-          <p className="text-[11px] text-neutral-500">{help}</p>
+          <p className="text-[11px] text-neutral-500">
+            {feeling}: {help}
+          </p>
         </div>
         <span className="text-xs font-semibold tabular-nums text-neutral-900">{value}%</span>
       </div>

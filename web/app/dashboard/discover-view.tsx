@@ -118,7 +118,8 @@ const LIVE_EXPANSION_INTENT_LIMIT = 7;
 const LIVE_EXPANSION_TRACK_LIMIT = 12;
 const LIVE_EXPANSION_TRACKS_PER_INTENT = 5;
 const LIVE_EXPANSION_POOL_TARGET = 40;
-const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v2";
+const FRESH_AIR_TARGET_RATIO = 0.25;
+const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v3";
 const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
 
 type DiscoverCachePayload = {
@@ -393,15 +394,18 @@ function stationMixSummary(
   const liveCount = songs.filter(isLiveSourced).length;
   const catalogCount = Math.max(0, songs.length - liveCount);
   const hasPrompt = Boolean(prompt.trim());
-  let sourceInsight = "Catalog had enough strong modeled matches. Live Spotify is only used when the catalog needs expansion or your prompt asks for fresher outside-catalog matches.";
+  const targetFreshAir = freshAirTarget(songs.length);
+  let sourceInsight = "MusicLife now reserves outside air for freshness when Spotify can supply strong live candidates, even when the catalog is healthy.";
   if (liveCount > 0 && catalogCount > 0) {
     sourceInsight = hasPrompt
       ? "Expanded outside the catalog for this prompt while keeping modeled tracks as the base."
-      : "Added live Spotify matches to keep the station fresh beyond the modeled catalog.";
+      : `Added outside-air Spotify matches to keep the station fresh beyond the modeled catalog. Target: about ${targetFreshAir} of ${songs.length}.`;
   } else if (liveCount > 0) {
     sourceInsight = "Built from live Spotify because the catalog did not return enough playable matches.";
   } else if (songs.length === 0) {
     sourceInsight = "Tune the station to see whether the queue comes from the catalog, live Spotify, or both.";
+  } else {
+    sourceInsight = "Why 0? Spotify search did not return usable outside-air candidates for this run, or the session could not access live Spotify. The catalog still filled the station.";
   }
 
   return {
@@ -460,6 +464,84 @@ function spreadArtistsForDisplay(
   if (selected.length < target) addPass(3, false);
 
   return selected;
+}
+
+function freshAirTarget(total: number): number {
+  if (total <= 0) return 0;
+  return Math.max(1, Math.ceil(total * FRESH_AIR_TARGET_RATIO));
+}
+
+function interleaveFreshAir(
+  catalogSongs: SongRecommendation[],
+  liveSongs: SongRecommendation[],
+  target: number
+): SongRecommendation[] {
+  const result: SongRecommendation[] = [];
+  const seen = new Set<string>();
+  const cadence = Math.max(2, Math.floor(target / Math.max(1, liveSongs.length)));
+  let catalogIndex = 0;
+  let liveIndex = 0;
+
+  function add(song: SongRecommendation | undefined): boolean {
+    if (!song || result.length >= target) return false;
+    const key = trackIdentity(song);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    result.push(song);
+    return true;
+  }
+
+  while (result.length < target && (catalogIndex < catalogSongs.length || liveIndex < liveSongs.length)) {
+    if ((result.length + 1) % cadence === 0 && liveIndex < liveSongs.length) {
+      add(liveSongs[liveIndex]);
+      liveIndex += 1;
+      continue;
+    }
+
+    if (catalogIndex < catalogSongs.length) {
+      add(catalogSongs[catalogIndex]);
+      catalogIndex += 1;
+      continue;
+    }
+
+    add(liveSongs[liveIndex]);
+    liveIndex += 1;
+  }
+
+  for (; result.length < target && liveIndex < liveSongs.length; liveIndex += 1) {
+    add(liveSongs[liveIndex]);
+  }
+  for (; result.length < target && catalogIndex < catalogSongs.length; catalogIndex += 1) {
+    add(catalogSongs[catalogIndex]);
+  }
+
+  return result;
+}
+
+function shapeStationForFreshAir(
+  songs: SongRecommendation[],
+  target: number
+): SongRecommendation[] {
+  const liveCandidates = songs.filter(isLiveSourced);
+  if (liveCandidates.length === 0) {
+    return spreadArtistsForDisplay(songs, target);
+  }
+
+  const desiredLiveCount = Math.min(liveCandidates.length, freshAirTarget(target));
+  const liveSongs = spreadArtistsForDisplay(liveCandidates, desiredLiveCount);
+  const liveKeys = new Set(liveSongs.map(trackIdentity));
+  const catalogCandidates = songs.filter((song) => !liveKeys.has(trackIdentity(song)) && !isLiveSourced(song));
+  const catalogSongs = spreadArtistsForDisplay(catalogCandidates, Math.max(0, target - liveSongs.length));
+  const blended = interleaveFreshAir(catalogSongs, liveSongs, target);
+
+  if (blended.length >= target) return blended;
+
+  const blendedKeys = new Set(blended.map(trackIdentity));
+  const fill = spreadArtistsForDisplay(
+    songs.filter((song) => !blendedKeys.has(trackIdentity(song))),
+    target - blended.length
+  );
+  return [...blended, ...fill].slice(0, target);
 }
 
 function toQueueTracks(songs: SongRecommendation[]): QueueTrack[] {
@@ -707,8 +789,8 @@ function shouldRunLiveExpansion(
   currentPrompt: string,
   strategy: TasteStrategy | null
 ): boolean {
-  if (strategy?.live_expansion === "catalog" && !currentPrompt.trim()) return false;
   if (strategy?.live_expansion === "live" && !currentPrompt.trim()) return true;
+  if (!currentPrompt.trim()) return true;
   if (songs.length < TARGET_SONGS) return true;
   if (songs.length < LIVE_EXPANSION_POOL_TARGET) return true;
   if (currentPrompt.trim()) return true;
@@ -728,6 +810,7 @@ async function fetchLiveCandidateSongs(
     body: JSON.stringify({
       prompt: currentPrompt || null,
       limit: LIVE_EXPANSION_INTENT_LIMIT,
+      taste_strategy: strategy,
     }),
   });
   if (!intentRes.ok) return [];
@@ -1129,7 +1212,7 @@ export default function DiscoverView({
             : "No recommendations found — try a different search or adjust your weights."
         );
       }
-      const finalResults = spreadArtistsForDisplay(deduped, TARGET_SONGS);
+      const finalResults = shapeStationForFreshAir(deduped, TARGET_SONGS);
 
       setResults(finalResults);
       writeDiscoverCache(prompt, weights, currentStrategyKey, finalResults);
@@ -1314,7 +1397,7 @@ export default function DiscoverView({
                 </div>
                 <div className="flex items-center justify-center gap-1.5 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-[11px] font-medium text-emerald-700">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
-                  Live Spotify expansion {tasteStrategy?.live_expansion ?? "auto"}
+                  Outside air {tasteStrategy?.live_expansion ?? "auto"}
                 </div>
               </div>
             )}
@@ -1662,7 +1745,7 @@ function StationMixStrip({
             </span>
           </div>
           <p className="mt-1 text-xs leading-relaxed text-neutral-500">
-            {mix.total} songs: {mix.catalogCount} catalog-ranked and {mix.liveCount} live Spotify sourced.
+            {mix.total} songs: {mix.catalogCount} catalog-ranked and {mix.liveCount} outside-air Spotify sourced.
           </p>
           <p className="mt-1 text-xs leading-relaxed text-neutral-400">
             {mix.sourceInsight}
@@ -1682,14 +1765,14 @@ function StationMixStrip({
                 tone="bg-neutral-800"
               />
               <MixTile
-                label="Live Spotify"
+                label="Outside air"
                 value={mix.liveCount}
                 pct={mix.liveCount / sourceTotal}
                 tone="bg-emerald-500"
                 hint={
                   mix.liveCount === 0
-                    ? "Why 0? The catalog already filled the station with strong modeled matches."
-                    : "Tracks found from Spotify search outside the modeled catalog."
+                    ? "Why 0? MusicLife tried to reserve fresh air, but no usable live Spotify candidates were available for this run."
+                    : "Tracks found from live Spotify search outside the modeled catalog."
                 }
               />
             </div>

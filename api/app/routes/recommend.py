@@ -107,6 +107,9 @@ class LiveCandidateIntentsRequest(BaseModel):
     user_id: str
     prompt: str | None = None
     limit: int = Field(default=8, ge=1, le=12)
+    genre_boosts: list[str] = Field(default_factory=list)
+    genre_avoids: list[str] = Field(default_factory=list)
+    freshness: str = Field(default="balanced", pattern="^(newer|balanced|timeless)$")
 
 
 @router.post("", response_model=RecommendResponse)
@@ -285,6 +288,9 @@ def live_candidate_intents(
         user_id=req.user_id,
         prompt=req.prompt,
         limit=req.limit,
+        genre_boosts=req.genre_boosts,
+        genre_avoids=req.genre_avoids,
+        freshness=req.freshness,
     )
 
 

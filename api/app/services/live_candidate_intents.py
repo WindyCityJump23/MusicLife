@@ -27,11 +27,21 @@ def build_live_candidate_intents(
     user_id: str,
     prompt: str | None = None,
     limit: int = 8,
+    genre_boosts: list[str] | None = None,
+    genre_avoids: list[str] | None = None,
+    freshness: str = "balanced",
 ) -> dict[str, Any]:
     """Return style/search intents for live Spotify candidate expansion."""
 
     limit = max(1, min(limit, 12))
-    brief = _build_taste_brief(client, user_id, prompt)
+    brief = _build_taste_brief(
+        client,
+        user_id,
+        prompt,
+        genre_boosts=genre_boosts or [],
+        genre_avoids=genre_avoids or [],
+        freshness=freshness,
+    )
     intents = _anthropic_intents(brief, limit) or _heuristic_intents(brief, limit)
     return {
         "intents": intents[:limit],
@@ -41,6 +51,9 @@ def build_live_candidate_intents(
             "prompt": brief["prompt"],
             "recent_tracks": brief["recent_tracks"][:8],
             "top_artists": brief["top_artists"][:8],
+            "genre_boosts": brief["genre_boosts"][:8],
+            "genre_avoids": brief["genre_avoids"][:8],
+            "freshness": brief["freshness"],
         },
     }
 
@@ -54,10 +67,21 @@ def _get_anthropic() -> Anthropic | None:
     return _client
 
 
-def _build_taste_brief(client, user_id: str, prompt: str | None) -> dict[str, Any]:
+def _build_taste_brief(
+    client,
+    user_id: str,
+    prompt: str | None,
+    genre_boosts: list[str],
+    genre_avoids: list[str],
+    freshness: str,
+) -> dict[str, Any]:
     genre_counts: Counter[str] = Counter()
     recent_tracks: list[str] = []
     top_artists: list[str] = []
+    clean_boosts = [_normalize_strategy_genre(genre) for genre in genre_boosts]
+    clean_boosts = [genre for genre in clean_boosts if genre]
+    clean_avoids = set(_normalize_strategy_genre(genre) for genre in genre_avoids)
+    clean_avoids.discard("")
 
     try:
         top_resp = (
@@ -125,13 +149,23 @@ def _build_taste_brief(client, user_id: str, prompt: str | None) -> dict[str, An
 
     intent = interpret_music_prompt(prompt)
     descriptors = intent.descriptors if intent else []
-    genres = [genre for genre, _ in genre_counts.most_common(24)]
+    for genre in clean_boosts:
+        genre_counts[genre] += 25.0
+
+    genres = [
+        genre
+        for genre, _ in genre_counts.most_common(30)
+        if genre not in clean_avoids
+    ]
 
     return {
         "prompt": intent.search_phrase if intent else (prompt or "").strip(),
         "expanded_prompt": intent.expanded_prompt if intent else "",
         "descriptors": descriptors,
         "genres": genres,
+        "genre_boosts": clean_boosts,
+        "genre_avoids": sorted(clean_avoids),
+        "freshness": freshness if freshness in {"newer", "balanced", "timeless"} else "balanced",
         "recent_tracks": recent_tracks,
         "top_artists": top_artists[:20],
         "_anthropic_used": False,
@@ -139,10 +173,14 @@ def _build_taste_brief(client, user_id: str, prompt: str | None) -> dict[str, An
 
 
 def _add_genre(counter: Counter[str], genre: str, weight: float) -> None:
-    clean = re.sub(r"\s+", " ", str(genre or "").strip().lower())
+    clean = _normalize_strategy_genre(genre)
     if not clean or clean in _NON_STYLE_GENRES:
         return
     counter[clean] += max(weight, 0.1)
+
+
+def _normalize_strategy_genre(genre: Any) -> str:
+    return re.sub(r"\s+", " ", str(genre or "").strip().lower())[:60]
 
 
 def _anthropic_intents(brief: dict[str, Any], limit: int) -> list[dict[str, str]]:
@@ -160,12 +198,17 @@ def _anthropic_intents(brief: dict[str, Any], limit: int) -> list[dict[str, str]
         "current_prompt": brief["prompt"],
         "expanded_prompt": brief["expanded_prompt"],
         "top_genres": brief["genres"][:12],
+        "priority_genres": brief["genre_boosts"][:8],
+        "soft_avoid_genres": brief["genre_avoids"][:8],
+        "freshness_preference": brief["freshness"],
         "recent_saved_tracks": brief["recent_tracks"][:12],
         "top_artists_context_only_do_not_name_in_queries": brief["top_artists"][:10],
         "current_year": _CURRENT_YEAR,
         "instructions": (
             f"Return {limit} objects with keys query, label, reason. "
-            "Queries should work in Spotify's general track search box and should be 3-8 words."
+            "Queries should work in Spotify's general track search box and should be 3-8 words. "
+            "Use priority genres when present. Avoid soft_avoid genres unless the prompt explicitly asks for them. "
+            "If freshness_preference is newer, include current or recent discovery language."
         ),
     }
 
@@ -229,6 +272,8 @@ def _heuristic_intents(brief: dict[str, Any], limit: int) -> list[dict[str, str]
     prompt = brief["prompt"]
     descriptors = brief["descriptors"]
     genres = brief["genres"] or ["indie", "alternative", "new music"]
+    freshness = brief.get("freshness", "balanced")
+    year_anchor = max(_CURRENT_YEAR - (1 if freshness == "newer" else 3), 2020)
 
     query_parts: list[tuple[str, str, str]] = []
     if prompt:
@@ -243,11 +288,13 @@ def _heuristic_intents(brief: dict[str, Any], limit: int) -> list[dict[str, str]
             )
 
     for genre in genres[:8]:
+        if freshness == "newer":
+            query_parts.append((f"{genre} new releases", "Current search", f"Looks for fresher {genre} tracks."))
         query_parts.extend(
             [
                 (f"{genre} new music", "Fresh genre search", f"Looks beyond the DB for current {genre} tracks."),
                 (f"{genre} deep cuts", "Deep search", f"Looks for less-obvious {genre} tracks."),
-                (f"{genre} {max(_CURRENT_YEAR - 1, 2020)}", "Recent search", f"Adds a recent-year angle for {genre}."),
+                (f"{genre} {year_anchor}", "Recent search", f"Adds a recent-year angle for {genre}."),
             ]
         )
 
