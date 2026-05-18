@@ -49,16 +49,17 @@ def recency_multiplier(
 
 
 def track_preference_weight(row: Mapping[str, object], now: datetime) -> float:
-    """Weight a saved/listened track using play count plus listen/save recency."""
-    raw_play_count = row.get("play_count") or 0
-    try:
-        play_count = float(raw_play_count)
-    except (TypeError, ValueError):
-        play_count = 0.0
+    """Weight an intentionally saved track for taste modeling.
 
-    base = play_count if play_count > 0 else 1.0
-    recency_ts = row.get("last_played_at") or row.get("added_at")
-    return base * recency_multiplier(recency_ts, now)
+    Spotify recently-played rows are useful for repeat avoidance, but they are
+    not manual taste input. MusicLife Radio playback can show up in Spotify's
+    recent history, so positive preference weight must come from saved-library
+    intent instead of play_count/last_played_at.
+    """
+    saved_at = row.get("added_at")
+    if not saved_at:
+        return 0.0
+    return recency_multiplier(saved_at, now)
 
 
 def favorite_preference_weight(created_at: object, now: datetime) -> float:

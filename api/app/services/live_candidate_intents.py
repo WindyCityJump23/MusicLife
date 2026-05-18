@@ -111,6 +111,7 @@ def _build_taste_brief(
             client.table("user_tracks")
             .select("added_at,play_count,last_played_at,tracks(name,popularity,artists(name,genres))")
             .eq("user_id", user_id)
+            .not_.is_("added_at", "null")
             .order("added_at", desc=True)
             .range(0, 119)
             .execute()
@@ -122,9 +123,7 @@ def _build_taste_brief(
             artist_name = artist.get("name")
             if track_name and artist_name and len(recent_tracks) < 24:
                 recent_tracks.append(f"{track_name} - {artist_name}")
-            play_weight = max(float(row.get("play_count") or 0.0), 1.0)
-            if row.get("last_played_at"):
-                play_weight += 2.0
+            play_weight = 1.0
             for genre in artist.get("genres") or []:
                 _add_genre(genre_counts, genre, play_weight)
     except Exception:

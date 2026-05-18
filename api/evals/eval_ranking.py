@@ -580,31 +580,74 @@ def eval_old_saved_tracks_keep_meaningful_weight() -> EvalResult:
     )
 
 
-def eval_last_played_takes_priority_over_added_at() -> EvalResult:
-    """Recent listens should beat old listens even when added_at points the other way."""
+def eval_recent_play_does_not_create_taste_weight() -> EvalResult:
+    """Spotify recent plays should not become positive taste input."""
     now = datetime.now(timezone.utc)
-    recent_play = track_preference_weight(
+    recent_only = track_preference_weight(
         {
-            "play_count": 0,
-            "added_at": (now - timedelta(days=1000)).isoformat(),
+            "play_count": 10,
             "last_played_at": (now - timedelta(days=3)).isoformat(),
         },
         now,
     )
-    old_play = track_preference_weight(
+    saved_track = track_preference_weight(
         {
-            "play_count": 0,
-            "added_at": (now - timedelta(days=3)).isoformat(),
-            "last_played_at": (now - timedelta(days=1000)).isoformat(),
+            "play_count": 10,
+            "added_at": (now - timedelta(days=90)).isoformat(),
+            "last_played_at": (now - timedelta(days=1)).isoformat(),
         },
         now,
     )
-    passed = recent_play > old_play * 2
+    passed = recent_only == 0.0 and saved_track > 0.0
     return EvalResult(
-        name="last_played_takes_priority_over_added_at",
+        name="recent_play_does_not_create_taste_weight",
         passed=passed,
         score=1.0 if passed else 0.0,
-        details=f"recent_play={recent_play:.3f}, old_play={old_play:.3f}",
+        details=f"recent_only={recent_only:.3f}, saved_track={saved_track:.3f}",
+    )
+
+
+def eval_recent_only_tracks_do_not_weight_artist() -> EvalResult:
+    """A recently played, unsaved track should not pull the artist taste centroid."""
+    now = datetime.now(timezone.utc)
+    recent_artist = _make_artist(722, "Recent Radio Artist", ["jazz"], vec_seed=63, popularity=70)
+    saved_artist = _make_artist(723, "Saved Library Artist", ["jazz"], vec_seed=64, popularity=70)
+    recent_track = _make_track(1722, "Recent Radio Track", 722, popularity=50, vec_seed=1722)
+    saved_track = _make_track(1723, "Saved Library Track", 723, popularity=50, vec_seed=1723)
+    scenario = UserScenario(
+        user_id="recent_only_weight_test",
+        library_artist_ids=[722, 723],
+        played_track_ids=[],
+        top_artist_ids=[],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        user_tracks=[
+            {
+                "track_id": 1722,
+                "play_count": 5,
+                "last_played_at": (now - timedelta(days=1)).isoformat(),
+            },
+            {
+                "track_id": 1723,
+                "play_count": 0,
+                "added_at": (now - timedelta(days=60)).isoformat(),
+            },
+        ],
+    )
+    client = build_mock_client(
+        scenario,
+        artists=[recent_artist, saved_artist],
+        tracks=[recent_track, saved_track],
+        mentions=[],
+    )
+    weights = _get_user_artist_weights(client, scenario.user_id)
+    recent = weights.get(722, 0.0)
+    saved = weights.get(723, 0.0)
+    passed = recent == 0.0 and saved > 0.0
+    return EvalResult(
+        name="recent_only_tracks_do_not_weight_artist",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"recent_artist={recent:.3f}, saved_artist={saved:.3f}",
     )
 
 
@@ -657,6 +700,7 @@ def run_suite() -> list[EvalResult]:
         eval_thumbs_up_boosts_artist(),
         eval_saved_track_recency_weights_gentle(),
         eval_old_saved_tracks_keep_meaningful_weight(),
-        eval_last_played_takes_priority_over_added_at(),
+        eval_recent_play_does_not_create_taste_weight(),
+        eval_recent_only_tracks_do_not_weight_artist(),
         eval_null_track_favorite_resolves_by_artist_name(),
     ]
