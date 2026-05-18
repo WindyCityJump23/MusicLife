@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
     body: JSON.stringify({
       user_id: user.userId,
       prompt: prompt || null,
-      weights: body.weights ?? { affinity: 0.4, context: 0.4, editorial: 0.2 },
+      weights: body.weights ?? { affinity: 0.75, context: 0.15, editorial: 0.1 },
       limit: body.limit ?? 30,
       exclude_library: body.exclude_library ?? false,
       discover_run_id: body.discover_run_id ?? null,

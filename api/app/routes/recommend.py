@@ -27,10 +27,13 @@ from app.services.supabase_client import get_user_scoped_supabase
 router = APIRouter()
 
 
+DEFAULT_TASTE_MATCH_WEIGHTS = {"affinity": 0.75, "context": 0.15, "editorial": 0.1}
+
+
 class RecommendRequest(BaseModel):
     user_id: str
     prompt: str | None = None
-    weights: dict[str, float] = Field(default_factory=lambda: {"affinity": 0.4, "context": 0.4, "editorial": 0.2})
+    weights: dict[str, float] = Field(default_factory=lambda: DEFAULT_TASTE_MATCH_WEIGHTS.copy())
     exclude_library: bool = False
     limit: int = Field(default=20, ge=1, le=100)
 
@@ -81,7 +84,7 @@ class TasteStrategyPreference(BaseModel):
 class RecommendSongsRequest(BaseModel):
     user_id: str
     prompt: str | None = None
-    weights: dict[str, float] = Field(default_factory=lambda: {"affinity": 0.4, "context": 0.4, "editorial": 0.2})
+    weights: dict[str, float] = Field(default_factory=lambda: DEFAULT_TASTE_MATCH_WEIGHTS.copy())
     exclude_library: bool = False
     limit: int = Field(default=30, ge=1, le=100)
     exclude_previously_shown: bool = True

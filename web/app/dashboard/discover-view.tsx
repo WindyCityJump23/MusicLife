@@ -80,10 +80,10 @@ function emptyDiscoveryGroups(): Record<DiscoveryLaneId, SongRecommendation[]> {
 
 
 const PRESETS: Preset[] = [
-  { label: "Balanced",      desc: "Equal blend of all three signals",         weights: { affinity: 40, context: 40, editorial: 20 } },
-  { label: "Pure Taste",    desc: "Closest to your saved listening history",   weights: { affinity: 75, context: 15, editorial: 10 } },
-  { label: "Trending",      desc: "Artists getting press buzz right now",      weights: { affinity: 25, context: 15, editorial: 60 } },
-  { label: "Match Search",  desc: "Type a prompt above to activate this mode", weights: { affinity: 20, context: 65, editorial: 15 } },
+  { label: "Taste Match",   desc: "Closest strong matches to your taste profile", weights: { affinity: 75, context: 15, editorial: 10 } },
+  { label: "Broaden",       desc: "Keep taste as the spine, with more context and buzz", weights: { affinity: 55, context: 30, editorial: 15 } },
+  { label: "Fresh Buzz",    desc: "Let current music context widen the station", weights: { affinity: 40, context: 20, editorial: 40 } },
+  { label: "Prompt Match",  desc: "Type a prompt above to prioritize that search", weights: { affinity: 25, context: 60, editorial: 15 } },
 ];
 
 const DISCOVERY_LANES: DiscoveryLane[] = [
@@ -1468,7 +1468,7 @@ export default function DiscoverView({
 
           <div className="flex flex-wrap items-center gap-1.5">
             {PRESETS.map((p) => {
-              const isSearchMode = p.label === "Match Search";
+              const isSearchMode = p.label === "Prompt Match";
               const unavailable = isSearchMode && !prompt;
               const active = sameWeights(weights, p.weights);
               return (
@@ -1522,7 +1522,7 @@ export default function DiscoverView({
                 />
               </div>
               <p className="text-[10px] leading-relaxed text-neutral-400">
-                Retuning reshuffles the station. Songs you already saved are ranked lower.
+                Taste Match is the default spine. Retuning widens the station when you want more freshness, buzz, or prompt-specific context.
               </p>
             </div>
           )}
