@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
 import { applySpotifyTokenCookies, getSpotifyToken } from "@/lib/spotify-token";
+import { supabaseServer } from "@/lib/supabase-server";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 25;
@@ -93,6 +94,84 @@ function promptSearchVariants(prompt: string): string[] {
     prompt,
     withoutBand,
   ]);
+}
+
+/**
+ * Resolve prompt variants to artists already in our catalog by name.
+ *
+ * Cuts the most expensive Spotify call out of the hot path: every prompt
+ * search hit `/v1/search?type=artist` before this, which is what tripped
+ * the 429 (`retry_after: 8210s`) incident. For any artist already synced
+ * via Spotify ingest (`artists.spotify_artist_id IS NOT NULL`) we can
+ * skip the search entirely and feed the cached ID into top-tracks.
+ *
+ * Strategy:
+ *   1. Exact case-insensitive match on `name` first (highest precision).
+ *   2. ILIKE fallback for trailing/leading qualifiers (still bounded —
+ *      we cap to 3 results to keep parity with the Spotify path).
+ *
+ * Returns SpotifyArtist-shaped rows so the downstream code paths don't
+ * need to know whether the match came from the DB or live Spotify.
+ */
+async function resolveArtistsFromCatalog(queries: string[]): Promise<SpotifyArtist[]> {
+  if (queries.length === 0) return [];
+
+  let supabase;
+  try {
+    supabase = supabaseServer();
+  } catch {
+    // Env vars missing — degrade silently so the live path still tries Spotify.
+    return [];
+  }
+
+  const seen = new Map<string, SpotifyArtist>();
+
+  // Phase 1: exact case-insensitive name match across all prompt variants
+  // (usually 1-2: the raw prompt and a "without band" stripped form).
+  const variants = uniqueStrings(queries);
+  for (const variant of variants) {
+    if (seen.size >= 3) break;
+    const lowered = variant.toLowerCase();
+    if (!lowered) continue;
+    try {
+      const exact = await supabase
+        .from("artists")
+        .select("name,spotify_artist_id")
+        .not("spotify_artist_id", "is", null)
+        .ilike("name", lowered);
+      for (const row of exact.data ?? []) {
+        if (row.spotify_artist_id && !seen.has(row.spotify_artist_id)) {
+          seen.set(row.spotify_artist_id, { id: row.spotify_artist_id, name: row.name ?? "" });
+        }
+      }
+    } catch {
+      // Lookup errors fall through to the Spotify path — never a hard fail.
+    }
+  }
+
+  // Phase 2: ILIKE fallback only if nothing matched exactly.
+  if (seen.size === 0) {
+    try {
+      const top = queries[0]?.replace(/[%_]/g, "").trim();
+      if (top) {
+        const fuzzy = await supabase
+          .from("artists")
+          .select("name,spotify_artist_id")
+          .not("spotify_artist_id", "is", null)
+          .ilike("name", `%${top}%`)
+          .limit(3);
+        for (const row of fuzzy.data ?? []) {
+          if (row.spotify_artist_id && !seen.has(row.spotify_artist_id)) {
+            seen.set(row.spotify_artist_id, { id: row.spotify_artist_id, name: row.name ?? "" });
+          }
+        }
+      }
+    } catch {
+      // see above
+    }
+  }
+
+  return [...seen.values()].slice(0, 3);
 }
 
 function spotifySearchUrl(query: string, type: "artist" | "track", limit: number, withMarket: boolean): string {
@@ -253,23 +332,40 @@ export async function POST(req: NextRequest) {
 
   const artistMatchesById = new Map<string, SpotifyArtist>();
   const artistQueries = promptSearchVariants(prompt);
-  for (const query of artistQueries) {
-    const artistData = await spotifySearch<{ artists?: { items?: SpotifyArtist[] } }>(
-      query,
-      "artist",
-      5,
-      token.accessToken,
-      `artist:${query}`,
-      spotifyFailures,
-      (data) => (data.artists?.items ?? []).length > 0
-    );
-    if (hitSpotifyRateLimit(spotifyFailures)) break;
-    for (const artist of artistData?.artists?.items ?? []) {
-      if (artist.id && !artistMatchesById.has(artist.id)) {
-        artistMatchesById.set(artist.id, artist);
-      }
+
+  // Cache hit first: if the catalog already maps this prompt to a
+  // synced artist, skip Spotify search entirely. This removes the call
+  // that caused the 8210s app-wide 429 cooldown on "dave matthews band".
+  const catalogMatches = await resolveArtistsFromCatalog(artistQueries);
+  for (const artist of catalogMatches) {
+    if (artist.id && !artistMatchesById.has(artist.id)) {
+      artistMatchesById.set(artist.id, artist);
     }
-    if (artistMatchesById.size >= 3) break;
+  }
+  const catalogHits = artistMatchesById.size;
+
+  // Only fall through to Spotify search when the catalog didn't resolve
+  // the prompt — keeps unknown queries working while protecting the rate
+  // limit on the long tail of names we've already synced.
+  if (catalogHits === 0) {
+    for (const query of artistQueries) {
+      const artistData = await spotifySearch<{ artists?: { items?: SpotifyArtist[] } }>(
+        query,
+        "artist",
+        5,
+        token.accessToken,
+        `artist:${query}`,
+        spotifyFailures,
+        (data) => (data.artists?.items ?? []).length > 0
+      );
+      if (hitSpotifyRateLimit(spotifyFailures)) break;
+      for (const artist of artistData?.artists?.items ?? []) {
+        if (artist.id && !artistMatchesById.has(artist.id)) {
+          artistMatchesById.set(artist.id, artist);
+        }
+      }
+      if (artistMatchesById.size >= 3) break;
+    }
   }
   const artistMatches = [...artistMatchesById.values()].slice(0, 3);
 
@@ -348,6 +444,7 @@ export async function POST(req: NextRequest) {
   console.info("prompt-spotify-songs", {
     prompt,
     artist_count: artistMatches.length,
+    catalog_hits: catalogHits,
     result_count: results.length,
     artist_queries: artistQueries,
     spotify_failure_count: spotifyFailures.length,
