@@ -120,7 +120,7 @@ const LIVE_EXPANSION_TRACKS_PER_INTENT = 5;
 const LIVE_EXPANSION_POOL_TARGET = 40;
 const FRESH_AIR_TARGET_RATIO = 0.25;
 const PROMPT_LIVE_TARGET_RATIO = 0.4;
-const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v4";
+const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v5";
 const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
 
 type DiscoverCachePayload = {
@@ -1136,6 +1136,25 @@ export default function DiscoverView({
 
       let deduped: SongRecommendation[] = [];
       let interpretedPrompt = prompt.trim();
+      const promptForLiveSearch = prompt.trim();
+      let accessToken: string | null = null;
+
+      async function ensureSpotifyAccessToken(): Promise<string | null> {
+        if (accessToken) return accessToken;
+        const tokenRes = await fetch("/api/auth/token");
+        const tokenData = await tokenRes.json().catch(() => ({}));
+        accessToken = tokenData.access_token ?? null;
+        return accessToken;
+      }
+
+      const promptSongsPromise = promptForLiveSearch
+        ? ensureSpotifyAccessToken()
+            .then((token) => (token ? fetchPromptSpotifySongs(promptForLiveSearch, token) : []))
+            .catch((err) => {
+              console.warn("prompt Spotify search failed:", err);
+              return [];
+            })
+        : Promise.resolve([]);
 
       // Attempt 1: Server-side song recommendations (uses tracks in DB)
       let dbError: string | null = null;
@@ -1204,28 +1223,14 @@ export default function DiscoverView({
         console.warn("recommend-songs failed, falling back to Spotify search:", e);
       }
 
-      const promptForLiveSearch = prompt.trim() || interpretedPrompt;
-      let accessToken: string | null = null;
-
-      async function ensureSpotifyAccessToken(): Promise<string | null> {
-        if (accessToken) return accessToken;
-        const tokenRes = await fetch("/api/auth/token");
-        const tokenData = await tokenRes.json().catch(() => ({}));
-        accessToken = tokenData.access_token ?? null;
-        return accessToken;
-      }
-
       // A typed prompt is a steering command, not a suggestion. Always ask
       // Spotify directly for that prompt so a full catalog response cannot
       // bury the artist or scene the user actually requested.
-      if (promptForLiveSearch.trim()) {
+      if (promptForLiveSearch) {
         setLoadingStage("Searching Spotify for your prompt\u2026");
-        const token = await ensureSpotifyAccessToken();
-        if (token) {
-          const promptSongs = await fetchPromptSpotifySongs(promptForLiveSearch, token);
-          if (promptSongs.length > 0) {
-            deduped = mergeCandidateSongs(deduped, promptSongs);
-          }
+        const promptSongs = await promptSongsPromise;
+        if (promptSongs.length > 0) {
+          deduped = mergeCandidateSongs(deduped, promptSongs);
         }
       }
 
@@ -1296,9 +1301,9 @@ export default function DiscoverView({
         const songArrays = await Promise.all(
           missingArtists.slice(0, FALLBACK_ARTIST_SEARCH_LIMIT).map(async (artist: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
             try {
-              const queries = promptForLiveSearch
+              const queries = promptForLiveSearch || interpretedPrompt
                 ? [
-                    `artist:${artist.artist_name} ${promptForLiveSearch}`,
+                    `artist:${artist.artist_name} ${promptForLiveSearch || interpretedPrompt}`,
                     `artist:${artist.artist_name}`,
                   ]
                 : [`artist:${artist.artist_name}`];
@@ -1404,6 +1409,16 @@ export default function DiscoverView({
       const finalResults = shapeStationForFreshAir(deduped, TARGET_SONGS, {
         promptMode: Boolean(prompt.trim()),
       });
+      const finalLiveCount = finalResults.filter(isLiveSourced).length;
+
+      if (prompt.trim() && finalLiveCount === 0) {
+        setError(
+          "Live Spotify did not return usable matches for this prompt, so MusicLife will not present catalog-only taste matches as a prompt station. Please try again in a moment."
+        );
+        setResults([]);
+        setQueue([]);
+        return;
+      }
 
       setResults(finalResults);
       if (finalResults.length > 0) {
