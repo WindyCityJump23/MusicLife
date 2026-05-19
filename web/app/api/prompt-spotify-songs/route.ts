@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
 import { applySpotifyTokenCookies, getSpotifyToken } from "@/lib/spotify-token";
+import { supabaseServer } from "@/lib/supabase-server";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 25;
@@ -24,6 +25,34 @@ type SpotifyTrack = {
 type SpotifyArtist = {
   id?: string;
   name?: string;
+};
+
+type CatalogArtist = SpotifyArtist & {
+  catalogArtistId: number;
+  genres: string[];
+};
+
+type CatalogTrack = {
+  id?: number | string;
+  name?: string;
+  artist_id?: number | string | null;
+  album_name?: string | null;
+  release_date?: string | null;
+  duration_ms?: number | null;
+  explicit?: boolean | null;
+  popularity?: number | null;
+  spotify_track_id?: string | null;
+  artists?: {
+    id?: number | string;
+    name?: string;
+    genres?: string[] | null;
+    spotify_artist_id?: string | null;
+  } | Array<{
+    id?: number | string;
+    name?: string;
+    genres?: string[] | null;
+    spotify_artist_id?: string | null;
+  }> | null;
 };
 
 type LiveIntent = {
@@ -93,6 +122,141 @@ function promptSearchVariants(prompt: string): string[] {
     prompt,
     withoutBand,
   ]);
+}
+
+/**
+ * Resolve prompt variants to artists already in our catalog by name.
+ *
+ * Cuts the most expensive Spotify call out of the hot path: every prompt
+ * search hit `/v1/search?type=artist` before this, which is what tripped
+ * the 429 (`retry_after: 8210s`) incident. For any artist already synced
+ * via Spotify ingest (`artists.spotify_artist_id IS NOT NULL`) we can
+ * skip the search entirely and feed the cached ID into top-tracks.
+ *
+ * Strategy:
+ *   1. Exact case-insensitive match on `name` first (highest precision).
+ *   2. ILIKE fallback for trailing/leading qualifiers (still bounded —
+ *      we cap to 3 results to keep parity with the Spotify path).
+ *
+ * Returns SpotifyArtist-shaped rows so the downstream code paths don't
+ * need to know whether the match came from the DB or live Spotify.
+ */
+async function resolveArtistsFromCatalog(queries: string[]): Promise<CatalogArtist[]> {
+  if (queries.length === 0) return [];
+
+  let supabase;
+  try {
+    supabase = supabaseServer();
+  } catch {
+    // Env vars missing — degrade silently so the live path still tries Spotify.
+    return [];
+  }
+
+  const seen = new Map<string, CatalogArtist>();
+
+  // Phase 1: exact case-insensitive name match across all prompt variants
+  // (usually 1-2: the raw prompt and a "without band" stripped form).
+  const variants = uniqueStrings(queries);
+  for (const variant of variants) {
+    if (seen.size >= 3) break;
+    const lowered = variant.toLowerCase();
+    if (!lowered) continue;
+    try {
+      const exact = await supabase
+        .from("artists")
+        .select("id,name,genres,spotify_artist_id")
+        .not("spotify_artist_id", "is", null)
+        .ilike("name", lowered)
+        .limit(3);
+      for (const row of exact.data ?? []) {
+        if (row.id && row.spotify_artist_id && !seen.has(row.spotify_artist_id)) {
+          seen.set(row.spotify_artist_id, {
+            id: row.spotify_artist_id,
+            name: row.name ?? "",
+            catalogArtistId: Number(row.id),
+            genres: Array.isArray(row.genres) ? row.genres : [],
+          });
+        }
+      }
+    } catch {
+      // Lookup errors fall through to the Spotify path — never a hard fail.
+    }
+  }
+
+  // Phase 2: ILIKE fallback only if nothing matched exactly.
+  if (seen.size === 0) {
+    try {
+      const top = queries[0]?.replace(/[%_]/g, "").trim();
+      if (top) {
+        const fuzzy = await supabase
+          .from("artists")
+          .select("id,name,genres,spotify_artist_id")
+          .not("spotify_artist_id", "is", null)
+          .ilike("name", `%${top}%`)
+          .limit(3);
+        for (const row of fuzzy.data ?? []) {
+          if (row.id && row.spotify_artist_id && !seen.has(row.spotify_artist_id)) {
+            seen.set(row.spotify_artist_id, {
+              id: row.spotify_artist_id,
+              name: row.name ?? "",
+              catalogArtistId: Number(row.id),
+              genres: Array.isArray(row.genres) ? row.genres : [],
+            });
+          }
+        }
+      }
+    } catch {
+      // see above
+    }
+  }
+
+  return [...seen.values()].slice(0, 3);
+}
+
+async function fetchCatalogTracksForArtists(
+  artists: CatalogArtist[],
+  perArtistLimit: number
+): Promise<CatalogTrack[]> {
+  if (artists.length === 0) return [];
+
+  let supabase;
+  try {
+    supabase = supabaseServer();
+  } catch {
+    return [];
+  }
+
+  const batches = await Promise.all(
+    artists.map(async (artist) => {
+      try {
+        const { data, error } = await supabase
+          .from("tracks")
+          .select(
+            "id,name,artist_id,album_name,release_date,duration_ms,explicit,popularity,spotify_track_id,artists(id,name,genres,spotify_artist_id)"
+          )
+          .eq("artist_id", artist.catalogArtistId)
+          .not("spotify_track_id", "is", null)
+          .order("popularity", { ascending: false, nullsFirst: false })
+          .limit(perArtistLimit);
+        if (error) {
+          console.warn("prompt-spotify-songs: catalog track lookup failed", {
+            artist: artist.name,
+            error: error.message,
+          });
+          return [];
+        }
+        return data ?? [];
+      } catch (err) {
+        console.warn("prompt-spotify-songs: catalog track lookup threw", {
+          artist: artist.name,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return [];
+      }
+    })
+  );
+
+  return batches.flat() as CatalogTrack[];
 }
 
 function spotifySearchUrl(query: string, type: "artist" | "track", limit: number, withMarket: boolean): string {
@@ -167,6 +331,91 @@ function trackToRecommendation(
   };
 }
 
+function catalogTrackToRecommendation(
+  track: CatalogTrack,
+  fallbackArtist: CatalogArtist | undefined,
+  artistIndex: number,
+  trackIndex: number
+) {
+  const artist = Array.isArray(track.artists) ? track.artists[0] : track.artists;
+  const artistName = artist?.name ?? fallbackArtist?.name;
+  const spotifyTrackId = track.spotify_track_id ?? "";
+  if (!track.id || !track.name || !artistName || !spotifyTrackId) return null;
+
+  const popularity = Math.max(0, Math.min(1, (track.popularity ?? 50) / 100));
+  const freshness = releaseFreshness(track.release_date);
+  const novelty = Math.max(0.25, Math.min(1, 1 - popularity * 0.55 + freshness * 0.25));
+  const score = scoreTrack(
+    {
+      id: spotifyTrackId,
+      name: track.name,
+      popularity: track.popularity ?? 50,
+      duration_ms: track.duration_ms ?? 0,
+      explicit: track.explicit ?? false,
+      album: {
+        name: track.album_name ?? "",
+        release_date: track.release_date ?? undefined,
+      },
+      artists: [{ id: artist?.spotify_artist_id ?? fallbackArtist?.id, name: artistName }],
+    },
+    artistIndex + 1,
+    trackIndex
+  );
+  const genres = Array.isArray(artist?.genres)
+    ? artist.genres
+    : Array.isArray(fallbackArtist?.genres)
+      ? fallbackArtist.genres
+      : [];
+
+  return {
+    track_id: String(track.id),
+    track_name: track.name,
+    artist_id: String(track.artist_id ?? fallbackArtist?.catalogArtistId ?? ""),
+    artist_name: artistName,
+    album_name: track.album_name ?? "",
+    release_date: track.release_date ?? null,
+    duration_ms: track.duration_ms ?? 0,
+    explicit: track.explicit ?? false,
+    spotify_track_id: spotifyTrackId,
+    score,
+    lane: laneFromPopularity(popularity),
+    novelty_score: novelty,
+    familiarity_score: 0,
+    signals: {
+      affinity: Math.max(0.3, score - 0.08),
+      context: Math.max(0.25, score - 0.1),
+      editorial: 0,
+      track_popularity: popularity,
+      novelty,
+      familiarity: 0,
+    },
+    genres,
+    reasons: [
+      "Catalog artist match",
+      "Matched the artist you typed in the MusicLife catalog.",
+      "Used playable catalog tracks when live Spotify search was limited or unnecessary.",
+    ],
+    mention_count: 0,
+    top_mention: null,
+  };
+}
+
+function dedupeRecommendations<T extends { spotify_track_id?: string; track_name?: string; artist_name?: string }>(
+  songs: Array<T | null | undefined>,
+  limit: number
+): T[] {
+  const seen = new Set<string>();
+  return songs
+    .filter((song): song is T => {
+      if (!song) return false;
+      const key = song.spotify_track_id || `${song.track_name ?? ""}|${song.artist_name ?? ""}`.toLowerCase();
+      if (!key.trim() || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, limit);
+}
+
 async function spotifyJson<T>(
   url: string,
   accessToken: string,
@@ -237,39 +486,87 @@ export async function POST(req: NextRequest) {
   const user = requireUser(req);
   if (isErrorResponse(user)) return user;
 
-  const token = await getSpotifyToken(req);
-  if (!token) {
-    return NextResponse.json({ error: "no_spotify_token", results: [] }, { status: 401 });
-  }
-
   const body = await req.json().catch(() => ({}));
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   const limit = Math.max(1, Math.min(Number(body.limit) || DEFAULT_LIMIT, DEFAULT_LIMIT));
   const spotifyFailures: SpotifyFailure[] = [];
 
   if (!prompt) {
-    return applySpotifyTokenCookies(NextResponse.json({ results: [] }), token);
+    return NextResponse.json({ results: [] });
   }
 
-  const artistMatchesById = new Map<string, SpotifyArtist>();
+  const artistMatchesById = new Map<string, SpotifyArtist | CatalogArtist>();
   const artistQueries = promptSearchVariants(prompt);
-  for (const query of artistQueries) {
-    const artistData = await spotifySearch<{ artists?: { items?: SpotifyArtist[] } }>(
-      query,
-      "artist",
-      5,
-      token.accessToken,
-      `artist:${query}`,
-      spotifyFailures,
-      (data) => (data.artists?.items ?? []).length > 0
-    );
-    if (hitSpotifyRateLimit(spotifyFailures)) break;
-    for (const artist of artistData?.artists?.items ?? []) {
-      if (artist.id && !artistMatchesById.has(artist.id)) {
-        artistMatchesById.set(artist.id, artist);
-      }
+
+  // Cache hit first: if the catalog already maps this prompt to a
+  // synced artist, skip Spotify search entirely. This removes the call
+  // that caused the 8210s app-wide 429 cooldown on "dave matthews band".
+  const catalogMatches = await resolveArtistsFromCatalog(artistQueries);
+  for (const artist of catalogMatches) {
+    if (artist.id && !artistMatchesById.has(artist.id)) {
+      artistMatchesById.set(artist.id, artist);
     }
-    if (artistMatchesById.size >= 3) break;
+  }
+  const catalogHits = artistMatchesById.size;
+  const catalogTrackRows = await fetchCatalogTracksForArtists(catalogMatches, limit);
+  const catalogTrackRecommendations = catalogTrackRows
+    .map((track, trackIndex) => {
+      const artistIndex = catalogMatches.findIndex((match) => match.catalogArtistId === Number(track.artist_id));
+      const artist = artistIndex >= 0 ? catalogMatches[artistIndex] : undefined;
+      return catalogTrackToRecommendation(track, artist, Math.max(0, artistIndex), trackIndex);
+    })
+    .filter(Boolean);
+
+  const token = await getSpotifyToken(req);
+  if (!token) {
+    if (catalogTrackRecommendations.length > 0) {
+      const results = dedupeRecommendations(
+        catalogTrackRecommendations.sort((a, b) => (b?.score ?? 0) - (a?.score ?? 0)),
+        limit
+      );
+      console.info("prompt-spotify-songs", {
+        prompt,
+        artist_count: catalogMatches.length,
+        catalog_hits: catalogHits,
+        catalog_track_count: catalogTrackRecommendations.length,
+        result_count: results.length,
+        artist_queries: artistQueries,
+        spotify_failure_count: 0,
+        spotify_failures: [],
+        used_catalog_without_token: true,
+      });
+      return NextResponse.json({
+        results,
+        artist_count: catalogMatches.length,
+        track_search_count: results.length,
+        catalog_track_count: catalogTrackRecommendations.length,
+      });
+    }
+    return NextResponse.json({ error: "no_spotify_token", results: [] }, { status: 401 });
+  }
+
+  // Only fall through to Spotify search when the catalog didn't resolve
+  // the prompt — keeps unknown queries working while protecting the rate
+  // limit on the long tail of names we've already synced.
+  if (catalogHits === 0) {
+    for (const query of artistQueries) {
+      const artistData = await spotifySearch<{ artists?: { items?: SpotifyArtist[] } }>(
+        query,
+        "artist",
+        5,
+        token.accessToken,
+        `artist:${query}`,
+        spotifyFailures,
+        (data) => (data.artists?.items ?? []).length > 0
+      );
+      if (hitSpotifyRateLimit(spotifyFailures)) break;
+      for (const artist of artistData?.artists?.items ?? []) {
+        if (artist.id && !artistMatchesById.has(artist.id)) {
+          artistMatchesById.set(artist.id, artist);
+        }
+      }
+      if (artistMatchesById.size >= 3) break;
+    }
   }
   const artistMatches = [...artistMatchesById.values()].slice(0, 3);
 
@@ -298,58 +595,66 @@ export async function POST(req: NextRequest) {
         .filter(Boolean);
     })
   );
+  const artistTrackRecommendations = artistTrackBatches.flat();
+
+  const preliminaryResults = dedupeRecommendations(
+    [...artistTrackRecommendations, ...catalogTrackRecommendations]
+      .sort((a, b) => (b?.score ?? 0) - (a?.score ?? 0)),
+    limit
+  );
 
   const rawQueries = [
     ...artistQueries,
     `${prompt} songs`,
   ];
   const queries = uniqueStrings(rawQueries);
-  const trackSearchBatches = await Promise.all(
-    queries.map(async (query, queryIndex) => {
-      if (hitSpotifyRateLimit(spotifyFailures)) return [];
-      const data = await spotifySearch<{ tracks?: { items?: SpotifyTrack[] } }>(
-        query,
-        "track",
-        TRACK_LIMIT,
-        token.accessToken,
-        `track:${query}`,
-        spotifyFailures,
-        (data) => (data.tracks?.items ?? []).length > 0
-      );
-      return chooseFallbackTracks(data?.tracks?.items ?? [])
-        .map((track, trackIndex) =>
-          trackToRecommendation(
-            track,
-            {
-              query,
-              label: "Prompt Spotify search",
-              reason: "Searches Spotify directly for your typed artist, song, or scene.",
-            },
-            artistMatches.length + queryIndex,
-            trackIndex
-          )
-        )
-        .filter(Boolean);
-    })
-  );
+  const shouldRunTrackSearch = preliminaryResults.length < limit && !hitSpotifyRateLimit(spotifyFailures);
+  const trackSearchBatches = shouldRunTrackSearch
+    ? await Promise.all(
+        queries.map(async (query, queryIndex) => {
+          if (hitSpotifyRateLimit(spotifyFailures)) return [];
+          const data = await spotifySearch<{ tracks?: { items?: SpotifyTrack[] } }>(
+            query,
+            "track",
+            TRACK_LIMIT,
+            token.accessToken,
+            `track:${query}`,
+            spotifyFailures,
+            (data) => (data.tracks?.items ?? []).length > 0
+          );
+          return chooseFallbackTracks(data?.tracks?.items ?? [])
+            .map((track, trackIndex) =>
+              trackToRecommendation(
+                track,
+                {
+                  query,
+                  label: "Prompt Spotify search",
+                  reason: "Searches Spotify directly for your typed artist, song, or scene.",
+                },
+                artistMatches.length + queryIndex,
+                trackIndex
+              )
+            )
+            .filter(Boolean);
+        })
+      )
+    : [];
 
-  const seen = new Set<string>();
-  const results = [...artistTrackBatches.flat(), ...trackSearchBatches.flat()]
+  const results = dedupeRecommendations(
+    [...artistTrackRecommendations, ...trackSearchBatches.flat(), ...catalogTrackRecommendations]
     .sort((a, b) => (b?.score ?? 0) - (a?.score ?? 0))
-    .filter((song) => {
-      if (!song) return false;
-      const key = song.spotify_track_id || `${song.track_name}|${song.artist_name}`.toLowerCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .slice(0, limit);
+      .filter(Boolean),
+    limit
+  );
 
   console.info("prompt-spotify-songs", {
     prompt,
     artist_count: artistMatches.length,
+    catalog_hits: catalogHits,
+    catalog_track_count: catalogTrackRecommendations.length,
     result_count: results.length,
     artist_queries: artistQueries,
+    ran_track_search: shouldRunTrackSearch,
     spotify_failure_count: spotifyFailures.length,
     spotify_failures: spotifyFailures.slice(0, 5),
   });
@@ -364,6 +669,7 @@ export async function POST(req: NextRequest) {
           results: [],
           artist_count: artistMatches.length,
           track_search_count: 0,
+          catalog_track_count: catalogTrackRecommendations.length,
         },
         { status: 429 }
       ),
@@ -376,6 +682,7 @@ export async function POST(req: NextRequest) {
       results,
       artist_count: artistMatches.length,
       track_search_count: results.length,
+      catalog_track_count: catalogTrackRecommendations.length,
     }),
     token
   );

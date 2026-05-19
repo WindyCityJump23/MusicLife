@@ -1194,7 +1194,7 @@ export default function DiscoverView({
         const promptSongs = await promptSongsPromise;
         if (promptSongs.length === 0) {
           setError(
-            "Live Spotify did not return usable matches for this prompt, so MusicLife will not present catalog-only taste matches as a prompt station. Please try again in a moment."
+            "MusicLife could not find playable catalog or Spotify matches for this prompt. Try the artist name, a song title, or a nearby sound."
           );
           setResults([]);
           setQueue([]);
@@ -1465,16 +1465,6 @@ export default function DiscoverView({
       const finalResults = shapeStationForFreshAir(deduped, TARGET_SONGS, {
         promptMode: Boolean(prompt.trim()),
       });
-      const finalLiveCount = finalResults.filter(isLiveSourced).length;
-
-      if (prompt.trim() && finalLiveCount === 0) {
-        setError(
-          "Live Spotify did not return usable matches for this prompt, so MusicLife will not present catalog-only taste matches as a prompt station. Please try again in a moment."
-        );
-        setResults([]);
-        setQueue([]);
-        return;
-      }
 
       setResults(finalResults);
       if (finalResults.length > 0) {
