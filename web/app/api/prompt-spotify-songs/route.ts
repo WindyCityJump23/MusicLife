@@ -61,9 +61,28 @@ type LiveIntent = {
   reason: string;
 };
 
+type DiscoveryLane = "deep_cuts" | "popular" | "radio_hits";
+
+type TasteStrategy = {
+  genre_boosts?: string[];
+  genre_avoids?: string[];
+  discovery_mix?: Partial<Record<DiscoveryLane, number>>;
+  live_expansion?: "auto" | "catalog" | "live";
+  freshness?: "newer" | "balanced" | "timeless";
+};
+
+type PromptWeights = {
+  affinity: number;
+  context: number;
+  editorial: number;
+};
+
+type SongRecommendation = ReturnType<typeof trackToRecommendation> | ReturnType<typeof catalogTrackToRecommendation>;
+
 const TRACK_LIMIT = 12;
 const TRACKS_PER_INTENT = 10;
 const DEFAULT_LIMIT = 40;
+const CATALOG_TRACK_POOL_LIMIT = 120;
 const SPOTIFY_FETCH_TIMEOUT_MS = 8_000;
 type SpotifyFailure = {
   label: string;
@@ -83,10 +102,73 @@ function releaseFreshness(releaseDate: string | null | undefined): number {
   return 0.25;
 }
 
-function laneFromPopularity(popularity: number): "deep_cuts" | "popular" | "radio_hits" {
+function laneFromPopularity(popularity: number): DiscoveryLane {
   if (popularity < 0.46) return "deep_cuts";
   if (popularity >= 0.74) return "radio_hits";
   return "popular";
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function normalizeList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item).trim().toLowerCase()).filter(Boolean).slice(0, 12)
+    : [];
+}
+
+function normalizeTasteStrategy(value: unknown): TasteStrategy | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const mix = raw.discovery_mix && typeof raw.discovery_mix === "object"
+    ? raw.discovery_mix as Record<string, unknown>
+    : {};
+  const liveExpansion = raw.live_expansion === "catalog" || raw.live_expansion === "live"
+    ? raw.live_expansion
+    : "auto";
+  const freshness = raw.freshness === "newer" || raw.freshness === "timeless"
+    ? raw.freshness
+    : "balanced";
+
+  return {
+    genre_boosts: normalizeList(raw.genre_boosts),
+    genre_avoids: normalizeList(raw.genre_avoids),
+    discovery_mix: {
+      deep_cuts: Number(mix.deep_cuts) || 38,
+      popular: Number(mix.popular) || 38,
+      radio_hits: Number(mix.radio_hits) || 24,
+    },
+    live_expansion: liveExpansion,
+    freshness,
+  };
+}
+
+function normalizeWeights(value: unknown): PromptWeights {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const affinity = Number(raw.affinity);
+  const context = Number(raw.context);
+  const editorial = Number(raw.editorial);
+  return {
+    affinity: Number.isFinite(affinity) ? clamp01(affinity) : 0.75,
+    context: Number.isFinite(context) ? clamp01(context) : 0.15,
+    editorial: Number.isFinite(editorial) ? clamp01(editorial) : 0.1,
+  };
+}
+
+function hashString(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function seededJitter(seed: string, key: string, amplitude: number): number {
+  if (!seed) return 0;
+  const unit = hashString(`${seed}:${key}`) / 0xffffffff;
+  return (unit - 0.5) * amplitude;
 }
 
 function scoreTrack(track: SpotifyTrack, intentIndex: number, trackIndex: number): number {
@@ -416,6 +498,124 @@ function dedupeRecommendations<T extends { spotify_track_id?: string; track_name
     .slice(0, limit);
 }
 
+function genreAdjustment(genres: string[], strategy: TasteStrategy | null): number {
+  if (!strategy) return 0;
+  const genreText = genres.join(" ").toLowerCase();
+  const boosts = normalizeList(strategy.genre_boosts);
+  const avoids = normalizeList(strategy.genre_avoids);
+  const boostHit = boosts.some((genre) => genreText.includes(genre));
+  const avoidHit = avoids.some((genre) => genreText.includes(genre));
+  return (boostHit ? 0.08 : 0) + (avoidHit ? -0.12 : 0);
+}
+
+function freshnessAdjustment(releaseDate: string | null | undefined, strategy: TasteStrategy | null): number {
+  if (!strategy || strategy.freshness === "balanced") return 0;
+  const freshness = releaseFreshness(releaseDate);
+  if (strategy.freshness === "newer") return (freshness - 0.45) * 0.16;
+  return (0.65 - freshness) * 0.1;
+}
+
+function lanePreferenceAdjustment(lane: DiscoveryLane, strategy: TasteStrategy | null): number {
+  const defaultMix = { deep_cuts: 38, popular: 38, radio_hits: 24 };
+  const mix = strategy?.discovery_mix ?? defaultMix;
+  const desired = Number(mix[lane] ?? defaultMix[lane]);
+  return ((desired - defaultMix[lane]) / 100) * 0.18;
+}
+
+function retuneSongScore(
+  song: Exclude<SongRecommendation, null>,
+  strategy: TasteStrategy | null,
+  weights: PromptWeights,
+  seed: string
+): number {
+  const lane = laneFromPopularity(song.signals.track_popularity ?? 0.5);
+  const popularity = song.signals.track_popularity ?? 0.5;
+  const trackKey = song.spotify_track_id || `${song.track_name}|${song.artist_name}`;
+  const stayClose = weights.affinity * (song.track_id === null ? 0.01 : 0.04);
+  const liveSearch = weights.context * (song.track_id === null ? 0.06 : -0.01);
+  const buzz = weights.editorial * ((popularity - 0.5) * 0.08 + releaseFreshness(song.release_date) * 0.04);
+  const jitter = seededJitter(seed, trackKey, 0.055);
+
+  return Number(
+    Math.max(
+      0.01,
+      Math.min(
+        0.99,
+        song.score +
+          lanePreferenceAdjustment(lane, strategy) +
+          genreAdjustment(song.genres, strategy) +
+          freshnessAdjustment(song.release_date, strategy) +
+          stayClose +
+          liveSearch +
+          buzz +
+          jitter
+      )
+    ).toFixed(4)
+  );
+}
+
+function laneTargets(limit: number, strategy: TasteStrategy | null): Record<DiscoveryLane, number> {
+  const mix = strategy?.discovery_mix ?? { deep_cuts: 38, popular: 38, radio_hits: 24 };
+  const deepCuts = Math.max(0, Number(mix.deep_cuts) || 0);
+  const popular = Math.max(0, Number(mix.popular) || 0);
+  const radioHits = Math.max(0, Number(mix.radio_hits) || 0);
+  const total = deepCuts + popular + radioHits || 100;
+  return {
+    deep_cuts: Math.round(limit * deepCuts / total),
+    popular: Math.round(limit * popular / total),
+    radio_hits: Math.round(limit * radioHits / total),
+  };
+}
+
+function shapeRecommendations(
+  songs: Array<SongRecommendation | null | undefined>,
+  limit: number,
+  strategy: TasteStrategy | null,
+  weights: PromptWeights,
+  seed: string
+) {
+  const scored = dedupeRecommendations(songs, CATALOG_TRACK_POOL_LIMIT)
+    .map((song) => {
+      const score = retuneSongScore(song, strategy, weights, seed);
+      return {
+        ...song,
+        score,
+        lane: laneFromPopularity(song.signals.track_popularity ?? 0.5),
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const targets = laneTargets(limit, strategy);
+  const selected: typeof scored = [];
+  const seen = new Set<string>();
+  const lanes: DiscoveryLane[] = ["deep_cuts", "popular", "radio_hits"];
+
+  function add(song: (typeof scored)[number] | undefined): boolean {
+    if (!song || selected.length >= limit) return false;
+    const key = song.spotify_track_id || `${song.track_name}|${song.artist_name}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    selected.push(song);
+    return true;
+  }
+
+  for (const lane of lanes) {
+    let added = 0;
+    for (const song of scored) {
+      if (added >= targets[lane]) break;
+      if (song.lane !== lane) continue;
+      if (add(song)) added += 1;
+    }
+  }
+
+  for (const song of scored) {
+    if (selected.length >= limit) break;
+    add(song);
+  }
+
+  return selected;
+}
+
 async function spotifyJson<T>(
   url: string,
   accessToken: string,
@@ -489,6 +689,11 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   const limit = Math.max(1, Math.min(Number(body.limit) || DEFAULT_LIMIT, DEFAULT_LIMIT));
+  const tasteStrategy = normalizeTasteStrategy(body.taste_strategy);
+  const weights = normalizeWeights(body.weights);
+  const retuneSeed = typeof body.discover_run_id === "string" && body.discover_run_id.trim()
+    ? body.discover_run_id.trim()
+    : `${Date.now()}:${Math.random()}`;
   const spotifyFailures: SpotifyFailure[] = [];
 
   if (!prompt) {
@@ -508,7 +713,10 @@ export async function POST(req: NextRequest) {
     }
   }
   const catalogHits = artistMatchesById.size;
-  const catalogTrackRows = await fetchCatalogTracksForArtists(catalogMatches, limit);
+  const catalogTrackRows = await fetchCatalogTracksForArtists(
+    catalogMatches,
+    Math.max(limit * 3, Math.min(CATALOG_TRACK_POOL_LIMIT, 80))
+  );
   const catalogTrackRecommendations = catalogTrackRows
     .map((track, trackIndex) => {
       const artistIndex = catalogMatches.findIndex((match) => match.catalogArtistId === Number(track.artist_id));
@@ -520,10 +728,7 @@ export async function POST(req: NextRequest) {
   const token = await getSpotifyToken(req);
   if (!token) {
     if (catalogTrackRecommendations.length > 0) {
-      const results = dedupeRecommendations(
-        catalogTrackRecommendations.sort((a, b) => (b?.score ?? 0) - (a?.score ?? 0)),
-        limit
-      );
+      const results = shapeRecommendations(catalogTrackRecommendations, limit, tasteStrategy, weights, retuneSeed);
       console.info("prompt-spotify-songs", {
         prompt,
         artist_count: catalogMatches.length,
@@ -531,6 +736,8 @@ export async function POST(req: NextRequest) {
         catalog_track_count: catalogTrackRecommendations.length,
         result_count: results.length,
         artist_queries: artistQueries,
+        taste_strategy_applied: Boolean(tasteStrategy),
+        retune_seed: retuneSeed,
         spotify_failure_count: 0,
         spotify_failures: [],
         used_catalog_without_token: true,
@@ -597,10 +804,12 @@ export async function POST(req: NextRequest) {
   );
   const artistTrackRecommendations = artistTrackBatches.flat();
 
-  const preliminaryResults = dedupeRecommendations(
-    [...artistTrackRecommendations, ...catalogTrackRecommendations]
-      .sort((a, b) => (b?.score ?? 0) - (a?.score ?? 0)),
-    limit
+  const preliminaryResults = shapeRecommendations(
+    [...artistTrackRecommendations, ...catalogTrackRecommendations],
+    limit,
+    tasteStrategy,
+    weights,
+    retuneSeed
   );
 
   const rawQueries = [
@@ -608,7 +817,14 @@ export async function POST(req: NextRequest) {
     `${prompt} songs`,
   ];
   const queries = uniqueStrings(rawQueries);
-  const shouldRunTrackSearch = preliminaryResults.length < limit && !hitSpotifyRateLimit(spotifyFailures);
+  const shouldRunTrackSearch =
+    !hitSpotifyRateLimit(spotifyFailures) &&
+    (
+      preliminaryResults.length < limit ||
+      tasteStrategy?.live_expansion === "live" ||
+      weights.context >= 0.45 ||
+      weights.editorial >= 0.35
+    );
   const trackSearchBatches = shouldRunTrackSearch
     ? await Promise.all(
         queries.map(async (query, queryIndex) => {
@@ -640,11 +856,12 @@ export async function POST(req: NextRequest) {
       )
     : [];
 
-  const results = dedupeRecommendations(
-    [...artistTrackRecommendations, ...trackSearchBatches.flat(), ...catalogTrackRecommendations]
-    .sort((a, b) => (b?.score ?? 0) - (a?.score ?? 0))
-      .filter(Boolean),
-    limit
+  const results = shapeRecommendations(
+    [...artistTrackRecommendations, ...trackSearchBatches.flat(), ...catalogTrackRecommendations],
+    limit,
+    tasteStrategy,
+    weights,
+    retuneSeed
   );
 
   console.info("prompt-spotify-songs", {
@@ -655,6 +872,8 @@ export async function POST(req: NextRequest) {
     result_count: results.length,
     artist_queries: artistQueries,
     ran_track_search: shouldRunTrackSearch,
+    taste_strategy_applied: Boolean(tasteStrategy),
+    retune_seed: retuneSeed,
     spotify_failure_count: spotifyFailures.length,
     spotify_failures: spotifyFailures.slice(0, 5),
   });

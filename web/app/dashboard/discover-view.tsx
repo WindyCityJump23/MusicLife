@@ -122,7 +122,7 @@ const FRESH_AIR_TARGET_RATIO = 0.25;
 const PROMPT_LIVE_TARGET_RATIO = 0.4;
 const DISCOVERY_API_TIMEOUT_MS = 16_000;
 const SPOTIFY_BROWSER_TIMEOUT_MS = 8_000;
-const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v5";
+const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v6";
 const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
 
 type DiscoverCachePayload = {
@@ -906,7 +906,12 @@ async function fetchLiveCandidateSongs(
 
 async function fetchPromptSpotifySongs(
   currentPrompt: string,
-  accessToken: string
+  accessToken: string | null,
+  options: {
+    weights: { affinity: number; context: number; editorial: number };
+    tasteStrategy: TasteStrategy | null;
+    discoverRunId: string;
+  }
 ): Promise<SongRecommendation[]> {
   const promptText = currentPrompt.trim();
   if (!promptText) return [];
@@ -915,7 +920,13 @@ async function fetchPromptSpotifySongs(
     const promptRes = await fetchWithTimeout("/api/prompt-spotify-songs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: promptText, limit: LIVE_EXPANSION_POOL_TARGET }),
+      body: JSON.stringify({
+        prompt: promptText,
+        limit: LIVE_EXPANSION_POOL_TARGET,
+        weights: options.weights,
+        taste_strategy: options.tasteStrategy,
+        discover_run_id: options.discoverRunId,
+      }),
     });
     if (promptRes.ok) {
       const promptData: PromptSpotifySongsResponse = await promptRes.json().catch(() => ({}));
@@ -941,6 +952,7 @@ async function fetchPromptSpotifySongs(
     `artist:${promptText}`,
   ];
   const queries = rawQueries.filter((query, index) => rawQueries.indexOf(query) === index);
+  if (!accessToken) return [];
   const spotifyHeaders = { Authorization: `Bearer ${accessToken}` };
   const artistMatches: SpotifySearchArtist[] = [];
 
@@ -1162,6 +1174,7 @@ export default function DiscoverView({
         editorial: weights.editorial / 100,
       };
       const currentStrategyKey = strategyCacheKey(tasteStrategy);
+      const discoverRunId = crypto.randomUUID();
 
       // Try DB-based song recommendations first (faster, better ranking)
       // Falls back to client-side Spotify Search if DB has no tracks
@@ -1182,7 +1195,13 @@ export default function DiscoverView({
 
       const promptSongsPromise = promptForLiveSearch
         ? ensureSpotifyAccessToken()
-            .then((token) => (token ? fetchPromptSpotifySongs(promptForLiveSearch, token) : []))
+            .then((token) =>
+              fetchPromptSpotifySongs(promptForLiveSearch, token, {
+                weights: normalized,
+                tasteStrategy,
+                discoverRunId,
+              })
+            )
             .catch((err) => {
               console.warn("prompt Spotify search failed:", err);
               throw err;
@@ -1222,7 +1241,7 @@ export default function DiscoverView({
             weights: normalized,
             limit: 30,
             exclude_library: true,
-            discover_run_id: crypto.randomUUID(),
+            discover_run_id: discoverRunId,
             exclude_previously_shown: true,
             history_window_runs: 15,
             max_allowed_overlap: 0,
