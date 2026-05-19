@@ -115,7 +115,7 @@ const TARGET_SONGS = 25;
 const FALLBACK_ARTIST_SEARCH_LIMIT = 15;
 const FALLBACK_TRACK_SEARCH_LIMIT = 20;
 const LIVE_EXPANSION_INTENT_LIMIT = 7;
-const LIVE_EXPANSION_TRACK_LIMIT = 12;
+const LIVE_EXPANSION_TRACK_LIMIT = 10;
 const LIVE_EXPANSION_TRACKS_PER_INTENT = 5;
 const LIVE_EXPANSION_POOL_TARGET = 40;
 const FRESH_AIR_TARGET_RATIO = 0.25;
@@ -1047,11 +1047,13 @@ async function fetchPromptSpotifySongs(
 
 function mergeCandidateSongs(
   baseSongs: SongRecommendation[],
-  liveSongs: SongRecommendation[]
+  liveSongs: SongRecommendation[],
+  options: { protectLiveCount?: number } = {}
 ): SongRecommendation[] {
   const merged = [...baseSongs];
   const seen = new Set(baseSongs.map(trackIdentity));
   const artistCounts = new Map<string, number>();
+  const liveKeys = new Set(liveSongs.map(trackIdentity).filter(Boolean));
 
   for (const song of baseSongs) {
     const artistKey = artistIdentity(song);
@@ -1068,7 +1070,29 @@ function mergeCandidateSongs(
     merged.push(song);
   }
 
-  return merged.sort((a, b) => b.score - a.score).slice(0, LIVE_EXPANSION_POOL_TARGET);
+  const ranked = merged.sort((a, b) => b.score - a.score);
+  const protectedLiveCount = Math.max(0, options.protectLiveCount ?? 0);
+  if (protectedLiveCount === 0) return ranked.slice(0, LIVE_EXPANSION_POOL_TARGET);
+
+  const selected: SongRecommendation[] = [];
+  const selectedKeys = new Set<string>();
+  for (const song of ranked) {
+    const key = trackIdentity(song);
+    if (!liveKeys.has(key)) continue;
+    selected.push(song);
+    selectedKeys.add(key);
+    if (selected.length >= protectedLiveCount) break;
+  }
+
+  for (const song of ranked) {
+    if (selected.length >= LIVE_EXPANSION_POOL_TARGET) break;
+    const key = trackIdentity(song);
+    if (selectedKeys.has(key)) continue;
+    selected.push(song);
+    selectedKeys.add(key);
+  }
+
+  return selected.sort((a, b) => b.score - a.score);
 }
 
 export default function DiscoverView({
@@ -1220,7 +1244,20 @@ export default function DiscoverView({
           return;
         }
 
-        const finalResults = shapeStationForFreshAir(promptSongs, TARGET_SONGS, {
+        let promptStationSongs = promptSongs;
+        try {
+          setLoadingStage("Finding nearby artists and outside-air tracks\u2026");
+          const liveSongs = await fetchLiveCandidateSongs(promptForLiveSearch, promptSongs, tasteStrategy);
+          if (liveSongs.length > 0) {
+            promptStationSongs = mergeCandidateSongs(promptSongs, liveSongs, {
+              protectLiveCount: Math.min(16, liveSongs.length),
+            });
+          }
+        } catch (e) {
+          console.warn("prompt live candidate expansion failed:", e);
+        }
+
+        const finalResults = shapeStationForFreshAir(promptStationSongs, TARGET_SONGS, {
           promptMode: true,
         });
         setResults(finalResults);
