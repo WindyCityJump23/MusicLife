@@ -35,6 +35,7 @@ type LiveIntent = {
 const TRACK_LIMIT = 12;
 const TRACKS_PER_INTENT = 5;
 const DEFAULT_LIMIT = 40;
+const SPOTIFY_FETCH_TIMEOUT_MS = 8_000;
 
 function releaseFreshness(releaseDate: string | null | undefined): number {
   if (!releaseDate) return 0.35;
@@ -66,6 +67,39 @@ function scoreTrack(track: SpotifyTrack, intentIndex: number, trackIndex: number
       Math.min(0.92, 0.48 + rankScore * 0.16 + intentScore * 0.08 + freshness * 0.08 + popularityShape)
     ).toFixed(4)
   );
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  return values
+    .map((value) => value.trim())
+    .filter((value) => {
+      const key = value.toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function promptSearchVariants(prompt: string): string[] {
+  const withoutBand = prompt.replace(/\bband\b/gi, "").replace(/\s+/g, " ").trim();
+  return uniqueStrings([
+    prompt,
+    `"${prompt}"`,
+    `artist:"${prompt}"`,
+    withoutBand,
+    withoutBand ? `artist:"${withoutBand}"` : "",
+  ]);
+}
+
+function spotifySearchUrl(query: string, type: "artist" | "track", limit: number, withMarket: boolean): string {
+  const params = new URLSearchParams({
+    q: query,
+    type,
+    limit: String(limit),
+  });
+  if (withMarket) params.set("market", "US");
+  return `https://api.spotify.com/v1/search?${params.toString()}`;
 }
 
 function chooseFallbackTracks(tracks: SpotifyTrack[]): SpotifyTrack[] {
@@ -126,10 +160,61 @@ function trackToRecommendation(
   };
 }
 
-async function spotifyJson<T>(url: string, accessToken: string): Promise<T | null> {
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-  if (!res.ok) return null;
-  return res.json().catch(() => null) as Promise<T | null>;
+async function spotifyJson<T>(
+  url: string,
+  accessToken: string,
+  label: string,
+  failures: Array<{ label: string; status: number | "error"; detail?: string }>
+): Promise<T | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SPOTIFY_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      failures.push({ label, status: res.status, detail: detail.slice(0, 220) });
+      return null;
+    }
+    return res.json().catch(() => null) as Promise<T | null>;
+  } catch (err) {
+    failures.push({
+      label,
+      status: "error",
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function spotifySearch<T>(
+  query: string,
+  type: "artist" | "track",
+  limit: number,
+  accessToken: string,
+  label: string,
+  failures: Array<{ label: string; status: number | "error"; detail?: string }>,
+  hasItems: (data: T) => boolean
+): Promise<T | null> {
+  const withMarket = await spotifyJson<T>(
+    spotifySearchUrl(query, type, limit, true),
+    accessToken,
+    `${label}:market`,
+    failures
+  );
+  if (withMarket && hasItems(withMarket)) return withMarket;
+  const withoutMarket = await spotifyJson<T>(
+    spotifySearchUrl(query, type, limit, false),
+    accessToken,
+    `${label}:no-market`,
+    failures
+  );
+  return withoutMarket ?? withMarket;
 }
 
 export async function POST(req: NextRequest) {
@@ -144,22 +229,40 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   const limit = Math.max(1, Math.min(Number(body.limit) || DEFAULT_LIMIT, DEFAULT_LIMIT));
+  const spotifyFailures: Array<{ label: string; status: number | "error"; detail?: string }> = [];
 
   if (!prompt) {
     return applySpotifyTokenCookies(NextResponse.json({ results: [] }), token);
   }
 
-  const artistData = await spotifyJson<{ artists?: { items?: SpotifyArtist[] } }>(
-    `https://api.spotify.com/v1/search?q=${encodeURIComponent(prompt)}&type=artist&market=US&limit=3`,
-    token.accessToken
-  );
-  const artistMatches = (artistData?.artists?.items ?? []).filter((artist) => artist.id);
+  const artistMatchesById = new Map<string, SpotifyArtist>();
+  const artistQueries = promptSearchVariants(prompt);
+  for (const query of artistQueries) {
+    const artistData = await spotifySearch<{ artists?: { items?: SpotifyArtist[] } }>(
+      query,
+      "artist",
+      5,
+      token.accessToken,
+      `artist:${query}`,
+      spotifyFailures,
+      (data) => (data.artists?.items ?? []).length > 0
+    );
+    for (const artist of artistData?.artists?.items ?? []) {
+      if (artist.id && !artistMatchesById.has(artist.id)) {
+        artistMatchesById.set(artist.id, artist);
+      }
+    }
+    if (artistMatchesById.size >= 3) break;
+  }
+  const artistMatches = [...artistMatchesById.values()].slice(0, 3);
 
   const artistTrackBatches = await Promise.all(
     artistMatches.map(async (artist, artistIndex) => {
       const data = await spotifyJson<{ tracks?: SpotifyTrack[] }>(
         `https://api.spotify.com/v1/artists/${encodeURIComponent(artist.id ?? "")}/top-tracks?market=US`,
-        token.accessToken
+        token.accessToken,
+        `top-tracks:${artist.name ?? artist.id}`,
+        spotifyFailures
       );
       return (data?.tracks ?? [])
         .slice(0, TRACKS_PER_INTENT)
@@ -179,13 +282,24 @@ export async function POST(req: NextRequest) {
     })
   );
 
-  const rawQueries = [prompt, `${prompt} songs`, `${prompt} top tracks`, `artist:${prompt}`];
-  const queries = rawQueries.filter((query, index) => rawQueries.indexOf(query) === index);
+  const rawQueries = [
+    ...artistQueries,
+    `${prompt} songs`,
+    `${prompt} top tracks`,
+    `artist:${prompt}`,
+    `artist:"${prompt}"`,
+  ];
+  const queries = uniqueStrings(rawQueries);
   const trackSearchBatches = await Promise.all(
     queries.map(async (query, queryIndex) => {
-      const data = await spotifyJson<{ tracks?: { items?: SpotifyTrack[] } }>(
-        `https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=track&market=US&limit=${TRACK_LIMIT}`,
-        token.accessToken
+      const data = await spotifySearch<{ tracks?: { items?: SpotifyTrack[] } }>(
+        query,
+        "track",
+        TRACK_LIMIT,
+        token.accessToken,
+        `track:${query}`,
+        spotifyFailures,
+        (data) => (data.tracks?.items ?? []).length > 0
       );
       return chooseFallbackTracks(data?.tracks?.items ?? [])
         .map((track, trackIndex) =>
@@ -220,6 +334,9 @@ export async function POST(req: NextRequest) {
     prompt,
     artist_count: artistMatches.length,
     result_count: results.length,
+    artist_queries: artistQueries,
+    spotify_failure_count: spotifyFailures.length,
+    spotify_failures: spotifyFailures.slice(0, 5),
   });
 
   return applySpotifyTokenCookies(

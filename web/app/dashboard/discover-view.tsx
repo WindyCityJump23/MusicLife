@@ -120,6 +120,8 @@ const LIVE_EXPANSION_TRACKS_PER_INTENT = 5;
 const LIVE_EXPANSION_POOL_TARGET = 40;
 const FRESH_AIR_TARGET_RATIO = 0.25;
 const PROMPT_LIVE_TARGET_RATIO = 0.4;
+const DISCOVERY_API_TIMEOUT_MS = 16_000;
+const SPOTIFY_BROWSER_TIMEOUT_MS = 8_000;
 const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v5";
 const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -182,6 +184,23 @@ type PromptSpotifySongsResponse = {
   track_search_count?: number;
   error?: string;
 };
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = DISCOVERY_API_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: init.signal ?? controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
 
 function laneForSong(song: SongRecommendation): DiscoveryLaneId {
   // Prefer backend-assigned lane when available
@@ -653,7 +672,7 @@ function toSpotifyTrackUris(trackIdsOrUris: string[]): string[] {
 }
 
 async function getBrowserSpotifyToken(): Promise<string> {
-  const tokenRes = await fetch("/api/auth/token", { cache: "no-store" });
+  const tokenRes = await fetchWithTimeout("/api/auth/token", { cache: "no-store" }, SPOTIFY_BROWSER_TIMEOUT_MS);
   const tokenData = await tokenRes.json().catch(() => ({}));
   if (!tokenRes.ok || !tokenData.access_token) {
     throw new Error(
@@ -842,7 +861,7 @@ async function fetchLiveCandidateSongs(
 ): Promise<SongRecommendation[]> {
   if (!shouldRunLiveExpansion(existingSongs, currentPrompt, strategy)) return [];
 
-  const intentRes = await fetch("/api/live-candidate-intents", {
+  const intentRes = await fetchWithTimeout("/api/live-candidate-intents", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -862,9 +881,10 @@ async function fetchLiveCandidateSongs(
   const batches = await Promise.all(
     intents.map(async (intent, intentIndex) => {
       try {
-        const searchRes = await fetch(
+        const searchRes = await fetchWithTimeout(
           `https://api.spotify.com/v1/search?q=${encodeURIComponent(intent.query)}&type=track&market=US&limit=${LIVE_EXPANSION_TRACK_LIMIT}`,
-          { headers: spotifyHeaders }
+          { headers: spotifyHeaders },
+          SPOTIFY_BROWSER_TIMEOUT_MS
         );
         if (!searchRes.ok) return [];
         const data = await searchRes.json();
@@ -891,7 +911,7 @@ async function fetchPromptSpotifySongs(
   if (!promptText) return [];
 
   try {
-    const promptRes = await fetch("/api/prompt-spotify-songs", {
+    const promptRes = await fetchWithTimeout("/api/prompt-spotify-songs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt: promptText, limit: LIVE_EXPANSION_POOL_TARGET }),
@@ -917,9 +937,10 @@ async function fetchPromptSpotifySongs(
   const artistMatches: SpotifySearchArtist[] = [];
 
   try {
-    const artistRes = await fetch(
+    const artistRes = await fetchWithTimeout(
       `https://api.spotify.com/v1/search?q=${encodeURIComponent(promptText)}&type=artist&market=US&limit=3`,
-      { headers: spotifyHeaders }
+      { headers: spotifyHeaders },
+      SPOTIFY_BROWSER_TIMEOUT_MS
     );
     if (artistRes.ok) {
       const artistData = await artistRes.json();
@@ -931,9 +952,10 @@ async function fetchPromptSpotifySongs(
     artistMatches.map(async (artist, artistIndex) => {
       if (!artist.id) return [];
       try {
-        const topTracksRes = await fetch(
+        const topTracksRes = await fetchWithTimeout(
           `https://api.spotify.com/v1/artists/${encodeURIComponent(artist.id)}/top-tracks?market=US`,
-          { headers: spotifyHeaders }
+          { headers: spotifyHeaders },
+          SPOTIFY_BROWSER_TIMEOUT_MS
         );
         if (!topTracksRes.ok) return [];
         const topTracksData = await topTracksRes.json();
@@ -962,9 +984,10 @@ async function fetchPromptSpotifySongs(
   const batches = await Promise.all(
     queries.map(async (query, queryIndex) => {
       try {
-        const searchRes = await fetch(
+        const searchRes = await fetchWithTimeout(
           `https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=track&market=US&limit=${LIVE_EXPANSION_TRACK_LIMIT}`,
-          { headers: spotifyHeaders }
+          { headers: spotifyHeaders },
+          SPOTIFY_BROWSER_TIMEOUT_MS
         );
         if (!searchRes.ok) return [];
         const data = await searchRes.json();
@@ -1122,6 +1145,8 @@ export default function DiscoverView({
     setPlaylistUrl(null);
     setPlaylistError(null);
     setPlaylistStats(null);
+    setResults([]);
+    setQueue([]);
     try {
       const normalized = {
         affinity: weights.affinity / 100,
@@ -1141,7 +1166,7 @@ export default function DiscoverView({
 
       async function ensureSpotifyAccessToken(): Promise<string | null> {
         if (accessToken) return accessToken;
-        const tokenRes = await fetch("/api/auth/token");
+        const tokenRes = await fetchWithTimeout("/api/auth/token", {}, SPOTIFY_BROWSER_TIMEOUT_MS);
         const tokenData = await tokenRes.json().catch(() => ({}));
         accessToken = tokenData.access_token ?? null;
         return accessToken;
@@ -1159,7 +1184,7 @@ export default function DiscoverView({
       // Attempt 1: Server-side song recommendations (uses tracks in DB)
       let dbError: string | null = null;
       try {
-        const songRes = await fetch(`/api/recommend-songs`, {
+        const songRes = await fetchWithTimeout(`/api/recommend-songs`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1261,7 +1286,7 @@ export default function DiscoverView({
 
         let artists: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
         if (deduped.length < TARGET_SONGS) {
-          const artistRes = await fetch(`/api/recommend`, {
+          const artistRes = await fetchWithTimeout(`/api/recommend`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -1269,7 +1294,7 @@ export default function DiscoverView({
               weights: normalized,
               limit: 25,  // Request extra to allow diversity filtering
             }),
-          });
+          }, 14_000);
           const artistData = await artistRes.json().catch(() => ({}));
           if (artistRes.ok) {
             artists = artistData.results ?? [];
@@ -1309,9 +1334,10 @@ export default function DiscoverView({
                 : [`artist:${artist.artist_name}`];
               let searchData: any = null; // eslint-disable-line @typescript-eslint/no-explicit-any
               for (const q of queries) {
-                const searchRes = await fetch(
+                const searchRes = await fetchWithTimeout(
                   `https://api.spotify.com/v1/search?q=${encodeURIComponent(q)}&type=track&market=US&limit=${FALLBACK_TRACK_SEARCH_LIMIT}`,
-                  { headers: spotifyHeaders }
+                  { headers: spotifyHeaders },
+                  SPOTIFY_BROWSER_TIMEOUT_MS
                 );
                 if (!searchRes.ok) continue;
                 const data = await searchRes.json();
