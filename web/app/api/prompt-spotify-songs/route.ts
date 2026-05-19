@@ -22,6 +22,12 @@ type SpotifyTrack = {
   }>;
 };
 
+type SpotifyAlbum = {
+  id?: string;
+  name?: string;
+  release_date?: string;
+};
+
 type SpotifyArtist = {
   id?: string;
   name?: string;
@@ -79,10 +85,12 @@ type PromptWeights = {
 
 type SongRecommendation = ReturnType<typeof trackToRecommendation> | ReturnType<typeof catalogTrackToRecommendation>;
 
-const TRACK_LIMIT = 12;
+const TRACK_LIMIT = 10;
 const TRACKS_PER_INTENT = 10;
 const DEFAULT_LIMIT = 40;
 const CATALOG_TRACK_POOL_LIMIT = 120;
+const ARTIST_ALBUM_LIMIT = 8;
+const ALBUM_TRACK_LIMIT = 8;
 const SPOTIFY_FETCH_TIMEOUT_MS = 8_000;
 type SpotifyFailure = {
   label: string;
@@ -682,6 +690,74 @@ async function spotifySearch<T>(
   return withoutMarket ?? withMarket;
 }
 
+async function fetchSpotifyArtistCatalogTracks(
+  artist: SpotifyArtist,
+  artistIndex: number,
+  accessToken: string,
+  failures: SpotifyFailure[]
+) {
+  if (!artist.id) return [];
+
+  const albumData = await spotifyJson<{ items?: SpotifyAlbum[] }>(
+    `https://api.spotify.com/v1/artists/${encodeURIComponent(artist.id)}/albums?include_groups=album,single&market=US&limit=${ARTIST_ALBUM_LIMIT}`,
+    accessToken,
+    `albums:${artist.name ?? artist.id}`,
+    failures
+  );
+
+  const seenAlbums = new Set<string>();
+  const albums = (albumData?.items ?? [])
+    .filter((album) => {
+      if (!album.id || !album.name) return false;
+      const key = album.name
+        .toLowerCase()
+        .replace(/\s*\(.*?\)\s*/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!key || seenAlbums.has(key)) return false;
+      seenAlbums.add(key);
+      return true;
+    })
+    .slice(0, ARTIST_ALBUM_LIMIT);
+
+  const albumTrackBatches = await Promise.all(
+    albums.map(async (album, albumIndex) => {
+      if (!album.id) return [];
+      const data = await spotifyJson<{ items?: SpotifyTrack[] }>(
+        `https://api.spotify.com/v1/albums/${encodeURIComponent(album.id)}/tracks?market=US&limit=50`,
+        accessToken,
+        `album-tracks:${album.name ?? album.id}`,
+        failures
+      );
+      return (data?.items ?? [])
+        .slice(0, ALBUM_TRACK_LIMIT)
+        .map((track, trackIndex) => ({
+          ...track,
+          popularity: track.popularity ?? Math.max(35, 68 - albumIndex * 4 - trackIndex),
+          album: {
+            name: album.name,
+            release_date: album.release_date,
+          },
+        }))
+        .map((track, trackIndex) =>
+          trackToRecommendation(
+            track,
+            {
+              query: artist.name ?? "",
+              label: "Prompt artist catalog",
+              reason: "Expands the artist you typed through Spotify album tracks instead of the restricted top-tracks endpoint.",
+            },
+            artistIndex,
+            albumIndex * ALBUM_TRACK_LIMIT + trackIndex
+          )
+        )
+        .filter(Boolean);
+    })
+  );
+
+  return albumTrackBatches.flat();
+}
+
 export async function POST(req: NextRequest) {
   const user = requireUser(req);
   if (isErrorResponse(user)) return user;
@@ -779,27 +855,7 @@ export async function POST(req: NextRequest) {
 
   const artistTrackBatches = await Promise.all(
     artistMatches.map(async (artist, artistIndex) => {
-      const data = await spotifyJson<{ tracks?: SpotifyTrack[] }>(
-        `https://api.spotify.com/v1/artists/${encodeURIComponent(artist.id ?? "")}/top-tracks?market=US`,
-        token.accessToken,
-        `top-tracks:${artist.name ?? artist.id}`,
-        spotifyFailures
-      );
-      return (data?.tracks ?? [])
-        .slice(0, TRACKS_PER_INTENT)
-        .map((track, trackIndex) =>
-          trackToRecommendation(
-            track,
-            {
-              query: artist.name ?? prompt,
-              label: "Prompt artist match",
-              reason: "Uses Spotify top tracks for the artist you typed.",
-            },
-            artistIndex,
-            trackIndex
-          )
-        )
-        .filter(Boolean);
+      return fetchSpotifyArtistCatalogTracks(artist, artistIndex, token.accessToken, spotifyFailures);
     })
   );
   const artistTrackRecommendations = artistTrackBatches.flat();
@@ -869,6 +925,7 @@ export async function POST(req: NextRequest) {
     artist_count: artistMatches.length,
     catalog_hits: catalogHits,
     catalog_track_count: catalogTrackRecommendations.length,
+    spotify_artist_track_count: artistTrackRecommendations.length,
     result_count: results.length,
     artist_queries: artistQueries,
     ran_track_search: shouldRunTrackSearch,
