@@ -122,7 +122,7 @@ const FRESH_AIR_TARGET_RATIO = 0.25;
 const PROMPT_LIVE_TARGET_RATIO = 0.4;
 const DISCOVERY_API_TIMEOUT_MS = 16_000;
 const SPOTIFY_BROWSER_TIMEOUT_MS = 8_000;
-const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v6";
+const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v7";
 const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
 
 type DiscoverCachePayload = {
