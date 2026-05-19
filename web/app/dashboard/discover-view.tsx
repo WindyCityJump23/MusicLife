@@ -183,6 +183,7 @@ type PromptSpotifySongsResponse = {
   artist_count?: number;
   track_search_count?: number;
   error?: string;
+  retry_after?: string | null;
 };
 
 async function fetchWithTimeout(
@@ -921,8 +922,15 @@ async function fetchPromptSpotifySongs(
       if ((promptData.results ?? []).length > 0) {
         return promptData.results ?? [];
       }
+    } else if (promptRes.status === 429) {
+      const promptData: PromptSpotifySongsResponse = await promptRes.json().catch(() => ({}));
+      const retryText = promptData.retry_after ? ` Try again in about ${promptData.retry_after} seconds.` : "";
+      throw new Error(`Spotify is rate-limiting live search right now.${retryText}`);
     }
   } catch (err) {
+    if (err instanceof Error && err.message.includes("rate-limiting")) {
+      throw err;
+    }
     console.warn("server Spotify prompt fallback failed, trying browser fallback:", err);
   }
 
@@ -1177,9 +1185,31 @@ export default function DiscoverView({
             .then((token) => (token ? fetchPromptSpotifySongs(promptForLiveSearch, token) : []))
             .catch((err) => {
               console.warn("prompt Spotify search failed:", err);
-              return [];
+              throw err;
             })
         : Promise.resolve([]);
+
+      if (promptForLiveSearch) {
+        setLoadingStage("Searching Spotify for your prompt\u2026");
+        const promptSongs = await promptSongsPromise;
+        if (promptSongs.length === 0) {
+          setError(
+            "Live Spotify did not return usable matches for this prompt, so MusicLife will not present catalog-only taste matches as a prompt station. Please try again in a moment."
+          );
+          setResults([]);
+          setQueue([]);
+          return;
+        }
+
+        const finalResults = shapeStationForFreshAir(promptSongs, TARGET_SONGS, {
+          promptMode: true,
+        });
+        setResults(finalResults);
+        writeDiscoverCache(prompt, weights, currentStrategyKey, finalResults);
+        setQueue(toQueueTracks(finalResults));
+        await refreshTrackState(finalResults);
+        return;
+      }
 
       // Attempt 1: Server-side song recommendations (uses tracks in DB)
       let dbError: string | null = null;

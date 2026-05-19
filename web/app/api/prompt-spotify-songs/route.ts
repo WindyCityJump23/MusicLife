@@ -33,9 +33,15 @@ type LiveIntent = {
 };
 
 const TRACK_LIMIT = 12;
-const TRACKS_PER_INTENT = 5;
+const TRACKS_PER_INTENT = 10;
 const DEFAULT_LIMIT = 40;
 const SPOTIFY_FETCH_TIMEOUT_MS = 8_000;
+type SpotifyFailure = {
+  label: string;
+  status: number | "error";
+  detail?: string;
+  retry_after?: string | null;
+};
 
 function releaseFreshness(releaseDate: string | null | undefined): number {
   if (!releaseDate) return 0.35;
@@ -85,10 +91,7 @@ function promptSearchVariants(prompt: string): string[] {
   const withoutBand = prompt.replace(/\bband\b/gi, "").replace(/\s+/g, " ").trim();
   return uniqueStrings([
     prompt,
-    `"${prompt}"`,
-    `artist:"${prompt}"`,
     withoutBand,
-    withoutBand ? `artist:"${withoutBand}"` : "",
   ]);
 }
 
@@ -115,6 +118,10 @@ function chooseFallbackTracks(tracks: SpotifyTrack[]): SpotifyTrack[] {
   const sorted = [...unique].sort((a, b) => (a.popularity ?? 50) - (b.popularity ?? 50));
   const step = (sorted.length - 1) / (TRACKS_PER_INTENT - 1);
   return Array.from({ length: TRACKS_PER_INTENT }, (_, index) => sorted[Math.round(index * step)]);
+}
+
+function hitSpotifyRateLimit(failures: SpotifyFailure[]): boolean {
+  return failures.some((failure) => failure.status === 429);
 }
 
 function trackToRecommendation(
@@ -164,7 +171,7 @@ async function spotifyJson<T>(
   url: string,
   accessToken: string,
   label: string,
-  failures: Array<{ label: string; status: number | "error"; detail?: string }>
+  failures: SpotifyFailure[]
 ): Promise<T | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SPOTIFY_FETCH_TIMEOUT_MS);
@@ -176,7 +183,12 @@ async function spotifyJson<T>(
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
-      failures.push({ label, status: res.status, detail: detail.slice(0, 220) });
+      failures.push({
+        label,
+        status: res.status,
+        detail: detail.slice(0, 220),
+        retry_after: res.headers.get("retry-after"),
+      });
       return null;
     }
     return res.json().catch(() => null) as Promise<T | null>;
@@ -198,7 +210,7 @@ async function spotifySearch<T>(
   limit: number,
   accessToken: string,
   label: string,
-  failures: Array<{ label: string; status: number | "error"; detail?: string }>,
+  failures: SpotifyFailure[],
   hasItems: (data: T) => boolean
 ): Promise<T | null> {
   const withMarket = await spotifyJson<T>(
@@ -208,6 +220,10 @@ async function spotifySearch<T>(
     failures
   );
   if (withMarket && hasItems(withMarket)) return withMarket;
+  const lastFailure = failures[failures.length - 1];
+  if (lastFailure?.label === `${label}:market` && lastFailure.status === 429) {
+    return withMarket;
+  }
   const withoutMarket = await spotifyJson<T>(
     spotifySearchUrl(query, type, limit, false),
     accessToken,
@@ -229,7 +245,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   const limit = Math.max(1, Math.min(Number(body.limit) || DEFAULT_LIMIT, DEFAULT_LIMIT));
-  const spotifyFailures: Array<{ label: string; status: number | "error"; detail?: string }> = [];
+  const spotifyFailures: SpotifyFailure[] = [];
 
   if (!prompt) {
     return applySpotifyTokenCookies(NextResponse.json({ results: [] }), token);
@@ -247,6 +263,7 @@ export async function POST(req: NextRequest) {
       spotifyFailures,
       (data) => (data.artists?.items ?? []).length > 0
     );
+    if (hitSpotifyRateLimit(spotifyFailures)) break;
     for (const artist of artistData?.artists?.items ?? []) {
       if (artist.id && !artistMatchesById.has(artist.id)) {
         artistMatchesById.set(artist.id, artist);
@@ -285,13 +302,11 @@ export async function POST(req: NextRequest) {
   const rawQueries = [
     ...artistQueries,
     `${prompt} songs`,
-    `${prompt} top tracks`,
-    `artist:${prompt}`,
-    `artist:"${prompt}"`,
   ];
   const queries = uniqueStrings(rawQueries);
   const trackSearchBatches = await Promise.all(
     queries.map(async (query, queryIndex) => {
+      if (hitSpotifyRateLimit(spotifyFailures)) return [];
       const data = await spotifySearch<{ tracks?: { items?: SpotifyTrack[] } }>(
         query,
         "track",
@@ -338,6 +353,23 @@ export async function POST(req: NextRequest) {
     spotify_failure_count: spotifyFailures.length,
     spotify_failures: spotifyFailures.slice(0, 5),
   });
+
+  if (results.length === 0 && hitSpotifyRateLimit(spotifyFailures)) {
+    const retryAfter = spotifyFailures.find((failure) => failure.status === 429)?.retry_after ?? null;
+    return applySpotifyTokenCookies(
+      NextResponse.json(
+        {
+          error: "spotify_rate_limited",
+          retry_after: retryAfter,
+          results: [],
+          artist_count: artistMatches.length,
+          track_search_count: 0,
+        },
+        { status: 429 }
+      ),
+      token
+    );
+  }
 
   return applySpotifyTokenCookies(
     NextResponse.json({
