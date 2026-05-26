@@ -1269,6 +1269,7 @@ export default function DiscoverView({
 
       // Attempt 1: Server-side song recommendations (uses tracks in DB)
       let dbError: string | null = null;
+      let artistFallbackError: string | null = null;
       try {
         const songRes = await fetchWithTimeout(`/api/recommend-songs`, {
           method: "POST",
@@ -1372,129 +1373,126 @@ export default function DiscoverView({
 
         let artists: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
         if (deduped.length < TARGET_SONGS) {
-          const artistRes = await fetchWithTimeout(`/api/recommend`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              prompt: promptForLiveSearch || null,
-              weights: normalized,
-              limit: 25,  // Request extra to allow diversity filtering
-            }),
-          }, 14_000);
-          const artistData = await artistRes.json().catch(() => ({}));
-          if (artistRes.ok) {
-            artists = artistData.results ?? [];
-          } else if (deduped.length === 0) {
-            setError(artistData.error ?? artistData.detail ?? dbError ?? "Failed to get recommendations");
-            setResults([]);
-            return;
+          try {
+            const artistRes = await fetchWithTimeout(`/api/recommend`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                prompt: promptForLiveSearch || null,
+                weights: normalized,
+                limit: 25,  // Request extra to allow diversity filtering
+              }),
+            }, 14_000);
+            const artistData = await artistRes.json().catch(() => ({}));
+            if (artistRes.ok) {
+              artists = artistData.results ?? [];
+            } else {
+              artistFallbackError =
+                artistData.error ?? artistData.detail ?? "Artist fallback search failed";
+              console.warn("artist fallback failed; trying live expansion:", artistFallbackError);
+            }
+          } catch (e) {
+            artistFallbackError = e instanceof Error ? e.message : "Artist fallback search failed";
+            console.warn("artist fallback failed; trying live expansion:", e);
           }
         }
 
-        if (artists.length === 0 && deduped.length === 0) {
-          setError(
-            dbError
-              ? `Could not load recommendations (${dbError}). Please try again.`
-              : "No recommendations found. Try a different search or adjust your weights."
-          );
-          setResults([]);
-          return;
-        }
-
-        setLoadingStage("Fetching songs from Spotify\u2026");
-        const spotifyHeaders = { Authorization: `Bearer ${token}` };
-        // Only search for artists we don't already have songs for from DB results
-        const existingArtists = new Set(deduped.map(s => s.artist_name.toLowerCase()));
-        const missingArtists = artists.filter((a: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
-          const artistName = String(a.artist_name ?? "").trim().toLowerCase();
-          return artistName && !existingArtists.has(artistName);
-        });
-        const songArrays = await Promise.all(
-          missingArtists.slice(0, FALLBACK_ARTIST_SEARCH_LIMIT).map(async (artist: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
-            try {
-              const queries = promptForLiveSearch || interpretedPrompt
-                ? [
-                    `artist:${artist.artist_name} ${promptForLiveSearch || interpretedPrompt}`,
-                    `artist:${artist.artist_name}`,
-                  ]
-                : [`artist:${artist.artist_name}`];
-              let searchData: any = null; // eslint-disable-line @typescript-eslint/no-explicit-any
-              for (const q of queries) {
-                const searchRes = await fetchWithTimeout(
-                  `https://api.spotify.com/v1/search?q=${encodeURIComponent(q)}&type=track&market=US&limit=${FALLBACK_TRACK_SEARCH_LIMIT}`,
-                  { headers: spotifyHeaders },
-                  SPOTIFY_BROWSER_TIMEOUT_MS
-                );
-                if (!searchRes.ok) continue;
-                const data = await searchRes.json();
-                if ((data.tracks?.items ?? []).length > 0) {
-                  searchData = data;
-                  break;
+        if (artists.length > 0) {
+          setLoadingStage("Fetching songs from Spotify\u2026");
+          const spotifyHeaders = { Authorization: `Bearer ${token}` };
+          // Only search for artists we don't already have songs for from DB results
+          const existingArtists = new Set(deduped.map(s => s.artist_name.toLowerCase()));
+          const missingArtists = artists.filter((a: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+            const artistName = String(a.artist_name ?? "").trim().toLowerCase();
+            return artistName && !existingArtists.has(artistName);
+          });
+          const songArrays = await Promise.all(
+            missingArtists.slice(0, FALLBACK_ARTIST_SEARCH_LIMIT).map(async (artist: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+              try {
+                const queries = promptForLiveSearch || interpretedPrompt
+                  ? [
+                      `artist:${artist.artist_name} ${promptForLiveSearch || interpretedPrompt}`,
+                      `artist:${artist.artist_name}`,
+                    ]
+                  : [`artist:${artist.artist_name}`];
+                let searchData: any = null; // eslint-disable-line @typescript-eslint/no-explicit-any
+                for (const q of queries) {
+                  const searchRes = await fetchWithTimeout(
+                    `https://api.spotify.com/v1/search?q=${encodeURIComponent(q)}&type=track&market=US&limit=${FALLBACK_TRACK_SEARCH_LIMIT}`,
+                    { headers: spotifyHeaders },
+                    SPOTIFY_BROWSER_TIMEOUT_MS
+                  );
+                  if (!searchRes.ok) continue;
+                  const data = await searchRes.json();
+                  if ((data.tracks?.items ?? []).length > 0) {
+                    searchData = data;
+                    break;
+                  }
                 }
+                if (!searchData) return [];
+                const tracks = chooseFallbackTracks(searchData.tracks?.items ?? []);
+
+                return tracks.map((track: any): SongRecommendation => { // eslint-disable-line @typescript-eslint/no-explicit-any
+                  const trackPop = (track.popularity ?? 50) / 100;
+                  const depthBoost = trackPop < 0.46 ? 1.08 : trackPop > 0.74 ? 0.88 : 1.0;
+                  const songScore = artist.score * (0.78 + 0.18 * trackPop) * depthBoost;
+                  const fallbackSong: SongRecommendation = {
+                    track_id: null,
+                    track_name: track.name,
+                    artist_id: artist.artist_id,
+                    artist_name: track.artists?.[0]?.name ?? artist.artist_name,
+                    album_name: track.album?.name ?? "",
+                    release_date: track.album?.release_date ?? null,
+                    duration_ms: track.duration_ms ?? 0,
+                    explicit: track.explicit ?? false,
+                    spotify_track_id: track.id,
+                    score: songScore,
+                    novelty_score: 1.0,
+                    familiarity_score: 0.0,
+                    signals: {
+                      affinity: artist.signals.affinity,
+                      context: artist.signals.context,
+                      editorial: artist.signals.editorial,
+                      track_popularity: trackPop,
+                      novelty: Math.max(0, Math.min(1, 1 - trackPop + (artist.signals.editorial ?? 0) * 0.2)),
+                    },
+                    genres: artist.genres ?? [],
+                    reasons: [...(artist.reasons ?? [])],
+                    mention_count: artist.mention_count ?? 0,
+                    top_mention: artist.top_mention ?? null,
+                  };
+                  fallbackSong.lane = laneForSong(fallbackSong);
+                  return fallbackSong;
+                });
+              } catch {
+                return [];
               }
-              if (!searchData) return [];
-              const tracks = chooseFallbackTracks(searchData.tracks?.items ?? []);
+            })
+          );
 
-              return tracks.map((track: any): SongRecommendation => { // eslint-disable-line @typescript-eslint/no-explicit-any
-                const trackPop = (track.popularity ?? 50) / 100;
-                const depthBoost = trackPop < 0.46 ? 1.08 : trackPop > 0.74 ? 0.88 : 1.0;
-                const songScore = artist.score * (0.78 + 0.18 * trackPop) * depthBoost;
-                const fallbackSong: SongRecommendation = {
-                  track_id: null,
-                  track_name: track.name,
-                  artist_id: artist.artist_id,
-                  artist_name: track.artists?.[0]?.name ?? artist.artist_name,
-                  album_name: track.album?.name ?? "",
-                  release_date: track.album?.release_date ?? null,
-                  duration_ms: track.duration_ms ?? 0,
-                  explicit: track.explicit ?? false,
-                  spotify_track_id: track.id,
-                  score: songScore,
-                  novelty_score: 1.0,
-                  familiarity_score: 0.0,
-                  signals: {
-                    affinity: artist.signals.affinity,
-                    context: artist.signals.context,
-                    editorial: artist.signals.editorial,
-                    track_popularity: trackPop,
-                    novelty: Math.max(0, Math.min(1, 1 - trackPop + (artist.signals.editorial ?? 0) * 0.2)),
-                  },
-                  genres: artist.genres ?? [],
-                  reasons: [...(artist.reasons ?? [])],
-                  mention_count: artist.mention_count ?? 0,
-                  top_mention: artist.top_mention ?? null,
-                };
-                fallbackSong.lane = laneForSong(fallbackSong);
-                return fallbackSong;
-              });
-            } catch {
-              return [];
-            }
-          })
-        );
+          const allSongs = songArrays.flat();
+          allSongs.sort((a, b) => b.score - a.score);
 
-        const allSongs = songArrays.flat();
-        allSongs.sort((a, b) => b.score - a.score);
+          // Build dedup sets from existing DB results so we don't duplicate
+          const seen = new Set<string>();
+          const artistCounts: Record<string, number> = {};
+          for (const existing of deduped) {
+            const key = `${existing.track_name.toLowerCase()}|${existing.artist_name.toLowerCase()}`;
+            seen.add(key);
+            const ak = existing.artist_name.toLowerCase();
+            artistCounts[ak] = (artistCounts[ak] ?? 0) + 1;
+          }
 
-        // Build dedup sets from existing DB results so we don't duplicate
-        const seen = new Set<string>();
-        const artistCounts: Record<string, number> = {};
-        for (const existing of deduped) {
-          const key = `${existing.track_name.toLowerCase()}|${existing.artist_name.toLowerCase()}`;
-          seen.add(key);
-          const ak = existing.artist_name.toLowerCase();
-          artistCounts[ak] = (artistCounts[ak] ?? 0) + 1;
-        }
-
-        for (const song of allSongs) {
-          const key = `${song.track_name.toLowerCase()}|${song.artist_name.toLowerCase()}`;
-          if (seen.has(key)) continue;
-          const ak = song.artist_name.toLowerCase();
-          if ((artistCounts[ak] ?? 0) >= 2) continue;
-          seen.add(key);
-          artistCounts[ak] = (artistCounts[ak] ?? 0) + 1;
-          deduped.push(song);
-          if (deduped.length >= TARGET_SONGS) break;
+          for (const song of allSongs) {
+            const key = `${song.track_name.toLowerCase()}|${song.artist_name.toLowerCase()}`;
+            if (seen.has(key)) continue;
+            const ak = song.artist_name.toLowerCase();
+            if ((artistCounts[ak] ?? 0) >= 2) continue;
+            seen.add(key);
+            artistCounts[ak] = (artistCounts[ak] ?? 0) + 1;
+            deduped.push(song);
+            if (deduped.length >= TARGET_SONGS) break;
+          }
         }
       }
 
@@ -1512,9 +1510,10 @@ export default function DiscoverView({
       }
 
       if (deduped.length === 0) {
+        const failureReason = dbError ?? artistFallbackError;
         setError(
-          dbError
-            ? `Could not load recommendations (${dbError}). Please try again.`
+          failureReason
+            ? `Could not load recommendations (${failureReason}). Please try again.`
             : "No recommendations found — try a different search or adjust your weights."
         );
       }
