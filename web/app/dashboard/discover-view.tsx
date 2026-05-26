@@ -1208,6 +1208,7 @@ export default function DiscoverView({
       let interpretedPrompt = prompt.trim();
       const promptForLiveSearch = prompt.trim();
       let accessToken: string | null = null;
+      let promptSpotifyError: string | null = null;
 
       async function ensureSpotifyAccessToken(): Promise<string | null> {
         if (accessToken) return accessToken;
@@ -1227,44 +1228,40 @@ export default function DiscoverView({
               })
             )
             .catch((err) => {
+              promptSpotifyError = err instanceof Error ? err.message : "Prompt Spotify search failed";
               console.warn("prompt Spotify search failed:", err);
-              throw err;
+              return [];
             })
         : Promise.resolve([]);
 
       if (promptForLiveSearch) {
         setLoadingStage("Searching Spotify for your prompt\u2026");
         const promptSongs = await promptSongsPromise;
-        if (promptSongs.length === 0) {
-          setError(
-            "MusicLife could not find playable catalog or Spotify matches for this prompt. Try the artist name, a song title, or a nearby sound."
-          );
-          setResults([]);
-          setQueue([]);
+        if (promptSongs.length > 0) {
+          let promptStationSongs = promptSongs;
+          try {
+            setLoadingStage("Finding nearby artists and outside-air tracks\u2026");
+            const liveSongs = await fetchLiveCandidateSongs(promptForLiveSearch, promptSongs, tasteStrategy);
+            if (liveSongs.length > 0) {
+              promptStationSongs = mergeCandidateSongs(promptSongs, liveSongs, {
+                protectLiveCount: Math.min(16, liveSongs.length),
+              });
+            }
+          } catch (e) {
+            console.warn("prompt live candidate expansion failed:", e);
+          }
+
+          const finalResults = shapeStationForFreshAir(promptStationSongs, TARGET_SONGS, {
+            promptMode: true,
+          });
+          setResults(finalResults);
+          writeDiscoverCache(prompt, weights, currentStrategyKey, finalResults);
+          setQueue(toQueueTracks(finalResults));
+          await refreshTrackState(finalResults);
           return;
         }
 
-        let promptStationSongs = promptSongs;
-        try {
-          setLoadingStage("Finding nearby artists and outside-air tracks\u2026");
-          const liveSongs = await fetchLiveCandidateSongs(promptForLiveSearch, promptSongs, tasteStrategy);
-          if (liveSongs.length > 0) {
-            promptStationSongs = mergeCandidateSongs(promptSongs, liveSongs, {
-              protectLiveCount: Math.min(16, liveSongs.length),
-            });
-          }
-        } catch (e) {
-          console.warn("prompt live candidate expansion failed:", e);
-        }
-
-        const finalResults = shapeStationForFreshAir(promptStationSongs, TARGET_SONGS, {
-          promptMode: true,
-        });
-        setResults(finalResults);
-        writeDiscoverCache(prompt, weights, currentStrategyKey, finalResults);
-        setQueue(toQueueTracks(finalResults));
-        await refreshTrackState(finalResults);
-        return;
+        setLoadingStage("Prompt search was limited; checking catalog and fallbacks\u2026");
       }
 
       // Attempt 1: Server-side song recommendations (uses tracks in DB)
@@ -1510,7 +1507,7 @@ export default function DiscoverView({
       }
 
       if (deduped.length === 0) {
-        const failureReason = dbError ?? artistFallbackError;
+        const failureReason = dbError ?? artistFallbackError ?? promptSpotifyError;
         setError(
           failureReason
             ? `Could not load recommendations (${failureReason}). Please try again.`
