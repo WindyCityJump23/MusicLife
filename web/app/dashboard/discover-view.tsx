@@ -121,7 +121,7 @@ const LIVE_EXPANSION_TRACKS_PER_INTENT = 5;
 const LIVE_EXPANSION_POOL_TARGET = 40;
 const FRESH_AIR_TARGET_RATIO = 0.25;
 const PROMPT_LIVE_TARGET_RATIO = 0.4;
-const DISCOVERY_API_TIMEOUT_MS = 16_000;
+const DISCOVERY_API_TIMEOUT_MS = 22_000;
 const SPOTIFY_BROWSER_TIMEOUT_MS = 8_000;
 const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v7";
 const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -193,15 +193,62 @@ async function fetchWithTimeout(
   timeoutMs = DISCOVERY_API_TIMEOUT_MS
 ): Promise<Response> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const callerSignal = init.signal;
+  const abortFromCaller = () => controller.abort();
+  if (callerSignal) {
+    if (callerSignal.aborted) {
+      controller.abort();
+    } else {
+      callerSignal.addEventListener("abort", abortFromCaller, { once: true });
+    }
+  }
   try {
     return await fetch(input, {
       ...init,
-      signal: init.signal ?? controller.signal,
+      signal: controller.signal,
     });
+  } catch (err) {
+    if (timedOut && isAbortLikeError(err)) {
+      throw new Error(timeoutMessage(timeoutMs));
+    }
+    throw err;
   } finally {
     window.clearTimeout(timeout);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
   }
+}
+
+function isAbortLikeError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const message = err.message.toLowerCase();
+  return err.name === "AbortError" || message.includes("aborted") || message.includes("abort");
+}
+
+function timeoutMessage(timeoutMs: number): string {
+  return `Request timed out after ${Math.round(timeoutMs / 1000)} seconds`;
+}
+
+function recommendationFailureMessage(reason: string | null): string {
+  if (!reason) {
+    return "No recommendations found — try a different search or adjust your weights.";
+  }
+
+  const normalized = reason.toLowerCase();
+  if (
+    normalized.includes("aborted") ||
+    normalized.includes("abort") ||
+    normalized.includes("timed out") ||
+    normalized.includes("timeout")
+  ) {
+    return "Could not load recommendations because the catalog request timed out before fallback tracks were found. Please try again.";
+  }
+
+  return `Could not load recommendations (${reason}). Please try again.`;
 }
 
 function laneForSong(song: SongRecommendation): DiscoveryLaneId {
@@ -1511,11 +1558,7 @@ export default function DiscoverView({
 
       if (deduped.length === 0) {
         const failureReason = dbError ?? artistFallbackError ?? promptSpotifyError;
-        setError(
-          failureReason
-            ? `Could not load recommendations (${failureReason}). Please try again.`
-            : "No recommendations found — try a different search or adjust your weights."
-        );
+        setError(recommendationFailureMessage(failureReason));
       }
       const finalResults = shapeStationForFreshAir(deduped, TARGET_SONGS, {
         promptMode: Boolean(prompt.trim()),
