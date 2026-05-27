@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import SetupAllButton, { type SetupStatusSnapshot } from "./SetupAllButton";
+import { useAuth } from "./auth-context";
 
 type ReadinessStats = {
   artistCount?: number;
@@ -11,31 +12,22 @@ type ReadinessStats = {
   mentionCount?: number;
 };
 
-const STEP_LABELS = [
-  {
-    title: "Import Spotify library",
-    body: "Saved songs, artists, and recent plays",
-  },
-  {
-    title: "Learn artist taste",
-    body: "Genres and artist metadata",
-  },
-  {
-    title: "Model artist similarity",
-    body: "Taste vectors for recommendations",
-  },
-  {
-    title: "Add music context",
-    body: "Editorial and source signals",
-  },
-  {
-    title: "Prepare playable songs",
-    body: "Spotify tracks for your artists",
-  },
-  {
-    title: "Model song matches",
-    body: "Track-level search and audio context",
-  },
+const STEP_LABELS_SPOTIFY = [
+  { title: "Import Spotify library", body: "Saved songs, artists, and recent plays" },
+  { title: "Learn artist taste", body: "Genres and artist metadata" },
+  { title: "Model artist similarity", body: "Taste vectors for recommendations" },
+  { title: "Add music context", body: "Editorial and source signals" },
+  { title: "Prepare playable songs", body: "Spotify tracks for your artists" },
+  { title: "Model song matches", body: "Track-level search and audio context" },
+];
+
+const STEP_LABELS_GUEST = [
+  { title: "Import playlist", body: "Artists and tracks from your playlist" },
+  { title: "Learn artist taste", body: "Genres and artist metadata" },
+  { title: "Model artist similarity", body: "Taste vectors for recommendations" },
+  { title: "Add music context", body: "Editorial and source signals" },
+  { title: "Prepare playable songs", body: "Tracks for recommendations" },
+  { title: "Model song matches", body: "Track-level search and audio context" },
 ];
 
 export default function SetupBanner({
@@ -43,6 +35,8 @@ export default function SetupBanner({
 }: {
   onSetupComplete?: () => void;
 }) {
+  const { isGuest } = useAuth();
+  const STEP_LABELS = isGuest ? STEP_LABELS_GUEST : STEP_LABELS_SPOTIFY;
   const [completedSteps, setCompletedSteps] = useState<Set<number>>(new Set());
   const [stats, setStats] = useState<ReadinessStats | null>(null);
   const [setupStatus, setSetupStatus] = useState<SetupStatusSnapshot | null>(null);

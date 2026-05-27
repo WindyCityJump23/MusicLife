@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { usePlayer, type QueueTrack } from "./player-context";
+import { useAuth } from "./auth-context";
 
 type SignalBreakdown = {
   affinity: number;
@@ -1103,6 +1104,7 @@ export default function DiscoverView({
   readiness?: RadioReadinessSummary;
 }) {
   const { setQueue, playFromQueue } = usePlayer();
+  const { isGuest } = useAuth();
   const [prompt, setPrompt] = useState("");
   const [weights, setWeights] = useState(PRESETS[0].weights);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -1218,7 +1220,8 @@ export default function DiscoverView({
         return accessToken;
       }
 
-      const promptSongsPromise = promptForLiveSearch
+      // Guests have no Spotify user token — skip all live Spotify expansion
+      const promptSongsPromise = promptForLiveSearch && !isGuest
         ? ensureSpotifyAccessToken()
             .then((token) =>
               fetchPromptSpotifySongs(promptForLiveSearch, token, {
@@ -1347,7 +1350,7 @@ export default function DiscoverView({
       // If DB returned fewer than the target, fill remaining slots with live
       // Spotify results from high-scoring artists. This also runs as a full
       // fallback when the DB has no songs at all.
-      if (deduped.length < TARGET_SONGS) {
+      if (deduped.length < TARGET_SONGS && !isGuest) {
         setLoadingStage(
           deduped.length > 0
             ? `Found ${deduped.length} songs, searching Spotify for more\u2026`
@@ -1495,7 +1498,7 @@ export default function DiscoverView({
 
       try {
         const livePrompt = prompt.trim() || interpretedPrompt;
-        if (shouldRunLiveExpansion(deduped, livePrompt, tasteStrategy)) {
+        if (!isGuest && shouldRunLiveExpansion(deduped, livePrompt, tasteStrategy)) {
           setLoadingStage("Expanding live search beyond the catalog\u2026");
           const liveSongs = await fetchLiveCandidateSongs(livePrompt, deduped, tasteStrategy);
           if (liveSongs.length > 0) {
@@ -1523,8 +1526,10 @@ export default function DiscoverView({
         writeDiscoverCache(prompt, weights, currentStrategyKey, finalResults);
       }
 
-      // Set the player queue so songs auto-advance
-      setQueue(toQueueTracks(finalResults));
+      // Set the player queue so songs auto-advance (Spotify users only)
+      if (!isGuest) {
+        setQueue(toQueueTracks(finalResults));
+      }
 
       // Fetch initial favorite and feedback state
       await refreshTrackState(finalResults);
@@ -1691,7 +1696,9 @@ export default function DiscoverView({
                 Tune a station, then listen in order.
               </h3>
               <p className="mt-1 max-w-2xl text-xs leading-relaxed text-neutral-500">
-                Build a queue from your taste, live Spotify search, and current music context.
+                {isGuest
+                  ? "Discover songs based on your imported playlist. Tap to open in Spotify."
+                  : "Build a queue from your taste, live Spotify search, and current music context."}
               </p>
             </div>
             {readiness && (
@@ -1740,35 +1747,39 @@ export default function DiscoverView({
                   "Discover"
                 )}
               </button>
-              <button
-                onClick={() => void handlePlayAll(displayed)}
-                disabled={playAllState === "loading" || playableCount === 0}
-                className="inline-flex min-h-[42px] items-center justify-center gap-2 rounded-lg border border-neutral-200 bg-white px-4 py-2.5 text-sm font-medium text-neutral-800 transition-all hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-40"
-                title={
-                  playableCount > 0
-                    ? `Play ${playableCount} songs from this station view`
-                    : "No playable Spotify tracks in this view"
-                }
-              >
-                {playAllState === "loading" ? (
-                  <svg className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
-                    <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
-                  </svg>
-                ) : (
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                )}
-                {playAllState === "loading" ? "Starting" : "Play station"}
-              </button>
-              <div className="col-span-2 sm:col-span-1">
-                <SavePlaylistButton
-                  state={playlistState}
-                  count={results?.length ?? 0}
-                  onSave={handleSavePlaylist}
-                />
-              </div>
+              {!isGuest && (
+                <button
+                  onClick={() => void handlePlayAll(displayed)}
+                  disabled={playAllState === "loading" || playableCount === 0}
+                  className="inline-flex min-h-[42px] items-center justify-center gap-2 rounded-lg border border-neutral-200 bg-white px-4 py-2.5 text-sm font-medium text-neutral-800 transition-all hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-40"
+                  title={
+                    playableCount > 0
+                      ? `Play ${playableCount} songs from this station view`
+                      : "No playable Spotify tracks in this view"
+                  }
+                >
+                  {playAllState === "loading" ? (
+                    <svg className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
+                      <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
+                    </svg>
+                  ) : (
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  )}
+                  {playAllState === "loading" ? "Starting" : "Play station"}
+                </button>
+              )}
+              {!isGuest && (
+                <div className="col-span-2 sm:col-span-1">
+                  <SavePlaylistButton
+                    state={playlistState}
+                    count={results?.length ?? 0}
+                    onSave={handleSavePlaylist}
+                  />
+                </div>
+              )}
             </div>
           </div>
 
@@ -1868,8 +1879,8 @@ export default function DiscoverView({
         <div className="space-y-3">
           {mix && <StationMixStrip mix={mix} />}
 
-          {/* Playlist success banner */}
-          {playlistState === "done" && playlistUrl && (
+          {/* Playlist success banner (Spotify users only) */}
+          {!isGuest && playlistState === "done" && playlistUrl && (
             <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-medium text-emerald-800">
@@ -1908,8 +1919,8 @@ export default function DiscoverView({
             </div>
           )}
 
-          {/* Playlist error banner */}
-          {playlistState === "error" && playlistError && (
+          {/* Playlist error banner (Spotify users only) */}
+          {!isGuest && playlistState === "error" && playlistError && (
             <div className="border border-red-200 bg-red-50 rounded-lg px-3 py-2 flex items-center gap-2">
               <span
                 aria-hidden="true"
@@ -1997,6 +2008,7 @@ export default function DiscoverView({
                     initialFavorited={favoritedIds.has(song.spotify_track_id)}
                     initialFeedback={feedbackMap[song.spotify_track_id] ?? null}
                     currentPrompt={prompt}
+                    isGuest={isGuest}
                   />
                 ))}
               </div>
@@ -2228,6 +2240,7 @@ function SongRow({
   initialFeedback = null,
   currentPrompt = "",
   compact = false,
+  isGuest = false,
 }: {
   song: SongRecommendation;
   rank: number;
@@ -2235,6 +2248,7 @@ function SongRow({
   initialFeedback?: 1 | -1 | null;
   currentPrompt?: string;
   compact?: boolean;
+  isGuest?: boolean;
 }) {
   const { playSingle, playFromQueue, queue } = usePlayer();
   const [playState, setPlayState] = useState<"idle" | "loading">("idle");
@@ -2318,27 +2332,43 @@ function SongRow({
           {rank}
         </span>
 
-        {/* Play button — primary action, left side for thumb reach */}
-        <button
-          onClick={handlePlay}
-          disabled={playState === "loading"}
-          title={`Play ${song.track_name}`}
-          className={[
-            "shrink-0 rounded-full flex items-center justify-center bg-neutral-900 text-white hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-40",
-            compact ? "w-10 h-10" : "w-11 h-11",
-          ].join(" ")}
-        >
-          {playState === "loading" ? (
-            <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
-              <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
-            </svg>
-          ) : (
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-          )}
-        </button>
+        {/* Play button (Spotify users) or Open in Spotify link (guests) */}
+        {isGuest ? (
+          <a
+            href={song.spotify_track_id ? `https://open.spotify.com/track/${song.spotify_track_id}` : "#"}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`Open ${song.track_name} in Spotify`}
+            className={[
+              "shrink-0 rounded-full flex items-center justify-center bg-[#1DB954] text-white hover:bg-[#1aa34a] active:scale-95 transition-all",
+              compact ? "w-10 h-10" : "w-11 h-11",
+              !song.spotify_track_id ? "opacity-40 pointer-events-none" : "",
+            ].join(" ")}
+          >
+            <SpotifyIcon size={16} />
+          </a>
+        ) : (
+          <button
+            onClick={handlePlay}
+            disabled={playState === "loading"}
+            title={`Play ${song.track_name}`}
+            className={[
+              "shrink-0 rounded-full flex items-center justify-center bg-neutral-900 text-white hover:bg-neutral-700 active:scale-95 transition-all disabled:opacity-40",
+              compact ? "w-10 h-10" : "w-11 h-11",
+            ].join(" ")}
+          >
+            {playState === "loading" ? (
+              <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
+                <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
+              </svg>
+            ) : (
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            )}
+          </button>
+        )}
 
         {/* Song info */}
         <div className={["min-w-0", compact ? "pt-0.5" : "flex-1"].join(" ")}>
@@ -2465,46 +2495,48 @@ function SongRow({
             </svg>
           </button>
 
-          {/* Favorite (heart) */}
-          <button
-            onClick={async () => {
-              if (favLoading || !song.spotify_track_id) return;
-              setFavLoading(true);
-              try {
-                const method = favorited ? "DELETE" : "POST";
-                const res = await fetch("/api/favorite", {
-                  method,
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    spotify_track_id: song.spotify_track_id,
-                    track_name: song.track_name,
-                    artist_name: song.artist_name,
-                    score: song.score,
-                    source: "discover",
-                  }),
-                });
-                if (res.ok) setFavorited(!favorited);
-              } catch {}
-              setFavLoading(false);
-            }}
-            disabled={favLoading || !song.spotify_track_id}
-            title={favorited ? "Remove from Liked Songs" : "Save to Liked Songs"}
-            className={`w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 disabled:opacity-30 ${
-              favorited
-                ? "text-rose-500 hover:text-rose-400"
-                : "text-neutral-300 hover:text-rose-500"
-            }`}
-          >
-            {favorited ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
-              </svg>
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            )}
-          </button>
+          {/* Favorite (heart) — Spotify users only (requires user-library-modify) */}
+          {!isGuest && (
+            <button
+              onClick={async () => {
+                if (favLoading || !song.spotify_track_id) return;
+                setFavLoading(true);
+                try {
+                  const method = favorited ? "DELETE" : "POST";
+                  const res = await fetch("/api/favorite", {
+                    method,
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      spotify_track_id: song.spotify_track_id,
+                      track_name: song.track_name,
+                      artist_name: song.artist_name,
+                      score: song.score,
+                      source: "discover",
+                    }),
+                  });
+                  if (res.ok) setFavorited(!favorited);
+                } catch {}
+                setFavLoading(false);
+              }}
+              disabled={favLoading || !song.spotify_track_id}
+              title={favorited ? "Remove from Liked Songs" : "Save to Liked Songs"}
+              className={`w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 disabled:opacity-30 ${
+                favorited
+                  ? "text-rose-500 hover:text-rose-400"
+                  : "text-neutral-300 hover:text-rose-500"
+              }`}
+            >
+              {favorited ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                </svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </button>
+          )}
         </div>
 
         {/* Expand toggle */}

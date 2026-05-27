@@ -496,6 +496,9 @@ class SetupAllRequest(BaseModel):
     spotify_refresh_token: str | None = None
     spotify_client_id: str | None = None
     spotify_client_secret: str | None = None
+    # When True, skip step 1 (Spotify library sync). Used for playlist-import
+    # users whose tracks are already ingested via the import-playlist route.
+    skip_spotify_sync: bool = False
 
 
 def _get_client_credentials_token(client_id: str, client_secret: str) -> str | None:
@@ -707,6 +710,7 @@ def setup_all(
         req.spotify_refresh_token,
         req.spotify_client_id,
         req.spotify_client_secret,
+        req.skip_spotify_sync,
     )
     return {"status": "queued", "job_id": job_id}
 
@@ -718,6 +722,7 @@ def _run_setup_all(
     refresh_token: str | None = None,
     client_id: str | None = None,
     client_secret: str | None = None,
+    skip_spotify_sync: bool = False,
 ):
     from app.services.artist_embeddings import run_artist_embeddings
     from app.services.artist_enrichment import run_artist_enrichment
@@ -755,8 +760,11 @@ def _run_setup_all(
         print(f"setup_all: using token len={len(active_token)}, had refresh={'yes' if refresh_token else 'no'}", flush=True)
 
         current_stage = "Sync Library"
-        progress_for(1)("Syncing Spotify library…")
-        run_spotify_library_ingest(user_id, active_token)
+        if skip_spotify_sync:
+            progress_for(1)("Playlist already imported — skipping Spotify sync")
+        else:
+            progress_for(1)("Syncing Spotify library…")
+            run_spotify_library_ingest(user_id, active_token)
 
         current_stage = "Enrich Artists"
         progress_for(2)("Enriching artists…")
