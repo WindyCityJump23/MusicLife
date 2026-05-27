@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireUser, isErrorResponse } from "@/lib/session";
+import { requireUser, isErrorResponse, isGuestUser } from "@/lib/session";
+import { getClientCredentialsToken } from "@/lib/spotify-client-credentials";
 
 export const dynamic = "force-dynamic";
 
@@ -12,30 +13,46 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "NEXT_PUBLIC_API_URL not configured" }, { status: 500 });
   }
 
-  const tokenRes = await fetch(
-    new URL("/api/auth/token", req.url).toString(),
-    { headers: { cookie: req.headers.get("cookie") ?? "" }, cache: "no-store" }
-  );
-  if (!tokenRes.ok) {
-    return NextResponse.json({ error: "not_authenticated" }, { status: 401 });
-  }
-  const { access_token: accessToken } = await tokenRes.json();
-  if (!accessToken) {
-    return NextResponse.json({ error: "not_authenticated" }, { status: 401 });
-  }
-
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!serviceRoleKey) {
     return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY not configured" }, { status: 500 });
   }
 
-  // Pass the refresh token + client credentials so the API can self-refresh
-  // the Spotify token before step 5 (populate-tracks). Steps 1–4 can take
-  // longer than the access token's 1-hour validity for large libraries.
-  const refreshToken = req.cookies.get("sp_refresh")?.value ?? "";
   const spotifyClientId = process.env.SPOTIFY_CLIENT_ID ?? "";
   const spotifyClientSecret = process.env.SPOTIFY_CLIENT_SECRET ?? "";
 
+  let accessToken: string;
+  let refreshToken = "";
+  let skipSpotifySync = false;
+
+  if (isGuestUser(user)) {
+    // Guest user (playlist-import): use client credentials, skip library sync
+    try {
+      accessToken = await getClientCredentialsToken();
+    } catch {
+      return NextResponse.json({ error: "spotify_auth_failed" }, { status: 500 });
+    }
+    skipSpotifySync = true;
+  } else {
+    // Spotify-auth user: use their personal token
+    const tokenRes = await fetch(
+      new URL("/api/auth/token", req.url).toString(),
+      { headers: { cookie: req.headers.get("cookie") ?? "" }, cache: "no-store" }
+    );
+    if (!tokenRes.ok) {
+      return NextResponse.json({ error: "not_authenticated" }, { status: 401 });
+    }
+    const tokenData = await tokenRes.json();
+    accessToken = tokenData.access_token;
+    if (!accessToken) {
+      return NextResponse.json({ error: "not_authenticated" }, { status: 401 });
+    }
+    refreshToken = req.cookies.get("sp_refresh")?.value ?? "";
+  }
+
+  // Pass the refresh token + client credentials so the API can self-refresh
+  // the Spotify token before step 5 (populate-tracks). Steps 1–4 can take
+  // longer than the access token's 1-hour validity for large libraries.
   const upstream = await fetch(`${apiUrl}/ingest/setup-all`, {
     method: "POST",
     headers: {
@@ -48,6 +65,7 @@ export async function POST(req: NextRequest) {
       spotify_refresh_token: refreshToken || undefined,
       spotify_client_id: spotifyClientId || undefined,
       spotify_client_secret: spotifyClientSecret || undefined,
+      skip_spotify_sync: skipSpotifySync,
     }),
   });
 

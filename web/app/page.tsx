@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import PlaylistImportForm from "./playlist-import-form";
 
 const ERROR_MESSAGES: Record<string, string> = {
   no_code: "Spotify did not return an authorization code. Please try again.",
@@ -23,8 +24,7 @@ export default function Home({
   if (!hasError) {
     const cookieStore = cookies();
     const userId = cookieStore.get("app_user_id")?.value;
-    const access = cookieStore.get("sp_access")?.value;
-    if (userId && access) {
+    if (userId) {
       redirect("/dashboard");
     }
   }
@@ -63,7 +63,7 @@ export default function Home({
           </div>
         )}
 
-        {/* ── CTA ──────────────────────────────────────────── */}
+        {/* ── CTA: Connect with Spotify ─────────────────── */}
         <div className="space-y-3">
           <a
             href="/api/auth/login?force=1"
@@ -73,14 +73,19 @@ export default function Home({
             Connect with Spotify
           </a>
           <p className="text-xs text-white/45 leading-relaxed max-w-xs mx-auto">
-            Requires Spotify Premium for in-browser playback. Free accounts can browse recommendations and export playlists.
-          </p>
-          <p className="text-[11px] text-white/30 leading-relaxed max-w-xs mx-auto">
-            If Spotify gets stuck on Facebook login, open{" "}
-            <a href="https://spotify.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-white/50">spotify.com</a>{" "}
-            first, log in directly, then return here and try again.
+            Full experience with in-browser playback, library sync, and playlists.
           </p>
         </div>
+
+        {/* ── Divider ─────────────────────────────────────── */}
+        <div className="flex items-center gap-3">
+          <div className="flex-1 h-px bg-white/10" />
+          <span className="text-xs text-white/30 font-medium">or</span>
+          <div className="flex-1 h-px bg-white/10" />
+        </div>
+
+        {/* ── CTA: Playlist Import ────────────────────────── */}
+        <PlaylistImportForm />
 
         {/* ── How it works ─────────────────────────────────── */}
         <div className="border-t border-white/10 pt-6 sm:pt-8">

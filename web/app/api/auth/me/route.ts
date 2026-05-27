@@ -8,5 +8,9 @@ export async function GET(req: NextRequest) {
   if (!user) {
     return NextResponse.json({ error: "not_authenticated" }, { status: 401 });
   }
-  return NextResponse.json({ userId: user.userId, displayName: user.displayName });
+  return NextResponse.json({
+    userId: user.userId,
+    displayName: user.displayName,
+    authType: user.authType,
+  });
 }

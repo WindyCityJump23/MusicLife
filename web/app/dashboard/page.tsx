@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import Sidebar, { type View } from "./sidebar";
 import Player from "./Player";
 import { PlayerProvider, usePlayer } from "./player-context";
+import { AuthProvider, useAuth } from "./auth-context";
 import SetupBanner from "./setup-banner";
 
 const RadioView = dynamic(() => import("./radio-view"), {
@@ -51,7 +52,8 @@ function DashboardInner() {
   const [navOpen, setNavOpen] = useState(false);
   const [playerOpen, setPlayerOpen] = useState(false);
   const { playingArtist, embedTrackId, queue, currentIndex } = usePlayer();
-  const hasTrack = Boolean(playingArtist) || Boolean(embedTrackId);
+  const { isGuest } = useAuth();
+  const hasTrack = !isGuest && (Boolean(playingArtist) || Boolean(embedTrackId));
 
   // Close drawers on Escape
   useEffect(() => {
@@ -121,15 +123,17 @@ function DashboardInner() {
             </h1>
           </div>
 
-          <button
-            onClick={() => setPlayerOpen(true)}
-            aria-label="Open player"
-            className="w-10 h-10 -mr-1 rounded-lg flex items-center justify-center text-neutral-700 hover:bg-neutral-100 active:bg-neutral-200 transition-colors"
-          >
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-          </button>
+          {!isGuest && (
+            <button
+              onClick={() => setPlayerOpen(true)}
+              aria-label="Open player"
+              className="w-10 h-10 -mr-1 rounded-lg flex items-center justify-center text-neutral-700 hover:bg-neutral-100 active:bg-neutral-200 transition-colors"
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </button>
+          )}
         </header>
 
         {/* ── Sidebar (desktop column / mobile drawer) ─────────── */}
@@ -305,8 +309,10 @@ function DashboardInner() {
 
 export default function Dashboard() {
   return (
-    <PlayerProvider>
-      <DashboardInner />
-    </PlayerProvider>
+    <AuthProvider>
+      <PlayerProvider>
+        <DashboardInner />
+      </PlayerProvider>
+    </AuthProvider>
   );
 }

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import SetupAllButton from "./SetupAllButton";
 import SourcesButton from "./SourcesButton";
+import { useAuth } from "./auth-context";
 
 export type View = "discover" | "playlists" | "library" | "activity";
 
@@ -13,7 +14,7 @@ const NAV: { id: View; label: string; icon: string }[] = [
   { id: "activity",   label: "History",       icon: "◷" },
 ];
 
-const STEP_META = [
+const STEP_META_SPOTIFY = [
   { step: 1, title: "Import listening history", desc: "Bring in your Spotify artists and recent plays" },
   { step: 2, title: "Learn your taste",         desc: "Add genre and artist context" },
   { step: 3, title: "Build your radio model",   desc: "Prepare matching signals for better stations" },
@@ -21,6 +22,18 @@ const STEP_META = [
   { step: 5, title: "Prepare song catalog",     desc: "Load playable tracks for radio and playlists" },
   { step: 6, title: "Model songs",              desc: "Build song-level context for fresher lanes" },
 ];
+
+const STEP_META_GUEST = [
+  { step: 1, title: "Import playlist",          desc: "Tracks imported from your playlist" },
+  { step: 2, title: "Learn your taste",         desc: "Add genre and artist context" },
+  { step: 3, title: "Build your radio model",   desc: "Prepare matching signals for better stations" },
+  { step: 4, title: "Add music context",        desc: "Blend in editorial sources and buzz" },
+  { step: 5, title: "Prepare song catalog",     desc: "Load playable tracks for recommendations" },
+  { step: 6, title: "Model songs",              desc: "Build song-level context for fresher lanes" },
+];
+
+// Guest users only see Radio and Taste Profile
+const GUEST_NAV_IDS = new Set<View>(["discover", "library"]);
 
 export default function Sidebar({
   active,
@@ -33,6 +46,10 @@ export default function Sidebar({
   onClose?: () => void;
   onSetupComplete?: () => void;
 }) {
+  const { isGuest } = useAuth();
+  const stepMeta = isGuest ? STEP_META_GUEST : STEP_META_SPOTIFY;
+  const navItems = isGuest ? NAV.filter((n) => GUEST_NAV_IDS.has(n.id)) : NAV;
+
   const [displayName,    setDisplayName]    = useState<string | null>(null);
   const [completedSteps, setCompletedSteps] = useState<Set<number>>(new Set());
   const [catalogStats,   setCatalogStats]   = useState<{
@@ -40,7 +57,7 @@ export default function Sidebar({
     discovered: number;
     embedded: number;
   } | null>(null);
-  const allDone = completedSteps.size >= STEP_META.length;
+  const allDone = completedSteps.size >= stepMeta.length;
   const [setupOpen,      setSetupOpen]      = useState(!allDone);
   const setupStatusLabel = allDone ? "Ready" : completedSteps.size > 0 ? "In progress" : "Needs setup";
   const setupStatusClass = allDone
@@ -130,7 +147,7 @@ export default function Sidebar({
 
       {/* ── Navigation ─────────────────────────────────────── */}
       <nav className="p-2 space-y-0.5">
-        {NAV.map((item) => {
+        {navItems.map((item) => {
           const isActive = item.id === active;
           return (
             <button
@@ -166,7 +183,9 @@ export default function Sidebar({
             </p>
             <p className="mt-1 text-xs text-neutral-500 leading-snug">
               {allDone
-                ? "Ready for radio and playlists. Refresh only when your Spotify taste changes."
+                ? isGuest
+                  ? "Ready for recommendations. Import another playlist to update your taste."
+                  : "Ready for radio and playlists. Refresh only when your Spotify taste changes."
                 : "One setup run teaches MusicLife what to recommend."}
             </p>
           </span>
@@ -228,7 +247,7 @@ export default function Sidebar({
         />
 
         <div className="space-y-2 pt-1">
-          {STEP_META.map((s) => (
+          {stepMeta.map((s) => (
             <StepItem
               key={s.step}
               step={s.step}
@@ -241,13 +260,28 @@ export default function Sidebar({
         </div>}
       </div>
 
+      {/* ── Guest upgrade CTA ──────────────────────────────── */}
+      {isGuest && (
+        <div className="px-3 pb-2">
+          <a
+            href="/api/auth/login?force=1"
+            className="block w-full px-3 py-2.5 rounded-lg bg-emerald-50 border border-emerald-100 text-xs text-emerald-700 font-medium hover:bg-emerald-100 active:bg-emerald-200 transition-colors text-center"
+          >
+            🔗 Connect Spotify for full features
+          </a>
+          <p className="text-[10px] text-neutral-400 mt-1.5 px-1 leading-snug">
+            Unlock in-app playback, playlists, and library sync.
+          </p>
+        </div>
+      )}
+
       {/* ── Sign out ─────────────────────────────────────────── */}
       <div className="px-3 pb-4 pb-safe border-t border-neutral-200 pt-3">
         <button
           onClick={handleLogout}
           className="w-full px-2.5 py-2 rounded-lg border border-neutral-200 bg-white text-xs text-neutral-500 hover:bg-neutral-50 hover:border-neutral-300 active:bg-neutral-100 text-left"
         >
-          ↩ Sign out
+          {isGuest ? "↩ Start over" : "↩ Sign out"}
         </button>
       </div>
     </div>

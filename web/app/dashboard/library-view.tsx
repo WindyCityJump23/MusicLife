@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePlayer } from "./player-context";
+import { useAuth } from "./auth-context";
 import SetupAllButton from "./SetupAllButton";
 
 type Artist = {
@@ -253,6 +254,7 @@ export default function LibraryView({
 }: {
   onSetupComplete?: () => void;
 }) {
+  const { isGuest } = useAuth();
   const [data, setData] = useState<LibraryData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -263,6 +265,10 @@ export default function LibraryView({
   const [genreInput, setGenreInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [reimportUrl, setReimportUrl] = useState("");
+  const [reimportLoading, setReimportLoading] = useState(false);
+  const [reimportMessage, setReimportMessage] = useState<string | null>(null);
+  const [reimportError, setReimportError] = useState<string | null>(null);
 
   const fetchLibrary = useCallback(() => {
     setLoading(true);
@@ -404,6 +410,39 @@ export default function LibraryView({
     }
   }
 
+  async function handleReimport(e: React.FormEvent) {
+    e.preventDefault();
+    if (!reimportUrl.trim() || reimportLoading) return;
+    setReimportLoading(true);
+    setReimportError(null);
+    setReimportMessage(null);
+    try {
+      const res = await fetch("/api/import-playlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: reimportUrl.trim() }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setReimportError(body.message ?? body.error ?? "Import failed");
+        return;
+      }
+      setReimportMessage(
+        `Added ${body.track_count} tracks from ${body.artist_count} artists. Refreshing...`
+      );
+      setReimportUrl("");
+      // Give a moment for the success message to display, then refresh
+      setTimeout(() => {
+        fetchLibrary();
+        setReimportMessage(null);
+      }, 1500);
+    } catch {
+      setReimportError("Network error. Please check your connection.");
+    } finally {
+      setReimportLoading(false);
+    }
+  }
+
   if (loading) {
     return (
       <div className="space-y-4">
@@ -437,7 +476,9 @@ export default function LibraryView({
         <div className="space-y-2 text-center">
           <h2 className="text-lg font-semibold text-neutral-900">Welcome to MusicLife</h2>
           <p className="text-sm leading-relaxed text-neutral-500">
-            Connect your Spotify library to build the taste profile that powers Radio.
+            {isGuest
+              ? "Import a playlist to build the taste profile that powers recommendations."
+              : "Connect your Spotify library to build the taste profile that powers Radio."}
           </p>
         </div>
         <SetupAllButton onProgress={fetchLibrary} onComplete={onSetupComplete} />
@@ -477,7 +518,9 @@ export default function LibraryView({
               Here is what MusicLife thinks your taste is.
             </h3>
             <p className="mt-1 max-w-2xl text-sm leading-relaxed text-neutral-500">
-              Your Spotify history builds the model. Your station point of view tells Radio how far to reach, how current to feel, and which genres should carry more gravity.
+              {isGuest
+                ? "Your imported playlist builds the model. Adjust your station point of view to tell Radio how far to reach and which genres should carry more gravity."
+                : "Your Spotify history builds the model. Your station point of view tells Radio how far to reach, how current to feel, and which genres should carry more gravity."}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -516,6 +559,44 @@ export default function LibraryView({
           <ReadinessPill label="Song catalog" done={data.readiness.steps.tracks} detail={`${data.readiness.playableTrackCount}/${data.readiness.requiredPlayableTrackCount} playable`} />
           <ReadinessPill label="Music context" done={data.readiness.steps.context} detail={`${data.stats.mentionCount.toLocaleString()} mentions`} />
         </div>
+
+        {/* Re-import playlist for guests */}
+        {isGuest && (
+          <div className="mt-4 rounded-lg border border-neutral-200 bg-neutral-50/70 p-4">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-500">
+              Update your taste
+            </p>
+            <p className="mt-1 text-sm text-neutral-600 leading-relaxed">
+              Import another playlist to add more artists and tracks to your taste profile.
+            </p>
+            <form onSubmit={handleReimport} className="mt-3 flex gap-2">
+              <input
+                type="text"
+                value={reimportUrl}
+                onChange={(e) => {
+                  setReimportUrl(e.target.value);
+                  if (reimportError) setReimportError(null);
+                }}
+                placeholder="Paste a Spotify playlist link..."
+                disabled={reimportLoading}
+                className="flex-1 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:opacity-50"
+              />
+              <button
+                type="submit"
+                disabled={!reimportUrl.trim() || reimportLoading}
+                className="shrink-0 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40 transition-colors"
+              >
+                {reimportLoading ? "Importing..." : "Re-import"}
+              </button>
+            </form>
+            {reimportError && (
+              <p className="mt-2 text-xs text-red-600">{reimportError}</p>
+            )}
+            {reimportMessage && (
+              <p className="mt-2 text-xs text-emerald-700">{reimportMessage}</p>
+            )}
+          </div>
+        )}
 
         {tasteThesis && (
           <div className="mt-4 rounded-lg border border-emerald-100 bg-emerald-50/70 p-4">

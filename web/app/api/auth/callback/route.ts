@@ -176,43 +176,77 @@ export async function GET(req: NextRequest) {
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
   const sb = createClient(sbUrl, sbKey, { auth: { persistSession: false } });
 
-  const { data: existingUser } = await sb
-    .from("users")
-    .select("id")
-    .eq("spotify_user_id", spotifyId)
-    .maybeSingle();
+  // ── Check if this is a guest user upgrading to full Spotify auth ──
+  const existingGuestId = req.cookies.get("app_user_id")?.value;
+  let supabaseUserId: string | null = null;
 
-  let supabaseUserId: string;
-
-  if (existingUser) {
-    supabaseUserId = existingUser.id;
-    await sb
+  if (existingGuestId) {
+    const { data: guestUser } = await sb
       .from("users")
-      .update({ display_name: displayName })
-      .eq("id", supabaseUserId);
-  } else {
-    const newId = randomUUID();
-    const { data: newUser, error: insertErr } = await sb
-      .from("users")
-      .insert({
-        id: newId,
-        spotify_user_id: spotifyId,
-        display_name: displayName,
-      })
-      .select("id")
-      .single();
+      .select("id, auth_type")
+      .eq("id", existingGuestId)
+      .maybeSingle();
 
-    if (insertErr || !newUser) {
-      console.error(
-        "[auth/callback] user insert failed",
-        insertErr?.message
+    if (guestUser?.auth_type === "playlist_import") {
+      // Upgrade: attach Spotify identity to existing guest user,
+      // preserving all their user_tracks, feedback, and recommendations.
+      await sb
+        .from("users")
+        .update({
+          spotify_user_id: spotifyId,
+          display_name: displayName,
+          auth_type: "spotify",
+        })
+        .eq("id", existingGuestId);
+      supabaseUserId = existingGuestId;
+      console.log(
+        `[auth/callback] guest upgrade | user=${existingGuestId} | spotify=${spotifyId}`
       );
-      return NextResponse.redirect(new URL("/?error=user_upsert", base));
     }
-    supabaseUserId = newUser.id;
+  }
+
+  // ── Normal upsert for non-upgrade cases ─────────────────────────
+  if (!supabaseUserId) {
+    const { data: existingUser } = await sb
+      .from("users")
+      .select("id")
+      .eq("spotify_user_id", spotifyId)
+      .maybeSingle();
+
+    if (existingUser) {
+      supabaseUserId = existingUser.id;
+      await sb
+        .from("users")
+        .update({ display_name: displayName })
+        .eq("id", supabaseUserId);
+    } else {
+      const newId = randomUUID();
+      const { data: newUser, error: insertErr } = await sb
+        .from("users")
+        .insert({
+          id: newId,
+          spotify_user_id: spotifyId,
+          display_name: displayName,
+        })
+        .select("id")
+        .single();
+
+      if (insertErr || !newUser) {
+        console.error(
+          "[auth/callback] user insert failed",
+          insertErr?.message
+        );
+        return NextResponse.redirect(new URL("/?error=user_upsert", base));
+      }
+      supabaseUserId = newUser.id;
+    }
   }
 
   // ── Set cookies and redirect to dashboard ──────────────────
+  if (!supabaseUserId) {
+    return NextResponse.redirect(new URL("/?error=user_upsert", base));
+  }
+
   const res = NextResponse.redirect(new URL("/dashboard", base));
 
   // Clear CSRF state
@@ -244,6 +278,10 @@ export async function GET(req: NextRequest) {
     maxAge: 60 * 60 * 24 * 30,
   });
   res.cookies.set("app_display_name", encodeURIComponent(displayName), {
+    ...setCookieOpts(secure),
+    maxAge: 60 * 60 * 24 * 30,
+  });
+  res.cookies.set("app_auth_type", "spotify", {
     ...setCookieOpts(secure),
     maxAge: 60 * 60 * 24 * 30,
   });

@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useAuth } from "./auth-context";
 
 export type QueueTrack = {
   spotifyTrackId: string;
@@ -131,6 +132,7 @@ const PlayerContext = createContext<PlayerContextValue>({
 });
 
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
+  const { isGuest, loading: authLoading } = useAuth();
   const [queue, setQueueState] = useState<QueueTrack[]>([]);
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [embedTrackId, setEmbedTrackIdState] = useState<string | null>(null);
@@ -167,9 +169,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     setQueueState(tracks);
   }, []);
 
-  // ── SDK initialization ──────────────────────────────────────
+  // ── SDK initialization (skip for guest users) ───────────────
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (authLoading || isGuest) return;
 
     let player: Spotify.Player | null = null;
 
@@ -264,7 +267,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         player.disconnect();
       }
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [authLoading, isGuest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Play a track via SDK (embed mode) ───────────────────────
   const pendingPlayRef = useRef<string | null>(null);
@@ -384,6 +387,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (isGuest) return;
     void refreshDevices();
 
     const onVisibilityChange = () => {
@@ -391,7 +395,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, [refreshDevices]);
+  }, [refreshDevices, isGuest]);
 
   const transferToDevice = useCallback(
     async (deviceId: string): Promise<PlaybackResult> => {
