@@ -6,6 +6,50 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 55;
 const UPSTREAM_TIMEOUT_MS = 18_000;
 
+function statusForFallback(fallbackLevel: string | undefined, resultCount: number): string {
+  if (fallbackLevel === "empty" || resultCount === 0) return "empty";
+  if (fallbackLevel === "partial") return "partial";
+  return "success";
+}
+
+async function recordStationRun({
+  userId,
+  prompt,
+  strategy,
+  status,
+  fallbackLevel,
+  resultCount,
+  latencyMs,
+  sourceMix,
+  errorClass,
+}: {
+  userId: string;
+  prompt: string | null;
+  strategy: unknown;
+  status: string;
+  fallbackLevel: string;
+  resultCount: number;
+  latencyMs: number;
+  sourceMix?: unknown;
+  errorClass?: string | null;
+}) {
+  try {
+    await supabaseServer().from("station_runs").insert({
+      user_id: userId,
+      prompt,
+      strategy: strategy && typeof strategy === "object" ? strategy : {},
+      status,
+      fallback_level: fallbackLevel,
+      result_count: resultCount,
+      latency_ms: latencyMs,
+      source_mix: sourceMix && typeof sourceMix === "object" ? sourceMix : {},
+      error_class: errorClass ?? null,
+    });
+  } catch (err) {
+    console.warn("recommend-songs: station run telemetry failed", err);
+  }
+}
+
 export async function GET() {
   return NextResponse.json(
     { error: "Use POST /api/recommend-songs for discovery." },
@@ -54,6 +98,7 @@ export async function POST(req: NextRequest) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
   let upstream: Response;
+  const startedAt = Date.now();
   try {
     upstream = await fetch(`${apiUrl}/recommend/songs`, {
       method: "POST",
@@ -84,24 +129,62 @@ export async function POST(req: NextRequest) {
         : "recommend-songs: upstream catalog search failed; client should use Spotify fallback",
       err
     );
-    return NextResponse.json(
-      {
-        error: timedOut
-          ? "Catalog search timed out; use live Spotify fallback."
-          : "Catalog search failed; use live Spotify fallback.",
-      },
-      { status: timedOut ? 504 : 502 }
-    );
+    await recordStationRun({
+      userId: user.userId,
+      prompt: prompt || null,
+      strategy: tasteStrategy,
+      status: "empty",
+      fallbackLevel: "empty",
+      resultCount: 0,
+      latencyMs: Date.now() - startedAt,
+      sourceMix: {},
+      errorClass: timedOut ? "upstream_timeout" : "upstream_failure",
+    });
+    return NextResponse.json({
+      results: [],
+      fallback_level: "empty",
+      timing_ms: Date.now() - startedAt,
+      source_mix: {},
+      warnings: [
+        timedOut
+          ? "catalog_search_timed_out"
+          : "catalog_search_failed",
+      ],
+    });
   } finally {
     clearTimeout(timeout);
   }
 
   const data = await upstream.json().catch(() => ({}));
+  const resultCount = Array.isArray(data.results) ? data.results.length : 0;
+  const fallbackLevel = data.fallback_level ?? (resultCount > 0 ? "fresh" : "empty");
+  await recordStationRun({
+    userId: user.userId,
+    prompt: prompt || null,
+    strategy: tasteStrategy,
+    status: upstream.ok ? statusForFallback(fallbackLevel, resultCount) : "error",
+    fallbackLevel,
+    resultCount,
+    latencyMs: typeof data.timing_ms === "number" ? data.timing_ms : Date.now() - startedAt,
+    sourceMix: data.source_mix,
+    errorClass: upstream.ok ? null : `upstream_${upstream.status}`,
+  });
   console.info("recommend-songs: upstream response", {
     status: upstream.status,
     prompt: prompt || null,
-    result_count: Array.isArray(data.results) ? data.results.length : 0,
+    result_count: resultCount,
+    fallback_level: fallbackLevel,
     query_search_phrase: data.query_intent?.search_phrase ?? null,
   });
+  if (!upstream.ok && upstream.status >= 500) {
+    return NextResponse.json({
+      results: [],
+      fallback_level: "empty",
+      timing_ms: Date.now() - startedAt,
+      source_mix: {},
+      warnings: [`upstream_${upstream.status}`],
+      error: data.error ?? data.detail ?? "Catalog search failed",
+    });
+  }
   return NextResponse.json(data, { status: upstream.status });
 }

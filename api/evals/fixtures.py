@@ -143,6 +143,8 @@ class MockRpcCall:
             return _MockRpcResp(self._max_mention_similarity())
         if self._name == "track_similarity_for_artists":
             return _MockRpcResp(self._track_similarity())
+        if self._name == "match_tracks":
+            return _MockRpcResp(self._match_tracks())
         # Unknown RPC — return empty so callers handle gracefully.
         return _MockRpcResp([])
 
@@ -223,6 +225,32 @@ class MockRpcCall:
                 continue
             out.append({"track_id": int(t.get("id")), "similarity": _cos(query, tvec)})
         return out
+
+    def _match_tracks(self) -> list[dict]:
+        query = _parse_pgvector(self._params.get("query_embedding"))
+        match_count = int(self._params.get("match_count") or 100)
+        genre_tokens = self._params.get("genre_tokens") or None
+        artist_by_id = {int(a["id"]): a for a in self._tables.get("artists", [])}
+        rows: list[dict] = []
+        for t in self._tables.get("tracks", []):
+            if not t.get("spotify_track_id") or t.get("embedding") is None:
+                continue
+            artist = artist_by_id.get(int(t.get("artist_id") or 0))
+            if genre_tokens:
+                genres_lower = [str(g).lower() for g in (artist or {}).get("genres", [])]
+                hit = any(
+                    any(str(token).lower() in genre for genre in genres_lower)
+                    for token in genre_tokens if token
+                )
+                if not hit:
+                    continue
+            tvec = _parse_pgvector(t.get("embedding"))
+            similarity = _cos(query, tvec) if query else 0.0
+            row = dict(t)
+            row["similarity"] = similarity
+            rows.append(row)
+        rows.sort(key=lambda r: -float(r.get("similarity") or 0.0) if query else -(r.get("popularity") or 0))
+        return rows[: max(match_count, 1)]
 
 
 class MockSupabaseClient:
@@ -417,6 +445,7 @@ class UserScenario:
     playlist_artist_ids: list[int] = field(default_factory=list)
     feedback: list[dict] = field(default_factory=list)  # [{"artist_id": int, "spotify_track_id": str, "feedback": 1|-1}]
     favorites: list[dict] = field(default_factory=list)
+    events: list[dict] = field(default_factory=list)
     user_tracks: list[dict] = field(default_factory=list)
     description: str = ""
 
@@ -503,6 +532,7 @@ def build_mock_client(
             "artist_id": row.get("artist_id"),
             "spotify_track_id": row.get("spotify_track_id", f"sp_fb_{i}"),
             "feedback": row["feedback"],
+            "reason": row.get("reason"),
         }
         for i, row in enumerate(scenario.feedback)
     ]
@@ -530,5 +560,9 @@ def build_mock_client(
             "playlist_items": playlist_items,
             "user_feedback": user_feedback,
             "user_favorites": user_favorites,
+            "recommendation_events": [
+                {"user_id": scenario.user_id, **row}
+                for row in scenario.events
+            ],
         }
     )

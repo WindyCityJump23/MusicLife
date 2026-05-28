@@ -5,8 +5,52 @@ on:
     branches: [main]
 
 jobs:
+  quality-gates:
+    name: Build, Evals, and Diagnostics
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        run: npm --prefix web ci
+
+      - name: Build web
+        run: npm --prefix web run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install API dependencies
+        working-directory: api
+        run: pip install -r requirements.txt
+
+      - name: Run recommendation evals
+        working-directory: api
+        run: python -m evals.run_evals --suite ranking,songs,context,synthesis --json /tmp/musiclife-evals.json
+
+      - name: Run static ranking diagnostics
+        working-directory: api
+        run: |
+          python - <<'PY'
+          from app.services.ranking_diagnostics import run_diagnostics
+          report = run_diagnostics(run_static=True, run_runtime=False).as_dict()
+          summary = report["summary"]
+          print(summary)
+          if summary["errors"] or summary["warnings"]:
+              raise SystemExit(f"static diagnostics failed: {summary}")
+          PY
+
   deploy-web:
     name: Deploy Web to Vercel
+    needs: quality-gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +89,7 @@ jobs:
 
   deploy-api:
     name: Deploy API to Render
+    needs: quality-gates
     runs-on: ubuntu-latest
     steps:
       - name: Check required secrets
@@ -59,3 +104,26 @@ jobs:
       - name: Trigger Render Deploy
         run: |
           curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}" --fail-with-body -w "\nHTTP Status: %{http_code}\n"
+
+  post-deploy-smoke:
+    name: Post-deploy Smoke Checks
+    needs: [deploy-web, deploy-api]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check production endpoints
+        env:
+          PRODUCTION_WEB_URL: ${{ secrets.PRODUCTION_WEB_URL }}
+          PRODUCTION_API_URL: ${{ secrets.PRODUCTION_API_URL }}
+        run: |
+          if [ -z "$PRODUCTION_WEB_URL" ] || [ -z "$PRODUCTION_API_URL" ]; then
+            echo "::warning::Set PRODUCTION_WEB_URL and PRODUCTION_API_URL to enable post-deploy smoke checks."
+            exit 0
+          fi
+          curl --fail --silent --show-error "$PRODUCTION_WEB_URL/" > /dev/null
+          readiness_status=$(curl --silent --show-error --output /dev/null --write-out "%{http_code}" "$PRODUCTION_WEB_URL/api/readiness")
+          if [ "$readiness_status" -ge 500 ]; then
+            echo "::error::/api/readiness returned $readiness_status"
+            exit 1
+          fi
+          curl --fail --silent --show-error "$PRODUCTION_API_URL/health" > /dev/null
+          curl --fail --silent --show-error -X POST "$PRODUCTION_API_URL/diagnostics/ranking/static" > /dev/null

@@ -136,18 +136,24 @@ def recommend(req: RecommendRequest, credentials: HTTPAuthorizationCredentials |
 
 @router.post("/songs")
 def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme)):
+    route_start = _time.monotonic()
+    timings: dict[str, int] = {}
     token = require_bearer_token(credentials)
     ensure_valid_bearer_token(token)
     user_client = get_user_scoped_supabase(token)
+    taste_start = _time.monotonic()
     taste_vector = _build_taste_vector(user_client, req.user_id)
+    timings["taste_vector_ms"] = round((_time.monotonic() - taste_start) * 1000)
     query_intent = interpret_music_prompt(req.prompt)
     prompt_for_ranking = query_intent.search_phrase if query_intent else req.prompt
 
     prompt_vec = None
     if query_intent:
         try:
+            prompt_start = _time.monotonic()
             embedded = embedder.embed([query_intent.expanded_prompt], input_type="query")
             prompt_vec = embedded[0] if embedded else None
+            timings["prompt_embedding_ms"] = round((_time.monotonic() - prompt_start) * 1000)
         except Exception as e:
             print(f"recommend_songs: prompt embedding failed — {e}. Continuing without prompt vector.")
 
@@ -172,11 +178,67 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
     run_id = req.discover_run_id or str(uuid4())
     overlap = 0.0
     _start_time = _time.monotonic()
-    _TIME_BUDGET_SEC = 40.0
+    _TIME_BUDGET_SEC = 16.0 if query_intent else 12.0
+    warnings: list[str] = []
+
+    def _source_mix(results: list[dict]) -> dict:
+        live_count = sum(
+            1
+            for row in results
+            if row.get("track_id") is None
+            or str(row.get("artist_id") or "").startswith("live:")
+            or "live spotify" in " ".join(row.get("reasons") or []).lower()
+            or "outside catalog" in " ".join(row.get("reasons") or []).lower()
+        )
+        return {
+            "catalogCount": max(0, len(results) - live_count),
+            "liveCount": live_count,
+        }
+
+    def _numeric_artist_ids(results: list[dict]) -> list[int]:
+        ids: list[int] = []
+        for row in results:
+            try:
+                ids.append(int(row["artist_id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return ids
+
+    def _response(
+        results: list[dict],
+        *,
+        signature: str,
+        novelty_mode_used: str,
+        fallback_level: str,
+        status_warning: str | None = None,
+    ) -> dict:
+        if status_warning:
+            warnings.append(status_warning)
+        elapsed_ms = round((_time.monotonic() - route_start) * 1000)
+        return {
+            "results": results,
+            "query_intent": query_intent.as_response() if query_intent else None,
+            "run_id": run_id,
+            "station_id": run_id,
+            "list_signature": signature,
+            "novelty_attempts": attempts,
+            "overlap_ratio": round(overlap, 4),
+            "artist_overlap_ratio": round(artist_overlap_ratio(
+                _numeric_artist_ids(results),
+                excluded_artist_ids,
+            ), 4),
+            "novelty_mode_used": novelty_mode_used,
+            "fallback_level": fallback_level,
+            "timing_ms": elapsed_ms,
+            "timings": timings,
+            "source_mix": _source_mix(results),
+            "warnings": warnings,
+        }
 
     for attempt in range(5):
         if _time.monotonic() - _start_time > _TIME_BUDGET_SEC:
             print(f"recommend_songs: time budget exhausted after {attempts} attempts, returning best_results ({len(best_results)} tracks)")
+            warnings.append("time_budget_exhausted")
             break
 
         attempts = attempt + 1
@@ -191,6 +253,7 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             local_excluded_artists = set()
             local_excluded_tracks = build_excluded_track_ids(history_rows, older_than_days=3)
 
+        rank_start = _time.monotonic()
         attempt_results = _recommend_songs(
             client=user_client,
             user_id=req.user_id,
@@ -205,12 +268,13 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             exploration_seed=request_base_seed + attempt,
             taste_strategy=req.taste_strategy.model_dump() if req.taste_strategy and not query_intent else None,
         )
+        timings[f"rank_attempt_{attempts}_ms"] = round((_time.monotonic() - rank_start) * 1000)
 
         if len(attempt_results) > len(best_results):
             best_results = attempt_results
 
         track_ids = [r.get("spotify_track_id") for r in attempt_results if r.get("spotify_track_id")]
-        result_artist_ids = [int(r["artist_id"]) for r in attempt_results if r.get("artist_id")]
+        result_artist_ids = _numeric_artist_ids(attempt_results)
         signature = signature_from_ordered(track_ids)
         overlap = overlap_ratio(track_ids, excluded_track_ids)
         a_overlap = artist_overlap_ratio(result_artist_ids, excluded_artist_ids)
@@ -237,20 +301,16 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             )
         except Exception as e:
             print(f"persist_discover_run failed (non-fatal): {e}")
-        return {
-            "results": attempt_results,
-            "query_intent": query_intent.as_response() if query_intent else None,
-            "run_id": run_id,
-            "list_signature": signature,
-            "novelty_attempts": attempts,
-            "overlap_ratio": round(overlap, 4),
-            "artist_overlap_ratio": round(a_overlap, 4),
-            "novelty_mode_used": req.novelty_mode,
-        }
+        return _response(
+            attempt_results,
+            signature=signature,
+            novelty_mode_used=req.novelty_mode,
+            fallback_level="fresh" if len(attempt_results) >= req.limit else "partial",
+        )
 
     # All attempts failed novelty checks — return the best result we found
     track_ids = [r.get("spotify_track_id") for r in best_results if r.get("spotify_track_id")]
-    result_artist_ids = [int(r["artist_id"]) for r in best_results if r.get("artist_id")]
+    result_artist_ids = _numeric_artist_ids(best_results)
     signature = signature_from_ordered(track_ids)
     try:
         persist_discover_run(
@@ -264,16 +324,13 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
         )
     except Exception as e:
         print(f"persist_discover_run failed (non-fatal): {e}")
-    return {
-        "results": best_results,
-        "query_intent": query_intent.as_response() if query_intent else None,
-        "run_id": run_id,
-        "list_signature": signature,
-        "novelty_attempts": attempts,
-        "overlap_ratio": round(overlap, 4),
-        "artist_overlap_ratio": round(artist_overlap_ratio(result_artist_ids, excluded_artist_ids), 4),
-        "novelty_mode_used": "graceful",
-    }
+    return _response(
+        best_results,
+        signature=signature,
+        novelty_mode_used="graceful",
+        fallback_level="partial" if best_results else "empty",
+        status_warning="returned_best_partial_after_novelty_checks" if best_results else "no_results",
+    )
 
 
 @router.post("/songs/live-intents")

@@ -27,6 +27,15 @@ type ResolvedFeedbackTrack = {
   artistName: string | undefined;
 };
 
+const ALLOWED_REASONS = new Set([
+  "more_like_this",
+  "less_like_this",
+  "too_familiar",
+  "too_far",
+  "wrong_prompt",
+  "liked",
+]);
+
 function normalizeSpotifyReleaseDate(track: SpotifyTrack): string | null {
   const releaseDate = track.album?.release_date;
   if (!releaseDate) return null;
@@ -176,6 +185,7 @@ async function resolveTrackForFeedback({
  *   score?: number,
  *   prompt?: string,
  *   source?: string,
+ *   reason?: "more_like_this" | "less_like_this" | "too_familiar" | "too_far" | "wrong_prompt" | "liked",
  * }
  *
  * DELETE /api/feedback
@@ -195,6 +205,7 @@ export async function POST(request: NextRequest) {
   let score: number | undefined;
   let prompt: string | undefined;
   let source = "discover";
+  let reason: string | null = null;
 
   try {
     const body = await request.json();
@@ -205,6 +216,9 @@ export async function POST(request: NextRequest) {
     score = body.score;
     prompt = body.prompt;
     if (body.source) source = body.source;
+    if (typeof body.reason === "string" && ALLOWED_REASONS.has(body.reason)) {
+      reason = body.reason;
+    }
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
@@ -248,6 +262,7 @@ export async function POST(request: NextRequest) {
         score: score ?? null,
         prompt: prompt ?? null,
         source,
+        reason,
       },
       { onConflict: "user_id,spotify_track_id" }
     );

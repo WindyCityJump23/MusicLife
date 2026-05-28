@@ -187,6 +187,23 @@ type PromptSpotifySongsResponse = {
   retry_after?: string | null;
 };
 
+type StationFallbackLevel = "fresh" | "partial" | "cache" | "starter" | "empty";
+
+type StationResponse = {
+  results?: SongRecommendation[];
+  fallback_level?: StationFallbackLevel;
+  source_mix?: Record<string, unknown>;
+  station_id?: string;
+  run_id?: string;
+  timing_ms?: number;
+  warnings?: string[];
+};
+
+type SubmitOptions = {
+  preserveResults?: boolean;
+  background?: boolean;
+};
+
 async function fetchWithTimeout(
   input: RequestInfo | URL,
   init: RequestInit = {},
@@ -714,6 +731,118 @@ function writeDiscoverCache(
   }
 }
 
+function serverStationKey(prompt: string, strategy: TasteStrategy | null): string {
+  return new URLSearchParams({
+    prompt: prompt.trim(),
+    strategy: JSON.stringify(strategy ?? null),
+  }).toString();
+}
+
+async function fetchLastServerStation(
+  prompt: string,
+  strategy: TasteStrategy | null
+): Promise<StationResponse | null> {
+  try {
+    const res = await fetch(`/api/station/last?${serverStationKey(prompt, strategy)}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const body: StationResponse = await res.json().catch(() => ({}));
+    return Array.isArray(body.results) && body.results.length > 0 ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+async function cacheServerStation({
+  prompt,
+  strategy,
+  results,
+  sourceMix,
+}: {
+  prompt: string;
+  strategy: TasteStrategy | null;
+  results: SongRecommendation[];
+  sourceMix: Record<string, unknown>;
+}): Promise<string | null> {
+  if (results.length < 8) return null;
+  try {
+    const res = await fetch("/api/station/cache", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt,
+        strategy,
+        results,
+        source_mix: sourceMix,
+      }),
+    });
+    const body = await res.json().catch(() => ({}));
+    return res.ok && typeof body.station_id === "string" ? body.station_id : null;
+  } catch {
+    return null;
+  }
+}
+
+function sourceMixPayload(results: SongRecommendation[]): Record<string, unknown> {
+  const laneCounts: Record<DiscoveryLaneId, number> = {
+    deep_cuts: 0,
+    popular: 0,
+    radio_hits: 0,
+  };
+  let liveCount = 0;
+  for (const song of results) {
+    laneCounts[laneForSong(song)] += 1;
+    if (isLiveSourced(song)) liveCount += 1;
+  }
+  return {
+    catalogCount: Math.max(0, results.length - liveCount),
+    liveCount,
+    laneCounts,
+  };
+}
+
+function logRecommendationEvent(payload: {
+  event_type: string;
+  song?: SongRecommendation;
+  station_run_id?: string | null;
+  position?: number;
+  prompt?: string;
+  source?: string;
+  dwell_ms?: number;
+  metadata?: Record<string, unknown>;
+}) {
+  const song = payload.song;
+  const body = {
+    event_type: payload.event_type,
+    station_run_id: payload.station_run_id ?? null,
+    spotify_track_id: song?.spotify_track_id || null,
+    track_id: song?.track_id,
+    artist_id: song?.artist_id,
+    position: payload.position,
+    prompt: payload.prompt,
+    source: payload.source ?? "radio",
+    dwell_ms: payload.dwell_ms,
+    metadata: payload.metadata ?? {},
+  };
+
+  try {
+    const json = JSON.stringify(body);
+    if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+      const blob = new Blob([json], { type: "application/json" });
+      navigator.sendBeacon("/api/recommendation-event", blob);
+      return;
+    }
+  } catch {}
+
+  void fetch("/api/recommendation-event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    keepalive: true,
+  }).catch(() => {});
+}
+
 function toSpotifyTrackUris(trackIdsOrUris: string[]): string[] {
   return trackIdsOrUris
     .filter((id) => typeof id === "string" && id.trim().length > 0)
@@ -1159,6 +1288,9 @@ export default function DiscoverView({
   const [loading, setLoading] = useState(false);
   const [loadingStage, setLoadingStage] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  const [stationNotice, setStationNotice] = useState<string | null>(null);
+  const [stationRunId, setStationRunId] = useState<string | null>(null);
+  const [stationFallbackLevel, setStationFallbackLevel] = useState<StationFallbackLevel>("fresh");
   const [laneFilter, setLaneFilter] = useState<LaneFilterId>("all");
   const [genreFilter, setGenreFilter] = useState<string>("");
   const [favoritedIds, setFavoritedIds] = useState<Set<string>>(new Set());
@@ -1200,15 +1332,42 @@ export default function DiscoverView({
     if (!tasteStrategyLoaded) return;
     if (autoLoadedRef.current) return;
     autoLoadedRef.current = true;
+    let cancelled = false;
     const currentStrategyKey = strategyCacheKey(tasteStrategy);
     const cached = readDiscoverCache(prompt, weights, currentStrategyKey);
     if (cached) {
       setResults(cached);
       setQueue(toQueueTracks(cached));
       void refreshTrackState(cached);
-      return;
+      setStationFallbackLevel("cache");
+      setStationNotice("Playing your saved station while fresh picks tune.");
+      void handleSubmit({ preserveResults: true, background: true });
+      return () => {
+        cancelled = true;
+      };
     }
-    handleSubmit();
+
+    void fetchLastServerStation(prompt, tasteStrategy).then((station) => {
+      if (cancelled) return;
+      if (station?.results?.length) {
+        setResults(station.results);
+        setQueue(toQueueTracks(station.results));
+        setStationRunId(station.station_id ?? station.run_id ?? null);
+        setStationFallbackLevel(station.fallback_level ?? "cache");
+        setStationNotice(
+          station.fallback_level === "starter"
+            ? "Starting with a reliable mix from your library while fresh picks tune."
+            : "Playing your saved station while fresh picks tune."
+        );
+        void refreshTrackState(station.results);
+        void handleSubmit({ preserveResults: true, background: true });
+      } else {
+        void handleSubmit();
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasteStrategyLoaded]);
 
@@ -1228,9 +1387,16 @@ export default function DiscoverView({
     } catch {}
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(options: SubmitOptions = {}) {
+    const preserveResults = Boolean(options.preserveResults);
+    const background = Boolean(options.background);
     setLoading(true);
     setError(null);
+    if (!preserveResults) {
+      setStationNotice(null);
+      setStationFallbackLevel("fresh");
+      setStationRunId(null);
+    }
     setLaneFilter("all");
     setGenreFilter("");
     setPlayAllState("idle");
@@ -1238,8 +1404,10 @@ export default function DiscoverView({
     setPlaylistUrl(null);
     setPlaylistError(null);
     setPlaylistStats(null);
-    setResults([]);
-    setQueue([]);
+    if (!preserveResults) {
+      setResults([]);
+      setQueue([]);
+    }
     try {
       const normalized = {
         affinity: weights.affinity / 100,
@@ -1251,7 +1419,7 @@ export default function DiscoverView({
 
       // Try DB-based song recommendations first (faster, better ranking)
       // Falls back to client-side Spotify Search if DB has no tracks
-      setLoadingStage("Finding songs for you\u2026");
+      setLoadingStage(background ? "Tuning fresh picks\u2026" : "Finding songs for you\u2026");
 
       let deduped: SongRecommendation[] = [];
       let interpretedPrompt = prompt.trim();
@@ -1306,6 +1474,15 @@ export default function DiscoverView({
           });
           setResults(finalResults);
           writeDiscoverCache(prompt, weights, currentStrategyKey, finalResults);
+          const cachedStationId = await cacheServerStation({
+            prompt,
+            strategy: tasteStrategy,
+            results: finalResults,
+            sourceMix: sourceMixPayload(finalResults),
+          });
+          setStationRunId(cachedStationId);
+          setStationFallbackLevel("fresh");
+          setStationNotice(null);
           setQueue(toQueueTracks(finalResults));
           await refreshTrackState(finalResults);
           return;
@@ -1317,6 +1494,10 @@ export default function DiscoverView({
       // Attempt 1: Server-side song recommendations (uses tracks in DB)
       let dbError: string | null = null;
       let artistFallbackError: string | null = null;
+      let freshStationId: string | null = null;
+      let freshFallbackLevel: StationFallbackLevel = "fresh";
+      let freshSourceMix: Record<string, unknown> = {};
+      let freshWarnings: string[] = [];
       try {
         const songRes = await fetchWithTimeout(`/api/recommend-songs`, {
           method: "POST",
@@ -1335,8 +1516,13 @@ export default function DiscoverView({
           }),
         });
         if (songRes.ok) {
-          const songData = await songRes.json().catch(() => ({}));
+          const songData: StationResponse & { query_intent?: { search_phrase?: string } } =
+            await songRes.json().catch(() => ({}));
           interpretedPrompt = songData.query_intent?.search_phrase || interpretedPrompt;
+          freshStationId = songData.station_id ?? songData.run_id ?? null;
+          freshFallbackLevel = songData.fallback_level ?? "fresh";
+          freshSourceMix = songData.source_mix ?? {};
+          freshWarnings = Array.isArray(songData.warnings) ? songData.warnings : [];
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           deduped = (songData.results ?? []).map((r: any): SongRecommendation => ({
             track_id: r.track_id ?? null,
@@ -1409,6 +1595,15 @@ export default function DiscoverView({
           if (deduped.length > 0) {
             setResults(deduped);
             writeDiscoverCache(prompt, weights, currentStrategyKey, deduped);
+            const cachedStationId = await cacheServerStation({
+              prompt,
+              strategy: tasteStrategy,
+              results: deduped,
+              sourceMix: Object.keys(freshSourceMix).length ? freshSourceMix : sourceMixPayload(deduped),
+            });
+            setStationRunId(freshStationId ?? cachedStationId);
+            setStationFallbackLevel(freshFallbackLevel);
+            setStationNotice("Playing the strongest available picks. Reconnect Spotify to widen the station.");
             setQueue(toQueueTracks(deduped));
             void refreshTrackState(deduped);
             return;
@@ -1558,15 +1753,52 @@ export default function DiscoverView({
 
       if (deduped.length === 0) {
         const failureReason = dbError ?? artistFallbackError ?? promptSpotifyError;
+        if (preserveResults && results && results.length > 0) {
+          setError(null);
+          setStationNotice(
+            failureReason
+              ? "Still tuning fresh picks. Playing your saved station."
+              : "Still tuning fresh picks."
+          );
+          return;
+        }
         setError(recommendationFailureMessage(failureReason));
+        setResults([]);
+        setQueue([]);
+        return;
       }
       const finalResults = shapeStationForFreshAir(deduped, TARGET_SONGS, {
         promptMode: Boolean(prompt.trim()),
       });
 
+      if (preserveResults && results && results.length > 0 && finalResults.length < 12) {
+        setError(null);
+        setStationNotice("Still tuning fresh picks. Playing your saved station.");
+        return;
+      }
+
       setResults(finalResults);
       if (finalResults.length > 0) {
         writeDiscoverCache(prompt, weights, currentStrategyKey, finalResults);
+        const stationSourceMix = Object.keys(freshSourceMix).length
+          ? freshSourceMix
+          : sourceMixPayload(finalResults);
+        const cachedStationId = await cacheServerStation({
+          prompt,
+          strategy: tasteStrategy,
+          results: finalResults,
+          sourceMix: stationSourceMix,
+        });
+        setStationRunId(freshStationId ?? cachedStationId);
+        setStationFallbackLevel(freshFallbackLevel);
+        const warningCopy = freshWarnings.includes("time_budget_exhausted")
+          ? "Fresh picks were bounded by time, so this station uses the best available results."
+          : null;
+        setStationNotice(
+          freshFallbackLevel === "partial"
+            ? warningCopy ?? "Playing the strongest available picks while Radio keeps learning."
+            : null
+        );
       }
 
       // Set the player queue so songs auto-advance (Spotify users only)
@@ -1577,8 +1809,13 @@ export default function DiscoverView({
       // Fetch initial favorite and feedback state
       await refreshTrackState(finalResults);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
-      setResults([]);
+      if (preserveResults && results && results.length > 0) {
+        setError(null);
+        setStationNotice("Still tuning fresh picks. Playing your saved station.");
+      } else {
+        setError(err instanceof Error ? err.message : "Network error");
+        setResults([]);
+      }
     } finally {
       setLoading(false);
       setLoadingStage("");
@@ -1704,6 +1941,16 @@ export default function DiscoverView({
         added,
         failed,
       });
+      logRecommendationEvent({
+        event_type: "save_playlist",
+        station_run_id: stationRunId,
+        prompt: prompt || undefined,
+        metadata: {
+          added,
+          failed_count: failed.length,
+          playlist_id: data.playlist_id,
+        },
+      });
     } catch (err) {
       setPlaylistState("error");
       setPlaylistError(
@@ -1725,6 +1972,14 @@ export default function DiscoverView({
     : laneSongs;
   const playableCount = displayed.filter((s) => s.spotify_track_id).length;
   const mix = results ? stationMixSummary(results, prompt, weights) : null;
+  const stationStatusLabel =
+    stationFallbackLevel === "cache"
+      ? "Saved station"
+      : stationFallbackLevel === "starter"
+      ? "Starter mix"
+      : stationFallbackLevel === "partial"
+      ? "Best available"
+      : "Fresh station";
 
   return (
     <div className="max-w-6xl space-y-4">
@@ -1745,16 +2000,16 @@ export default function DiscoverView({
               </p>
             </div>
             {readiness && (
-              <div className="space-y-2 sm:min-w-[320px]">
-                <div className="grid grid-cols-3 gap-2 text-center">
-                  <StationMetric value={readiness.artistCount} label="taste artists" />
-                  <StationMetric value={readiness.embeddedCount} label="modeled" />
-                  <StationMetric value={readiness.playableTrackCount} label="catalog tracks" />
-                </div>
-                <div className="flex items-center justify-center gap-1.5 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-[11px] font-medium text-emerald-700">
+              <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-[11px] font-medium text-emerald-700">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
-                  Outside air {tasteStrategy?.live_expansion ?? "auto"}
-                </div>
+                  Ready to play
+                </span>
+                {results && results.length > 0 && (
+                  <span className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-[11px] font-medium text-neutral-500">
+                    {stationStatusLabel}
+                  </span>
+                )}
               </div>
             )}
           </div>
@@ -1766,13 +2021,15 @@ export default function DiscoverView({
               type="text"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleSubmit();
+              }}
               placeholder="Describe a sound, scene, mood, or reference..."
               className="min-h-[42px] w-full rounded-lg border border-neutral-200 px-4 py-2.5 text-sm placeholder:text-neutral-400 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
             />
             <div className="grid grid-cols-2 gap-2 sm:flex">
               <button
-                onClick={handleSubmit}
+                onClick={() => void handleSubmit()}
                 disabled={loading}
                 className="inline-flex min-h-[42px] items-center justify-center gap-2 rounded-lg bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -1900,12 +2157,18 @@ export default function DiscoverView({
         </div>
       )}
 
+      {stationNotice && (
+        <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          {stationNotice}
+        </div>
+      )}
+
       {/* Error */}
-      {error && (
+      {error && (!results || results.length === 0) && (
         <div className="border border-red-200 bg-red-50 text-red-700 rounded-lg p-3 text-sm flex items-center justify-between gap-3">
           <span>{error}</span>
           <button
-            onClick={handleSubmit}
+            onClick={() => void handleSubmit()}
             className="shrink-0 px-3 py-1.5 rounded-lg border border-red-200 text-red-600 text-xs font-medium hover:bg-red-100 transition-colors"
           >
             Try again
@@ -2052,6 +2315,7 @@ export default function DiscoverView({
                     initialFeedback={feedbackMap[song.spotify_track_id] ?? null}
                     currentPrompt={prompt}
                     isGuest={isGuest}
+                    stationRunId={stationRunId}
                   />
                 ))}
               </div>
@@ -2284,6 +2548,7 @@ function SongRow({
   currentPrompt = "",
   compact = false,
   isGuest = false,
+  stationRunId = null,
 }: {
   song: SongRecommendation;
   rank: number;
@@ -2292,6 +2557,7 @@ function SongRow({
   currentPrompt?: string;
   compact?: boolean;
   isGuest?: boolean;
+  stationRunId?: string | null;
 }) {
   const { playSingle, playFromQueue, queue } = usePlayer();
   const [playState, setPlayState] = useState<"idle" | "loading">("idle");
@@ -2300,6 +2566,7 @@ function SongRow({
   const [feedback, setFeedback] = useState<1 | -1 | null>(initialFeedback);
   const [fbLoading, setFbLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const impressionLoggedRef = useRef(false);
 
   const matchPct = Math.round(song.score * 100);
   const lane = laneBadge(song);
@@ -2311,10 +2578,29 @@ function SongRow({
       ? `${minutes}:${seconds.toString().padStart(2, "0")}`
       : "";
 
+  useEffect(() => {
+    if (impressionLoggedRef.current || !song.spotify_track_id) return;
+    impressionLoggedRef.current = true;
+    logRecommendationEvent({
+      event_type: "impression",
+      song,
+      station_run_id: stationRunId,
+      position: rank,
+      prompt: currentPrompt || undefined,
+    });
+  }, [currentPrompt, rank, song, stationRunId]);
+
   async function handlePlay() {
     if (!song.spotify_track_id) return;
     setPlayState("loading");
     try {
+      logRecommendationEvent({
+        event_type: "play",
+        song,
+        station_run_id: stationRunId,
+        position: rank,
+        prompt: currentPrompt || undefined,
+      });
       const queueIdx = queue.findIndex(t => t.spotifyTrackId === song.spotify_track_id);
       if (queueIdx >= 0) {
         await playFromQueue(queueIdx);
@@ -2330,7 +2616,7 @@ function SongRow({
     }
   }
 
-  async function handleFeedback(value: 1 | -1) {
+  async function handleFeedback(value: 1 | -1, reason: "more_like_this" | "less_like_this" | "too_familiar" | "too_far") {
     if (fbLoading || !song.spotify_track_id) return;
     setFbLoading(true);
     try {
@@ -2353,9 +2639,25 @@ function SongRow({
             score: song.score,
             prompt: currentPrompt || undefined,
             source: "discover",
+            reason,
           }),
         });
-        if (res.ok) setFeedback(value);
+        if (res.ok) {
+          setFeedback(value);
+          logRecommendationEvent({
+            event_type:
+              reason === "too_familiar" || reason === "too_far"
+                ? reason
+                : value === 1
+                ? "thumb_up"
+                : "thumb_down",
+            song,
+            station_run_id: stationRunId,
+            position: rank,
+            prompt: currentPrompt || undefined,
+            metadata: { reason },
+          });
+        }
       }
     } catch {}
     setFbLoading(false);
@@ -2381,6 +2683,15 @@ function SongRow({
             href={song.spotify_track_id ? `https://open.spotify.com/track/${song.spotify_track_id}` : "#"}
             target="_blank"
             rel="noopener noreferrer"
+            onClick={() => {
+              logRecommendationEvent({
+                event_type: "open_spotify",
+                song,
+                station_run_id: stationRunId,
+                position: rank,
+                prompt: currentPrompt || undefined,
+              });
+            }}
             title={`Open ${song.track_name} in Spotify`}
             className={[
               "shrink-0 rounded-full flex items-center justify-center bg-[#1DB954] text-white hover:bg-[#1aa34a] active:scale-95 transition-all",
@@ -2506,7 +2817,7 @@ function SongRow({
         >
           {/* Thumbs up */}
           <button
-            onClick={() => handleFeedback(1)}
+            onClick={() => handleFeedback(1, "more_like_this")}
             disabled={fbLoading || !song.spotify_track_id}
             title="More like this"
             className={`w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 disabled:opacity-30 ${
@@ -2523,7 +2834,7 @@ function SongRow({
 
           {/* Thumbs down */}
           <button
-            onClick={() => handleFeedback(-1)}
+            onClick={() => handleFeedback(-1, "less_like_this")}
             disabled={fbLoading || !song.spotify_track_id}
             title="Less like this"
             className={`w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 disabled:opacity-30 ${
@@ -2557,7 +2868,19 @@ function SongRow({
                       source: "discover",
                     }),
                   });
-                  if (res.ok) setFavorited(!favorited);
+                  if (res.ok) {
+                    const nextFavorited = !favorited;
+                    setFavorited(nextFavorited);
+                    if (nextFavorited) {
+                      logRecommendationEvent({
+                        event_type: "favorite",
+                        song,
+                        station_run_id: stationRunId,
+                        position: rank,
+                        prompt: currentPrompt || undefined,
+                      });
+                    }
+                  }
                 } catch {}
                 setFavLoading(false);
               }}
@@ -2624,6 +2947,23 @@ function SongRow({
             {song.signals.novelty !== undefined && (
               <SignalPill label="Discovery" value={song.signals.novelty} color="emerald" />
             )}
+          </div>
+
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              onClick={() => handleFeedback(-1, "too_familiar")}
+              disabled={fbLoading || !song.spotify_track_id}
+              className="rounded-full border border-neutral-200 bg-white px-2.5 py-1 text-[10px] font-medium text-neutral-500 transition-colors hover:border-amber-200 hover:bg-amber-50 hover:text-amber-700 disabled:opacity-40"
+            >
+              Too familiar
+            </button>
+            <button
+              onClick={() => handleFeedback(-1, "too_far")}
+              disabled={fbLoading || !song.spotify_track_id}
+              className="rounded-full border border-neutral-200 bg-white px-2.5 py-1 text-[10px] font-medium text-neutral-500 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 disabled:opacity-40"
+            >
+              Too far out
+            </button>
           </div>
 
           {/* All reasons */}

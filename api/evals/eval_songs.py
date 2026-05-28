@@ -356,6 +356,166 @@ def eval_thumbs_down_track_strongly_penalized() -> EvalResult:
     )
 
 
+def eval_feedback_changes_rank() -> EvalResult:
+    """Explicit negative feedback should change the next unprompted station."""
+    target_track = TRACKS[0]  # Kind of Blue
+    scenario_before = UserScenario(
+        user_id="feedback_rank_before",
+        library_artist_ids=[1],
+        played_track_ids=[],
+        top_artist_ids=[1],
+        taste_vector=JAZZ_TASTE_VECTOR,
+    )
+    scenario_after = UserScenario(
+        user_id="feedback_rank_after",
+        library_artist_ids=[1],
+        played_track_ids=[],
+        top_artist_ids=[1],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        feedback=[
+            {
+                "artist_id": 1,
+                "spotify_track_id": target_track["spotify_track_id"],
+                "feedback": -1,
+                "reason": "less_like_this",
+            }
+        ],
+        events=[
+            {
+                "artist_id": 1,
+                "spotify_track_id": target_track["spotify_track_id"],
+                "event_type": "thumb_down",
+            }
+        ],
+    )
+
+    def score_for(scenario: UserScenario) -> float:
+        results = recommend_songs(
+            client=build_mock_client(scenario, artists=JAZZ_ARTISTS[:1], tracks=TRACKS[:2]),
+            user_id=scenario.user_id,
+            taste_vector=JAZZ_TASTE_VECTOR,
+            prompt_vector=None,
+            weights=_weights(),
+            exclude_library=False,
+            limit=10,
+            exploration_seed=1,
+        )
+        row = next((r for r in results if r["track_name"] == target_track["name"]), None)
+        return float(row["score"]) if row else 0.0
+
+    before = score_for(scenario_before)
+    after = score_for(scenario_after)
+    passed = after < before * 0.5
+    return EvalResult(
+        name="feedback_changes_rank",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"before={before:.4f}, after={after:.4f}",
+    )
+
+
+def eval_too_familiar_shifts_mix() -> EvalResult:
+    """Too familiar feedback should reduce future familiar/radio-hit picks."""
+    target_track = TRACKS[0]  # high-popularity, familiar-lane candidate
+    scenario_before = UserScenario(
+        user_id="too_familiar_before",
+        library_artist_ids=[1],
+        played_track_ids=[],
+        top_artist_ids=[1],
+        taste_vector=JAZZ_TASTE_VECTOR,
+    )
+    scenario_after = UserScenario(
+        user_id="too_familiar_after",
+        library_artist_ids=[1],
+        played_track_ids=[],
+        top_artist_ids=[1],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        events=[
+            {
+                "artist_id": 1,
+                "spotify_track_id": target_track["spotify_track_id"],
+                "event_type": "too_familiar",
+            }
+        ],
+    )
+
+    def score_for(scenario: UserScenario) -> float:
+        results = recommend_songs(
+            client=build_mock_client(scenario, artists=JAZZ_ARTISTS[:1], tracks=TRACKS[:2]),
+            user_id=scenario.user_id,
+            taste_vector=JAZZ_TASTE_VECTOR,
+            prompt_vector=None,
+            weights=_weights(),
+            exclude_library=False,
+            limit=10,
+            exploration_seed=1,
+        )
+        row = next((r for r in results if r["track_name"] == target_track["name"]), None)
+        return float(row["score"]) if row else 0.0
+
+    before = score_for(scenario_before)
+    after = score_for(scenario_after)
+    passed = after < before
+    return EvalResult(
+        name="too_familiar_shifts_mix",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"before={before:.4f}, after={after:.4f}",
+    )
+
+
+def eval_too_far_shifts_mix() -> EvalResult:
+    """Too far feedback should reduce future low-popularity outside-air picks."""
+    artist = _make_artist(880, "Outer Edge Artist", ["ambient"], vec_seed=80, popularity=40)
+    target = _make_track(1880, "Outer Edge Drift", 880, popularity=22, vec_seed=1880)
+    neighbor = _make_track(1881, "Grounded Drift", 880, popularity=62, vec_seed=1881)
+    scenario_before = UserScenario(
+        user_id="too_far_before",
+        library_artist_ids=[],
+        played_track_ids=[],
+        top_artist_ids=[880],
+        taste_vector=JAZZ_TASTE_VECTOR,
+    )
+    scenario_after = UserScenario(
+        user_id="too_far_after",
+        library_artist_ids=[],
+        played_track_ids=[],
+        top_artist_ids=[880],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        events=[
+            {
+                "artist_id": 880,
+                "spotify_track_id": target["spotify_track_id"],
+                "event_type": "too_far",
+            }
+        ],
+    )
+
+    def score_for(scenario: UserScenario) -> float:
+        results = recommend_songs(
+            client=build_mock_client(scenario, artists=[artist], tracks=[target, neighbor]),
+            user_id=scenario.user_id,
+            taste_vector=JAZZ_TASTE_VECTOR,
+            prompt_vector=None,
+            weights=_weights(),
+            exclude_library=False,
+            limit=10,
+            exploration_seed=1,
+        )
+        row = next((r for r in results if r["track_name"] == target["name"]), None)
+        return float(row["score"]) if row else 0.0
+
+    before = score_for(scenario_before)
+    after = score_for(scenario_after)
+    passed = after < before
+    return EvalResult(
+        name="too_far_shifts_mix",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"before={before:.4f}, after={after:.4f}",
+    )
+
+
 def eval_no_identical_list_repeated() -> EvalResult:
     pool = [
         {"track_name": "A", "artist_name": "X", "genres": ["g"], "score": 1.0},
@@ -576,6 +736,9 @@ def run_suite() -> list[EvalResult]:
         eval_deep_cut_reason_label(),
         eval_song_diversity_rerank_contract(),
         eval_thumbs_down_track_strongly_penalized(),
+        eval_feedback_changes_rank(),
+        eval_too_familiar_shifts_mix(),
+        eval_too_far_shifts_mix(),
         eval_no_identical_list_repeated(),
         eval_strict_novelty_zero_overlap_when_possible(),
         eval_graceful_mode_refill_under_sparse_catalog(),

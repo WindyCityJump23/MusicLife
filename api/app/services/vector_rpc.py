@@ -107,3 +107,23 @@ def track_similarity_for_artists(
         for row in (resp.data or [])
         if row.get("track_id") is not None
     }
+
+
+def match_tracks(
+    client: Client,
+    query_vector: list[float] | None,
+    match_count: int,
+    genre_tokens: list[str] | None = None,
+) -> list[dict]:
+    """Fetch prompt-matching embedded tracks without pulling vector payloads."""
+    payload = {
+        "query_embedding": serialize_vector(query_vector or []),
+        "match_count": int(match_count),
+        "genre_tokens": [t for t in (genre_tokens or []) if t] or None,
+    }
+    try:
+        resp = retry_on_disconnect(lambda: client.rpc("match_tracks", payload).execute())
+        return resp.data or []
+    except Exception as exc:
+        print(f"vector_rpc.match_tracks failed: {exc}")
+        return []

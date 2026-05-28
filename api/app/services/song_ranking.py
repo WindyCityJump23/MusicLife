@@ -37,6 +37,7 @@ from app.services.ranking import (
 from app.services.preference_weights import recency_multiplier, track_preference_weight
 from app.services.vector_rpc import (
     match_artists,
+    match_tracks,
     max_mention_similarity_per_artist,
     track_similarity_for_artists,
 )
@@ -408,7 +409,7 @@ def recommend_songs(
     try:
         track_fb_resp = (
             client.table("user_feedback")
-            .select("spotify_track_id,feedback")
+            .select("spotify_track_id,feedback,reason")
             .eq("user_id", user_id)
             .range(0, 9999)
             .execute()
@@ -418,8 +419,36 @@ def recommend_songs(
             for row in (track_fb_resp.data or [])
             if row.get("spotify_track_id") and row.get("feedback") is not None
         }
+        track_feedback_reasons: dict[str, str] = {
+            row["spotify_track_id"]: str(row.get("reason") or "")
+            for row in (track_fb_resp.data or [])
+            if row.get("spotify_track_id") and row.get("reason")
+        }
     except Exception:
         track_feedback = {}
+        track_feedback_reasons = {}
+
+    try:
+        event_resp = (
+            client.table("recommendation_events")
+            .select("spotify_track_id,artist_id,event_type")
+            .eq("user_id", user_id)
+            .range(0, 9999)
+            .execute()
+        )
+        track_events: dict[str, Counter[str]] = defaultdict(Counter)
+        artist_events: dict[int, Counter[str]] = defaultdict(Counter)
+        for row in event_resp.data or []:
+            event_type = str(row.get("event_type") or "")
+            spotify_tid = row.get("spotify_track_id")
+            if spotify_tid:
+                track_events[str(spotify_tid)][event_type] += 1
+            aid = row.get("artist_id")
+            if aid is not None:
+                artist_events[int(aid)][event_type] += 1
+    except Exception:
+        track_events = defaultdict(Counter)
+        artist_events = defaultdict(Counter)
 
     excluded_artist_ids = excluded_artist_ids or set()
 
@@ -828,12 +857,11 @@ def recommend_songs(
     # so searched-only songs can compete on track-level context similarity.
     if has_explicit_prompt and prompt_vector:
         try:
-            search_tracks_resp = (
-                client.table("tracks")
-                .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness,embedding")
-                .not_.is_("embedding", "null")
-                .range(0, 9999)
-                .execute()
+            search_tracks_resp = match_tracks(
+                client,
+                query_vector=prompt_vector,
+                match_count=max(limit * 30, 300),
+                genre_tokens=genre_tokens,
             )
             seen_track_keys = {
                 t.get("spotify_track_id") or t.get("id")
@@ -841,7 +869,7 @@ def recommend_songs(
                 if t.get("spotify_track_id") or t.get("id")
             }
             search_tracks = []
-            for track in search_tracks_resp.data or []:
+            for track in search_tracks_resp:
                 track_key = track.get("spotify_track_id") or track.get("id")
                 if not track_key or track_key in seen_track_keys:
                     continue
@@ -1177,9 +1205,44 @@ def recommend_songs(
             spotify_track_id = track.get("spotify_track_id") or ""
             track_fb = track_feedback.get(spotify_track_id, 0)
             if track_fb < 0:
-                track_boost *= 0.15  # Very strong penalty — user explicitly disliked this track
+                reason = track_feedback_reasons.get(spotify_track_id, "")
+                track_boost *= 0.20 if reason in {"too_familiar", "too_far"} else 0.15
             elif track_fb > 0:
                 track_boost *= 1.15  # Modest boost
+
+            # Behavioral learning loop: implicit plays/favorites nudge tracks
+            # up; skips and explicit refinement reasons nudge similar future
+            # picks down without requiring a profile rebuild.
+            t_events = track_events.get(spotify_track_id, Counter())
+            a_events = artist_events.get(aid, Counter())
+            positive_events = (
+                t_events.get("play", 0)
+                + t_events.get("favorite", 0) * 3
+                + t_events.get("thumb_up", 0) * 2
+            )
+            negative_events = (
+                t_events.get("skip", 0)
+                + t_events.get("thumb_down", 0) * 3
+            )
+            if positive_events:
+                track_boost *= min(1.35, 1.0 + positive_events * 0.05)
+            if negative_events:
+                track_boost *= max(0.55, 1.0 - negative_events * 0.08)
+
+            too_familiar_count = (
+                t_events.get("too_familiar", 0)
+                + a_events.get("too_familiar", 0)
+                + (1 if track_feedback_reasons.get(spotify_track_id) == "too_familiar" else 0)
+            )
+            too_far_count = (
+                t_events.get("too_far", 0)
+                + a_events.get("too_far", 0)
+                + (1 if track_feedback_reasons.get(spotify_track_id) == "too_far" else 0)
+            )
+            if too_familiar_count and (track_pop >= 0.68 or in_library or is_library_artist):
+                track_boost *= max(0.60, 1.0 - min(too_familiar_count, 4) * 0.08)
+            if too_far_count and track_pop < 0.50 and not is_library_artist:
+                track_boost *= max(0.55, 1.0 - min(too_far_count, 4) * 0.10)
 
             novelty = _novelty_score(
                 track_pop,
