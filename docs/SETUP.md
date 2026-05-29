@@ -102,6 +102,7 @@ make web         # Next.js on :3000
 - Web: http://localhost:3000
 - API docs: http://localhost:8000/docs
 - Health check: http://localhost:8000/health
+- Readiness check: http://localhost:8000/ready
 
 ## 6) First login
 
@@ -111,8 +112,11 @@ Your user row is created automatically — no UUID copying needed.
 ## 7) Smoke checks
 
 ```bash
-# API health (should show db: true)
+# API liveness
 curl http://localhost:8000/health
+
+# API readiness (should show db: true)
+curl http://localhost:8000/ready
 
 # Spotify OAuth
 open http://localhost:3000   # click Connect Spotify

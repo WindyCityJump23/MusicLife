@@ -182,7 +182,8 @@ Discovery pipeline:
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /health` | Liveness + readiness check |
+| `GET /health` | Fast API liveness check |
+| `GET /ready` | API readiness check with Supabase connectivity |
 | `POST /recommend` | Artist-level taste recommendations |
 | `POST /recommend/songs` | Song-level recommendations with lanes, novelty, and history |
 | `POST /ingest/spotify-library` | Pull Spotify library and listens |

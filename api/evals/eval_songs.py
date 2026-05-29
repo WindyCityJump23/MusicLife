@@ -905,6 +905,28 @@ def eval_cache_does_not_poison_prompt() -> EvalResult:
     )
 
 
+def eval_api_health_is_lightweight() -> EvalResult:
+    """Backend /health should be fast liveness, with DB checks isolated in /ready."""
+    main_file = _API_DIR / "app" / "main.py"
+    source = main_file.read_text()
+    health_start = source.index("@app.get(\"/health\")")
+    ready_start = source.index("@app.get(\"/ready\")", health_start)
+    health_source = source[health_start:ready_start]
+    ready_source = source[ready_start:]
+
+    health_uses_db = "admin_supabase" in health_source or ".table(" in health_source
+    ready_checks_db = "admin_supabase" in ready_source and ".table(\"sources\")" in ready_source
+    passed = not health_uses_db and ready_checks_db
+    return EvalResult(
+        name="api_health_is_lightweight",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="backend /health is liveness-only and /ready checks Supabase"
+        if passed
+        else f"health_uses_db={health_uses_db}, ready_checks_db={ready_checks_db}",
+    )
+
+
 # ── Suite runner ─────────────────────────────────────────────────
 
 
@@ -934,4 +956,5 @@ def run_suite() -> list[EvalResult]:
         eval_station_fallbacks_are_observable(),
         eval_client_composed_stations_record_runs(),
         eval_cache_does_not_poison_prompt(),
+        eval_api_health_is_lightweight(),
     ]
