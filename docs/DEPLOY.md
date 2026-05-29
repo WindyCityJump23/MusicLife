@@ -148,7 +148,7 @@ Friends can do the same — just share your Vercel URL. Each person logs in with
 
 | | URL |
 |-|-----|
-| App | `https://your-app.vercel.app` |
+| App | `https://music-life-kappa.vercel.app` |
 | API | `https://musiclife-api.onrender.com` |
 | API docs | `https://musiclife-api.onrender.com/docs` |
 
@@ -156,6 +156,6 @@ Friends can do the same — just share your Vercel URL. Each person logs in with
 
 ## Notes
 
-- **Render free tier sleeps** after 15 min of inactivity. First request after idle takes ~30s to wake up. Upgrade to $7/mo to keep it always on.
+- **Render free tier sleeps** after 15 min of inactivity. First request after idle takes ~30s to wake up. Public beta requires an always-on Render instance or equivalent no-cold-start hosting; the `main` deploy smoke check fails if API health is too slow.
 - **Vercel free tier** has no sleep — always instant.
 - **Supabase free tier** pauses after 1 week of inactivity on the free plan — just click Resume in the dashboard.

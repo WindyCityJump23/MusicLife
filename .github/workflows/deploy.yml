@@ -115,17 +115,32 @@ jobs:
           PRODUCTION_WEB_URL: ${{ secrets.PRODUCTION_WEB_URL }}
           PRODUCTION_API_URL: ${{ secrets.PRODUCTION_API_URL }}
         run: |
-          if [ -z "$PRODUCTION_WEB_URL" ] || [ -z "$PRODUCTION_API_URL" ]; then
-            echo "::warning::Set PRODUCTION_WEB_URL and PRODUCTION_API_URL to enable post-deploy smoke checks."
-            exit 0
-          fi
-          curl --fail --silent --show-error "$PRODUCTION_WEB_URL/" > /dev/null
-          readiness_status=$(curl --silent --show-error --output /dev/null --write-out "%{http_code}" "$PRODUCTION_WEB_URL/api/readiness")
-          if [ "$readiness_status" -ge 500 ]; then
-            echo "::error::/api/readiness returned $readiness_status"
+          PRODUCTION_WEB_URL="${PRODUCTION_WEB_URL:-https://music-life-kappa.vercel.app}"
+          PRODUCTION_API_URL="${PRODUCTION_API_URL:-https://musiclife-api.onrender.com}"
+
+          echo "Checking web: $PRODUCTION_WEB_URL"
+          echo "Checking API: $PRODUCTION_API_URL"
+
+          web_status=$(curl --silent --show-error --output /dev/null --write-out "%{http_code} %{time_total}" --max-time 20 "$PRODUCTION_WEB_URL/")
+          web_code=${web_status%% *}
+          web_time=${web_status##* }
+          echo "web_home status=$web_code time=${web_time}s"
+          if [ "$web_code" -lt 200 ] || [ "$web_code" -ge 400 ]; then
+            echo "::error::web home returned $web_code"
             exit 1
           fi
-          schema_report=$(curl --silent --show-error "$PRODUCTION_WEB_URL/api/radio-health/schema")
+
+          readiness_status=$(curl --silent --show-error --output /dev/null --write-out "%{http_code} %{time_total}" --max-time 20 "$PRODUCTION_WEB_URL/api/readiness")
+          readiness_code=${readiness_status%% *}
+          readiness_time=${readiness_status##* }
+          echo "web_readiness status=$readiness_code time=${readiness_time}s"
+          if [ "$readiness_code" -ge 500 ]; then
+            echo "::error::/api/readiness returned $readiness_code"
+            exit 1
+          fi
+
+          schema_report=$(curl --fail --silent --show-error --max-time 20 "$PRODUCTION_WEB_URL/api/radio-health/schema")
+          echo "radio_schema_health=$schema_report"
           SCHEMA_REPORT="$schema_report" node - <<'NODE'
           const report = JSON.parse(process.env.SCHEMA_REPORT || "{}");
           if (!report.ok) {
@@ -133,5 +148,30 @@ jobs:
             process.exit(1);
           }
           NODE
-          curl --fail --silent --show-error "$PRODUCTION_API_URL/health" > /dev/null
-          curl --fail --silent --show-error -X POST "$PRODUCTION_API_URL/diagnostics/ranking/static" > /dev/null
+
+          api_status=$(curl --silent --show-error --output /dev/null --write-out "%{http_code} %{time_total}" --max-time 30 "$PRODUCTION_API_URL/health")
+          api_code=${api_status%% *}
+          api_time=${api_status##* }
+          echo "api_health status=$api_code time=${api_time}s"
+          if [ "$api_code" -lt 200 ] || [ "$api_code" -ge 400 ]; then
+            echo "::error::API health returned $api_code"
+            exit 1
+          fi
+          API_HEALTH_TIME="$api_time" node - <<'NODE'
+          const seconds = Number(process.env.API_HEALTH_TIME || "0");
+          if (seconds > 15) {
+            console.error(`API health was too slow: ${seconds.toFixed(3)}s`);
+            process.exit(1);
+          }
+          NODE
+
+          diagnostics_report=$(curl --fail --silent --show-error --max-time 30 -X POST "$PRODUCTION_API_URL/diagnostics/ranking/static")
+          echo "static_diagnostics=$diagnostics_report"
+          DIAGNOSTICS_REPORT="$diagnostics_report" node - <<'NODE'
+          const report = JSON.parse(process.env.DIAGNOSTICS_REPORT || "{}");
+          const summary = report.summary || {};
+          if ((summary.errors || 0) > 0 || (summary.warnings || 0) > 0) {
+            console.error("Static diagnostics failed", summary);
+            process.exit(1);
+          }
+          NODE

@@ -252,20 +252,28 @@ function timeoutMessage(timeoutMs: number): string {
 
 function recommendationFailureMessage(reason: string | null): string {
   if (!reason) {
-    return "No recommendations found — try a different search or adjust your weights.";
+    return "Radio needs a little more signal before it can build this station.";
   }
 
   const normalized = reason.toLowerCase();
+  if (
+    normalized.includes("spotify session") ||
+    normalized.includes("session expired") ||
+    normalized.includes("token")
+  ) {
+    return "Reconnect Spotify to widen this station.";
+  }
+
   if (
     normalized.includes("aborted") ||
     normalized.includes("abort") ||
     normalized.includes("timed out") ||
     normalized.includes("timeout")
   ) {
-    return "Could not load recommendations because the catalog request timed out before fallback tracks were found. Please try again.";
+    return "Fresh picks are taking longer than expected.";
   }
 
-  return `Could not load recommendations (${reason}). Please try again.`;
+  return "Fresh picks hit a temporary issue.";
 }
 
 function laneForSong(song: SongRecommendation): DiscoveryLaneId {
@@ -1617,7 +1625,7 @@ export default function DiscoverView({
             void refreshTrackState(deduped);
             return;
           }
-          setError("Spotify session expired and no tracks in catalog \u2014 please sign out and back in, then re-run 'Set up music profile'");
+          setError(recommendationFailureMessage("Spotify session expired"));
           setResults([]);
           return;
         }
@@ -1824,7 +1832,7 @@ export default function DiscoverView({
         setError(null);
         setStationNotice("Still tuning fresh picks. Playing your saved station.");
       } else {
-        setError(err instanceof Error ? err.message : "Network error");
+        setError(recommendationFailureMessage(err instanceof Error ? err.message : "Network error"));
         setResults([]);
       }
     } finally {
@@ -2179,16 +2187,23 @@ export default function DiscoverView({
         </div>
       )}
 
-      {/* Error */}
+      {/* Empty/error state */}
       {error && (!results || results.length === 0) && (
-        <div className="border border-red-200 bg-red-50 text-red-700 rounded-lg p-3 text-sm flex items-center justify-between gap-3">
-          <span>{error}</span>
-          <button
-            onClick={() => void handleSubmit()}
-            className="shrink-0 px-3 py-1.5 rounded-lg border border-red-200 text-red-600 text-xs font-medium hover:bg-red-100 transition-colors"
-          >
-            Try again
-          </button>
+        <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-3 text-sm text-neutral-700">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="font-medium text-neutral-900">{error}</p>
+              <p className="mt-0.5 text-xs text-neutral-500">
+                Keep your saved mix playing, refresh, or finish setup to add more anchors.
+              </p>
+            </div>
+            <button
+              onClick={() => void handleSubmit()}
+              className="shrink-0 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-100"
+            >
+              Refresh
+            </button>
+          </div>
         </div>
       )}
 

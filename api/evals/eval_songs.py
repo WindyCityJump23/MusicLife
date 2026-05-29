@@ -724,6 +724,26 @@ def eval_audio_profile_prefers_recent_saves_without_play_counts() -> EvalResult:
     )
 
 
+def eval_no_raw_abort_copy() -> EvalResult:
+    """Radio UI should not expose browser abort or exception text to users."""
+    web_file = _API_DIR.parent / "web" / "app" / "dashboard" / "discover-view.tsx"
+    source = web_file.read_text()
+    forbidden = [
+        "setError(err instanceof Error ? err.message",
+        "Could not load recommendations (${reason})",
+        "signal is aborted",
+        "aborted without reason",
+    ]
+    hits = [pattern for pattern in forbidden if pattern in source]
+    passed = not hits
+    return EvalResult(
+        name="no_raw_abort_copy",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="no raw abort or exception copy found" if passed else f"found={hits}",
+    )
+
+
 # ── Suite runner ─────────────────────────────────────────────────
 
 
@@ -747,4 +767,5 @@ def run_suite() -> list[EvalResult]:
         eval_prompted_search_scans_track_catalog(),
         eval_zero_play_added_at_tracks_do_not_crash(),
         eval_audio_profile_prefers_recent_saves_without_play_counts(),
+        eval_no_raw_abort_copy(),
     ]
