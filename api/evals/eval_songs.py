@@ -744,6 +744,37 @@ def eval_no_raw_abort_copy() -> EvalResult:
     )
 
 
+def eval_play_learning_requires_dwell() -> EvalResult:
+    """Radio should only learn positive play intent from the player dwell timer.
+
+    Clicking a row starts playback, but the learning loop should not count that
+    click as a meaningful play until the player has observed enough dwell time.
+    """
+    discover_file = _API_DIR.parent / "web" / "app" / "dashboard" / "discover-view.tsx"
+    player_file = _API_DIR.parent / "web" / "app" / "dashboard" / "player-context.tsx"
+    discover_source = discover_file.read_text()
+    player_source = player_file.read_text()
+
+    handle_play_start = discover_source.index("  async function handlePlay()")
+    handle_feedback_start = discover_source.index("  async function handleFeedback", handle_play_start)
+    handle_play_source = discover_source[handle_play_start:handle_feedback_start]
+    immediate_play_logged = 'event_type: "play"' in handle_play_source
+    dwell_timer_present = "MEANINGFUL_PLAY_MS" in player_source and 'logQueuePlaybackEvent(track, "play"' in player_source
+
+    passed = not immediate_play_logged and dwell_timer_present
+    details = (
+        "row click does not log play; player dwell timer logs meaningful plays"
+        if passed
+        else f"immediate_play_logged={immediate_play_logged}, dwell_timer_present={dwell_timer_present}"
+    )
+    return EvalResult(
+        name="play_learning_requires_dwell",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=details,
+    )
+
+
 # ── Suite runner ─────────────────────────────────────────────────
 
 
@@ -768,4 +799,5 @@ def run_suite() -> list[EvalResult]:
         eval_zero_play_added_at_tracks_do_not_crash(),
         eval_audio_profile_prefers_recent_saves_without_play_counts(),
         eval_no_raw_abort_copy(),
+        eval_play_learning_requires_dwell(),
     ]

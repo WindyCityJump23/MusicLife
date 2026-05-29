@@ -2625,13 +2625,6 @@ function SongRow({
     if (!song.spotify_track_id) return;
     setPlayState("loading");
     try {
-      logRecommendationEvent({
-        event_type: "play",
-        song,
-        station_run_id: stationRunId,
-        position: rank,
-        prompt: currentPrompt || undefined,
-      });
       const queueIdx = queue.findIndex(t => t.spotifyTrackId === song.spotify_track_id);
       if (queueIdx >= 0) {
         await playFromQueue(queueIdx);
