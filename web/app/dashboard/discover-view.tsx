@@ -794,7 +794,9 @@ async function cacheServerStation({
       }),
     });
     const body = await res.json().catch(() => ({}));
-    return res.ok && typeof body.station_id === "string" ? body.station_id : null;
+    if (!res.ok) return null;
+    if (typeof body.run_id === "string") return body.run_id;
+    return typeof body.station_id === "string" ? body.station_id : null;
   } catch {
     return null;
   }
@@ -1367,7 +1369,7 @@ export default function DiscoverView({
       if (cancelled) return;
       if (station?.results?.length) {
         setResults(station.results);
-        const loadedStationId = station.station_id ?? station.run_id ?? null;
+        const loadedStationId = station.run_id ?? station.station_id ?? null;
         setQueue(toQueueTracks(station.results, { stationRunId: loadedStationId, prompt }));
         setStationRunId(loadedStationId);
         setStationFallbackLevel(station.fallback_level ?? "cache");

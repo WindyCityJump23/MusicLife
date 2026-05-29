@@ -815,6 +815,40 @@ def eval_station_fallbacks_are_observable() -> EvalResult:
     )
 
 
+def eval_client_composed_stations_record_runs() -> EvalResult:
+    """Client-composed prompt/live stations should cache and write station_runs."""
+    cache_route = _API_DIR.parent / "web" / "app" / "api" / "station" / "cache" / "route.ts"
+    discover_file = _API_DIR.parent / "web" / "app" / "dashboard" / "discover-view.tsx"
+    cache_source = cache_route.read_text()
+    discover_source = discover_file.read_text()
+
+    required_cache_patterns = [
+        '.from("station_runs")',
+        'status: "success"',
+        'fallback_level: "fresh"',
+        "result_count: resultCount",
+        "run_id: runId",
+    ]
+    required_ui_patterns = [
+        "typeof body.run_id === \"string\"",
+        "station.run_id ?? station.station_id ?? null",
+    ]
+    missing = [
+        pattern for pattern in required_cache_patterns if pattern not in cache_source
+    ] + [
+        pattern for pattern in required_ui_patterns if pattern not in discover_source
+    ]
+    passed = not missing
+    return EvalResult(
+        name="client_composed_stations_record_runs",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="client-composed station cache writes station_runs and UI prefers run_id"
+        if passed
+        else f"missing={missing}",
+    )
+
+
 # ── Suite runner ─────────────────────────────────────────────────
 
 
@@ -841,4 +875,5 @@ def run_suite() -> list[EvalResult]:
         eval_no_raw_abort_copy(),
         eval_play_learning_requires_dwell(),
         eval_station_fallbacks_are_observable(),
+        eval_client_composed_stations_record_runs(),
     ]

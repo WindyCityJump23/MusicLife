@@ -11,6 +11,43 @@ function cacheKey(prompt: string, strategy: unknown): string {
   });
 }
 
+async function recordStationRun({
+  userId,
+  prompt,
+  strategy,
+  resultCount,
+  sourceMix,
+}: {
+  userId: string;
+  prompt: string | null;
+  strategy: unknown;
+  resultCount: number;
+  sourceMix: unknown;
+}): Promise<string | null> {
+  try {
+    const { data, error } = await supabaseServer()
+      .from("station_runs")
+      .insert({
+        user_id: userId,
+        prompt,
+        strategy: strategy && typeof strategy === "object" ? strategy : {},
+        status: "success",
+        fallback_level: "fresh",
+        result_count: resultCount,
+        latency_ms: null,
+        source_mix: sourceMix && typeof sourceMix === "object" ? sourceMix : {},
+        error_class: null,
+      })
+      .select("id")
+      .maybeSingle();
+    if (error) throw error;
+    return typeof data?.id === "string" ? data.id : null;
+  } catch (err) {
+    console.warn("station-cache: station run telemetry failed", err);
+    return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
   const user = requireUser(req);
   if (isErrorResponse(user)) return user;
@@ -51,5 +88,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, station_id: data?.id, expires_at: data?.expires_at });
+  const runId = await recordStationRun({
+    userId: user.userId,
+    prompt: prompt.trim() || null,
+    strategy,
+    resultCount: results.length,
+    sourceMix,
+  });
+
+  return NextResponse.json({
+    ok: true,
+    station_id: data?.id,
+    run_id: runId,
+    expires_at: data?.expires_at,
+  });
 }
