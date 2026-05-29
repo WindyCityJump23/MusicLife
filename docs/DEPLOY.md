@@ -32,8 +32,17 @@ No local installs needed. Everything runs in the browser.
    - `db/migrations/004_ingest_constraints.sql`
    - `db/migrations/005_mentions_dedup.sql`
    - `db/migrations/006_triggers_and_indexes.sql`
+   - Continue through every later `db/migrations/*.sql` file in filename order.
    - `db/seed/sources.sql`
-5. Go to **Project Settings → API** and copy:
+5. For an existing production database that already has migrations `001`-`023`, run the Radio/Taste upgrade path instead:
+
+   ```bash
+   export DATABASE_URL=postgres://postgres:[password]@[host]:5432/postgres
+   make migrate-radio
+   ```
+
+6. Verify the live app reports the schema as active after deploy: `https://your-app.vercel.app/api/radio-health/schema` should return `ok: true`.
+7. Go to **Project Settings → API** and copy:
    - **Project URL** → `SUPABASE_URL`
    - **anon / public key** → `SUPABASE_ANON_KEY`
    - **service_role key** → `SUPABASE_SERVICE_ROLE_KEY` *(keep this secret)*

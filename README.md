@@ -97,7 +97,16 @@ export DATABASE_URL=postgres://postgres:[password]@[host]:5432/postgres
 make migrate
 ```
 
-Or paste each file in **Supabase → SQL Editor** in filename order (`db/migrations/001_init.sql` through the latest `db/migrations/019_*.sql` files), then seed data with `db/seed/sources.sql`.
+Or paste each file in **Supabase → SQL Editor** in filename order (`db/migrations/001_init.sql` through the latest migration), then seed data with `db/seed/sources.sql`.
+
+For an existing project that already has migrations `001`-`023`, apply and verify the Radio/Taste upgrade only:
+
+```bash
+export DATABASE_URL=postgres://postgres:[password]@[host]:5432/postgres
+make migrate-radio
+```
+
+Production should also pass `GET /api/radio-health/schema`; it reports whether the station cache, station runs, recommendation events, taste snapshots, taste controls, and `match_tracks` RPC are active in Supabase.
 
 ### 5. Install dependencies and start
 

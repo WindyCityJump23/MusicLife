@@ -2,7 +2,7 @@
 # Run `make` or `make dev` to start both services at once.
 # Requires: Node 20+, Python 3.11+, and all env files filled in.
 
-.PHONY: dev api web install install-api install-web migrate help
+.PHONY: dev api web install install-api install-web migrate migrate-radio verify-radio-schema help
 
 # ── Start both services in parallel ────────────────────────────────────────
 dev: install
@@ -50,6 +50,28 @@ migrate:
 	psql "$$DATABASE_URL" -f db/seed/sources.sql
 	@echo "✓ Migrations complete"
 
+# Applies only the new 9+ Radio/Taste migrations and verifies their schema.
+# Use this when an existing Supabase project already has migrations 001-023.
+migrate-radio:
+	@if [ -z "$$DATABASE_URL" ]; then \
+		echo "ERROR: DATABASE_URL is not set."; \
+		echo "Export it first: export DATABASE_URL=postgres://user:pass@host/db"; \
+		exit 1; \
+	fi
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/024_radio_cache_events_observability.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/025_taste_preference_controls.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/026_radio_schema_api_grants.sql
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/verify/024_026_radio_schema.sql
+	@echo "✓ Radio/Taste migrations complete"
+
+verify-radio-schema:
+	@if [ -z "$$DATABASE_URL" ]; then \
+		echo "ERROR: DATABASE_URL is not set."; \
+		echo "Export it first: export DATABASE_URL=postgres://user:pass@host/db"; \
+		exit 1; \
+	fi
+	psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/verify/024_026_radio_schema.sql
+
 # ── Env file scaffolding ────────────────────────────────────────────────────
 env:
 	@if [ ! -f web/.env.local ]; then \
@@ -73,4 +95,6 @@ help:
 	@echo "  make api        Start API only"
 	@echo "  make web        Start Web only"
 	@echo "  make migrate    Run all DB migrations (requires DATABASE_URL)"
+	@echo "  make migrate-radio  Apply/verify Radio DB migrations 024-026"
+	@echo "  make verify-radio-schema  Verify Radio DB schema only"
 	@echo ""

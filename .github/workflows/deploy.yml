@@ -125,5 +125,13 @@ jobs:
             echo "::error::/api/readiness returned $readiness_status"
             exit 1
           fi
+          schema_report=$(curl --silent --show-error "$PRODUCTION_WEB_URL/api/radio-health/schema")
+          SCHEMA_REPORT="$schema_report" node - <<'NODE'
+          const report = JSON.parse(process.env.SCHEMA_REPORT || "{}");
+          if (!report.ok) {
+            console.error("Radio schema health failed", report);
+            process.exit(1);
+          }
+          NODE
           curl --fail --silent --show-error "$PRODUCTION_API_URL/health" > /dev/null
           curl --fail --silent --show-error -X POST "$PRODUCTION_API_URL/diagnostics/ranking/static" > /dev/null
