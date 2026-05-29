@@ -291,6 +291,8 @@ def _clean_strategy(taste_strategy: dict | None) -> dict:
 
     live = taste_strategy.get("live_expansion")
     freshness = taste_strategy.get("freshness")
+    station_distance = taste_strategy.get("station_distance")
+    familiarity = taste_strategy.get("familiarity")
     mix = taste_strategy.get("discovery_mix")
     if not isinstance(mix, dict):
         mix = {}
@@ -312,6 +314,8 @@ def _clean_strategy(taste_strategy: dict | None) -> dict:
             "popular": _mix_value("popular"),
             "radio_hits": _mix_value("radio_hits"),
         },
+        "station_distance": station_distance if station_distance in {"closer", "balanced", "further"} else "balanced",
+        "familiarity": familiarity if familiarity in {"anchors", "balanced", "surprises"} else "balanced",
         "live_expansion": live if live in {"auto", "catalog", "live"} else "auto",
         "freshness": freshness if freshness in {"newer", "balanced", "timeless"} else "balanced",
     }

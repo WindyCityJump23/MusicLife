@@ -64,6 +64,8 @@ class TasteStrategyPreference(BaseModel):
     genre_boosts: list[str] = Field(default_factory=list, max_length=12)
     genre_avoids: list[str] = Field(default_factory=list, max_length=12)
     discovery_mix: DiscoveryMixPreference = Field(default_factory=DiscoveryMixPreference)
+    station_distance: str = Field(default="balanced", pattern="^(closer|balanced|further)$")
+    familiarity: str = Field(default="balanced", pattern="^(anchors|balanced|surprises)$")
     live_expansion: str = Field(default="auto", pattern="^(auto|catalog|live)$")
     freshness: str = Field(default="balanced", pattern="^(newer|balanced|timeless)$")
 

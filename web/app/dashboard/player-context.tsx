@@ -14,6 +14,11 @@ export type QueueTrack = {
   spotifyTrackId: string;
   trackName: string;
   artistName: string;
+  trackId?: string | null;
+  artistId?: string | null;
+  stationRunId?: string | null;
+  position?: number;
+  prompt?: string;
 };
 
 export type ConnectDevice = {
@@ -93,6 +98,39 @@ function toSpotifyTrackId(value: string): string {
 const NOW_PLAYING_POLL_MS = 5_000;
 const NOW_PLAYING_IDLE_POLL_MS = 15_000;
 const NOW_PLAYING_HIDDEN_POLL_MS = 30_000;
+const MEANINGFUL_PLAY_MS = 30_000;
+
+function intOrNull(value: string | null | undefined): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function logQueuePlaybackEvent(
+  track: QueueTrack | null | undefined,
+  eventType: "play" | "skip",
+  dwellMs: number,
+  metadata: Record<string, unknown> = {}
+) {
+  if (!track?.spotifyTrackId) return;
+  const body = {
+    event_type: eventType,
+    station_run_id: track.stationRunId ?? null,
+    spotify_track_id: track.spotifyTrackId,
+    track_id: intOrNull(track.trackId),
+    artist_id: intOrNull(track.artistId),
+    position: track.position,
+    prompt: track.prompt,
+    source: "radio-player",
+    dwell_ms: Math.max(0, Math.round(dwellMs)),
+    metadata,
+  };
+  void fetch("/api/recommendation-event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    keepalive: true,
+  }).catch(() => {});
+}
 
 const PlayerContext = createContext<PlayerContextValue>({
   queue: [],
@@ -157,6 +195,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const isPlayingRef = useRef(false);
   const sdkPlayerRef = useRef<Spotify.Player | null>(null);
   const sdkDeviceIdRef = useRef<string | null>(null);
+  const currentPlaybackTrackRef = useRef<QueueTrack | null>(null);
+  const currentPlaybackIndexRef = useRef(-1);
+  const playbackStartedAtRef = useRef<number | null>(null);
+  const meaningfulPlayLoggedRef = useRef(false);
+  const meaningfulPlayTimerRef = useRef<number | null>(null);
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { deviceIdRef.current = selectedDeviceId; }, [selectedDeviceId]);
@@ -168,6 +211,46 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     queueRef.current = tracks;
     setQueueState(tracks);
   }, []);
+
+  const clearMeaningfulPlayTimer = useCallback(() => {
+    if (meaningfulPlayTimerRef.current !== null) {
+      window.clearTimeout(meaningfulPlayTimerRef.current);
+      meaningfulPlayTimerRef.current = null;
+    }
+  }, []);
+
+  const finalizeCurrentPlayback = useCallback((nextIndex: number) => {
+    const current = currentPlaybackTrackRef.current;
+    const startedAt = playbackStartedAtRef.current;
+    if (!current || startedAt === null) return;
+
+    const dwellMs = Date.now() - startedAt;
+    clearMeaningfulPlayTimer();
+    if (!meaningfulPlayLoggedRef.current) {
+      if (dwellMs >= MEANINGFUL_PLAY_MS) {
+        logQueuePlaybackEvent(current, "play", dwellMs, { completed_by: "transition" });
+      } else if (nextIndex > currentPlaybackIndexRef.current) {
+        logQueuePlaybackEvent(current, "skip", dwellMs, { completed_by: "advance" });
+      }
+    }
+  }, [clearMeaningfulPlayTimer]);
+
+  const beginPlaybackTracking = useCallback((track: QueueTrack, index: number) => {
+    clearMeaningfulPlayTimer();
+    currentPlaybackTrackRef.current = track;
+    currentPlaybackIndexRef.current = index;
+    playbackStartedAtRef.current = Date.now();
+    meaningfulPlayLoggedRef.current = false;
+    meaningfulPlayTimerRef.current = window.setTimeout(() => {
+      if (currentPlaybackTrackRef.current?.spotifyTrackId !== track.spotifyTrackId) return;
+      meaningfulPlayLoggedRef.current = true;
+      logQueuePlaybackEvent(track, "play", MEANINGFUL_PLAY_MS, { completed_by: "timer" });
+    }, MEANINGFUL_PLAY_MS);
+  }, [clearMeaningfulPlayTimer]);
+
+  useEffect(() => {
+    return () => clearMeaningfulPlayTimer();
+  }, [clearMeaningfulPlayTimer]);
 
   // ── SDK initialization (skip for guest users) ───────────────
   useEffect(() => {
@@ -477,9 +560,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       const q = queueRef.current;
       if (index < 0 || index >= q.length) return;
 
+      if (index !== indexRef.current) {
+        finalizeCurrentPlayback(index);
+      }
+
       indexRef.current = index;
       setCurrentIndex(index);
       setPlaybackError(null);
+      beginPlaybackTracking(q[index], index);
 
       if (modeRef.current === "connect" && deviceIdRef.current) {
         const result = await playOnConnect(index);
@@ -496,7 +584,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         setIsPlaying(true);
       }
     },
-    [playOnConnect]
+    [beginPlaybackTracking, finalizeCurrentPlayback, playOnConnect]
   );
 
   const playSingle = useCallback(
@@ -522,6 +610,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const playNext = useCallback(async () => {
     const nextIdx = indexRef.current + 1;
     if (nextIdx >= queueRef.current.length) return;
+    finalizeCurrentPlayback(nextIdx);
 
     if (modeRef.current === "connect" && deviceIdRef.current) {
       const result = await playOnConnect(nextIdx);
@@ -531,17 +620,20 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       }
       indexRef.current = nextIdx;
       setCurrentIndex(nextIdx);
+      beginPlaybackTracking(queueRef.current[nextIdx], nextIdx);
       return;
     }
 
     indexRef.current = nextIdx;
     setCurrentIndex(nextIdx);
     setEmbedTrackIdState(queueRef.current[nextIdx].spotifyTrackId);
-  }, [playOnConnect]);
+    beginPlaybackTracking(queueRef.current[nextIdx], nextIdx);
+  }, [beginPlaybackTracking, finalizeCurrentPlayback, playOnConnect]);
 
   const playPrev = useCallback(async () => {
     const prevIdx = indexRef.current - 1;
     if (prevIdx < 0) return;
+    finalizeCurrentPlayback(prevIdx);
 
     if (modeRef.current === "connect" && deviceIdRef.current) {
       const result = await playOnConnect(prevIdx);
@@ -551,13 +643,15 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       }
       indexRef.current = prevIdx;
       setCurrentIndex(prevIdx);
+      beginPlaybackTracking(queueRef.current[prevIdx], prevIdx);
       return;
     }
 
     indexRef.current = prevIdx;
     setCurrentIndex(prevIdx);
     setEmbedTrackIdState(queueRef.current[prevIdx].spotifyTrackId);
-  }, [playOnConnect]);
+    beginPlaybackTracking(queueRef.current[prevIdx], prevIdx);
+  }, [beginPlaybackTracking, finalizeCurrentPlayback, playOnConnect]);
 
   const togglePause = useCallback(async () => {
     if (modeRef.current === "embed") {

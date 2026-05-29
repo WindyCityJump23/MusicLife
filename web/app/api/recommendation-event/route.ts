@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
 import { supabaseServer } from "@/lib/supabase-server";
+import { maybeCreateFeedbackTasteSnapshot } from "@/lib/taste-snapshot";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +51,8 @@ export async function POST(req: NextRequest) {
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
+
+  void maybeCreateFeedbackTasteSnapshot({ sb, userId: user.userId });
 
   return NextResponse.json({ ok: true });
 }

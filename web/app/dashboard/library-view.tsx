@@ -57,6 +57,8 @@ type TasteStrategy = {
   genre_boosts: string[];
   genre_avoids: string[];
   discovery_mix: DiscoveryMix;
+  station_distance: "closer" | "balanced" | "further";
+  familiarity: "anchors" | "balanced" | "surprises";
   live_expansion: "auto" | "catalog" | "live";
   freshness: "newer" | "balanced" | "timeless";
 };
@@ -68,9 +70,23 @@ const DEFAULT_STRATEGY: TasteStrategy = {
   genre_boosts: [],
   genre_avoids: [],
   discovery_mix: { deep_cuts: 38, popular: 38, radio_hits: 24 },
+  station_distance: "balanced",
+  familiarity: "balanced",
   live_expansion: "auto",
   freshness: "balanced",
 };
+
+const DISTANCE_OPTIONS: Array<{ id: TasteStrategy["station_distance"]; label: string; body: string; mix: DiscoveryMix }> = [
+  { id: "closer", label: "Closer", body: "Keep Radio near your strongest anchors.", mix: { deep_cuts: 22, popular: 44, radio_hits: 34 } },
+  { id: "balanced", label: "Balanced", body: "Move between anchors and discovery without losing the thread.", mix: DEFAULT_STRATEGY.discovery_mix },
+  { id: "further", label: "Further out", body: "Give Radio more room for new edges and deep cuts.", mix: { deep_cuts: 55, popular: 32, radio_hits: 13 } },
+];
+
+const FAMILIARITY_OPTIONS: Array<{ id: TasteStrategy["familiarity"]; label: string; body: string; mixPatch: Partial<DiscoveryMix> }> = [
+  { id: "anchors", label: "More anchors", body: "Favor recognizable artists and grounded picks.", mixPatch: { radio_hits: 34, deep_cuts: 24 } },
+  { id: "balanced", label: "Balanced", body: "Keep familiar and surprising songs in tension.", mixPatch: {} },
+  { id: "surprises", label: "More surprises", body: "Reduce obvious picks and let novelty breathe.", mixPatch: { radio_hits: 14, deep_cuts: 50 } },
+];
 
 const LANE_META: Array<{ id: LaneKey; label: string; help: string; feeling: string }> = [
   {
@@ -175,6 +191,15 @@ function updateMix(mix: DiscoveryMix, lane: LaneKey, value: number): DiscoveryMi
     }
   });
   return normalizeMix(next);
+}
+
+function mixForDistanceAndFamiliarity(
+  distance: TasteStrategy["station_distance"],
+  familiarity: TasteStrategy["familiarity"]
+): DiscoveryMix {
+  const base = DISTANCE_OPTIONS.find((option) => option.id === distance)?.mix ?? DEFAULT_STRATEGY.discovery_mix;
+  const patch = FAMILIARITY_OPTIONS.find((option) => option.id === familiarity)?.mixPatch ?? {};
+  return normalizeMix({ ...base, ...patch });
 }
 
 function sameStrategy(a: TasteStrategy, b: TasteStrategy): boolean {
@@ -378,8 +403,28 @@ export default function LibraryView({
     setStrategy((current) => ({
       ...current,
       discovery_mix: normalizeMix(preset.mix),
+      station_distance: preset.title === "Take me further out" ? "further" : preset.title === "Stay close to my core" ? "closer" : "balanced",
+      familiarity: preset.title === "Stay close to my core" ? "anchors" : preset.title === "Take me further out" ? "surprises" : "balanced",
       live_expansion: preset.live_expansion,
       freshness: preset.freshness,
+    }));
+    setSaveMessage(null);
+  }
+
+  function setStationDistance(value: TasteStrategy["station_distance"]) {
+    setStrategy((current) => ({
+      ...current,
+      station_distance: value,
+      discovery_mix: mixForDistanceAndFamiliarity(value, current.familiarity),
+    }));
+    setSaveMessage(null);
+  }
+
+  function setFamiliarity(value: TasteStrategy["familiarity"]) {
+    setStrategy((current) => ({
+      ...current,
+      familiarity: value,
+      discovery_mix: mixForDistanceAndFamiliarity(current.station_distance, value),
     }));
     setSaveMessage(null);
   }
@@ -547,18 +592,22 @@ export default function LibraryView({
           </div>
         </div>
 
-        <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          <SnapshotMetric label="Artists" value={data.stats.artistCount} />
-          <SnapshotMetric label="Saved tracks" value={data.stats.trackCount} />
-          <SnapshotMetric label="Recent plays" value={data.stats.recentPlayCount} />
-          <SnapshotMetric label="Modeled songs" value={data.stats.modeledTrackCount} />
-        </div>
-
-        <div className="mt-4 grid gap-2 sm:grid-cols-3">
-          <ReadinessPill label="Taste model" done={data.readiness.steps.embedded} detail={`${data.readiness.embeddedCount}/${data.readiness.requiredArtistCount} artists`} />
-          <ReadinessPill label="Song catalog" done={data.readiness.steps.tracks} detail={`${data.readiness.playableTrackCount}/${data.readiness.requiredPlayableTrackCount} playable`} />
-          <ReadinessPill label="Music context" done={data.readiness.steps.context} detail={`${data.stats.mentionCount.toLocaleString()} mentions`} />
-        </div>
+        <details className="mt-4 rounded-lg border border-neutral-200 bg-neutral-50/60 p-3">
+          <summary className="cursor-pointer text-xs font-medium text-neutral-700">
+            Model details
+          </summary>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <SnapshotMetric label="Artists" value={data.stats.artistCount} />
+            <SnapshotMetric label="Saved tracks" value={data.stats.trackCount} />
+            <SnapshotMetric label="Recent plays" value={data.stats.recentPlayCount} />
+            <SnapshotMetric label="Modeled songs" value={data.stats.modeledTrackCount} />
+          </div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            <ReadinessPill label="Taste model" done={data.readiness.steps.embedded} detail={`${data.readiness.embeddedCount}/${data.readiness.requiredArtistCount} artists`} />
+            <ReadinessPill label="Song catalog" done={data.readiness.steps.tracks} detail={`${data.readiness.playableTrackCount}/${data.readiness.requiredPlayableTrackCount} playable`} />
+            <ReadinessPill label="Music context" done={data.readiness.steps.context} detail={`${data.stats.mentionCount.toLocaleString()} mentions`} />
+          </div>
+        </details>
 
         {/* Re-import playlist for guests */}
         {isGuest && (
@@ -638,6 +687,21 @@ export default function LibraryView({
                 <span className="mt-1 block text-xs leading-relaxed text-neutral-500">{preset.body}</span>
               </button>
             ))}
+          </div>
+
+          <div className="grid gap-3 border-t border-neutral-100 pt-4 md:grid-cols-2">
+            <OptionGroup
+              title="Station distance"
+              options={DISTANCE_OPTIONS}
+              value={strategy.station_distance}
+              onChange={(value) => setStationDistance(value as TasteStrategy["station_distance"])}
+            />
+            <OptionGroup
+              title="Familiarity"
+              options={FAMILIARITY_OPTIONS}
+              value={strategy.familiarity}
+              onChange={(value) => setFamiliarity(value as TasteStrategy["familiarity"])}
+            />
           </div>
 
           <div className="space-y-3">

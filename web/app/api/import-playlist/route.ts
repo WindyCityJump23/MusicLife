@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getSessionUser } from "@/lib/session";
 import { getClientCredentialsToken } from "@/lib/spotify-client-credentials";
+import { createTasteSnapshot } from "@/lib/taste-snapshot";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -369,6 +370,8 @@ export async function POST(req: NextRequest) {
       .from("user_tracks")
       .upsert(batch, { onConflict: "user_id,track_id", ignoreDuplicates: true });
   }
+
+  void createTasteSnapshot({ sb, userId, reason: "playlist_import" });
 
   // ── Kick off enrichment pipeline ──────────────────────────────
   const apiUrl = process.env.NEXT_PUBLIC_API_URL;

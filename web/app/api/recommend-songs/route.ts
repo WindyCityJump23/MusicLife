@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
     try {
       const { data } = await supabaseServer()
         .from("user_taste_strategy")
-        .select("genre_boosts,genre_avoids,discovery_mix,live_expansion,freshness")
+        .select("genre_boosts,genre_avoids,discovery_mix,station_distance,familiarity,live_expansion,freshness")
         .eq("user_id", user.userId)
         .maybeSingle();
       tasteStrategy = data ?? null;

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
 import { supabaseServer } from "@/lib/supabase-server";
+import { createTasteSnapshot } from "@/lib/taste-snapshot";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,8 @@ type TasteStrategy = {
   genre_boosts: string[];
   genre_avoids: string[];
   discovery_mix: DiscoveryMix;
+  station_distance: "closer" | "balanced" | "further";
+  familiarity: "anchors" | "balanced" | "surprises";
   live_expansion: "auto" | "catalog" | "live";
   freshness: "newer" | "balanced" | "timeless";
 };
@@ -22,6 +25,8 @@ const DEFAULT_STRATEGY: TasteStrategy = {
   genre_boosts: [],
   genre_avoids: [],
   discovery_mix: { deep_cuts: 38, popular: 38, radio_hits: 24 },
+  station_distance: "balanced",
+  familiarity: "balanced",
   live_expansion: "auto",
   freshness: "balanced",
 };
@@ -62,12 +67,20 @@ function normalizeStrategy(value: unknown): TasteStrategy {
   const freshness = raw.freshness === "newer" || raw.freshness === "timeless"
     ? raw.freshness
     : "balanced";
+  const stationDistance = raw.station_distance === "closer" || raw.station_distance === "further"
+    ? raw.station_distance
+    : "balanced";
+  const familiarity = raw.familiarity === "anchors" || raw.familiarity === "surprises"
+    ? raw.familiarity
+    : "balanced";
   const avoids = cleanList(raw.genre_avoids);
   const avoidSet = new Set(avoids);
   return {
     genre_boosts: cleanList(raw.genre_boosts).filter((genre) => !avoidSet.has(genre)),
     genre_avoids: avoids,
     discovery_mix: cleanMix(raw.discovery_mix),
+    station_distance: stationDistance,
+    familiarity,
     live_expansion: liveExpansion,
     freshness,
   };
@@ -80,7 +93,7 @@ export async function GET(req: NextRequest) {
   const sb = supabaseServer();
   const { data, error } = await sb
     .from("user_taste_strategy")
-    .select("genre_boosts,genre_avoids,discovery_mix,live_expansion,freshness,updated_at")
+    .select("genre_boosts,genre_avoids,discovery_mix,station_distance,familiarity,live_expansion,freshness,updated_at")
     .eq("user_id", user.userId)
     .maybeSingle();
 
@@ -112,18 +125,22 @@ export async function PUT(req: NextRequest) {
         genre_boosts: strategy.genre_boosts,
         genre_avoids: strategy.genre_avoids,
         discovery_mix: strategy.discovery_mix,
+        station_distance: strategy.station_distance,
+        familiarity: strategy.familiarity,
         live_expansion: strategy.live_expansion,
         freshness: strategy.freshness,
       },
       { onConflict: "user_id" }
     )
-    .select("genre_boosts,genre_avoids,discovery_mix,live_expansion,freshness,updated_at")
+    .select("genre_boosts,genre_avoids,discovery_mix,station_distance,familiarity,live_expansion,freshness,updated_at")
     .single();
 
   if (error) {
     console.error("taste-strategy: write failed", error);
     return NextResponse.json({ error: "Failed to save taste strategy" }, { status: 500 });
   }
+
+  await createTasteSnapshot({ sb, userId: user.userId, reason: "strategy_saved" });
 
   return NextResponse.json({
     ok: true,

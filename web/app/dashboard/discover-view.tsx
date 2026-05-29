@@ -667,13 +667,21 @@ function shapeStationForFreshAir(
   return [...blended, ...fill].slice(0, target);
 }
 
-function toQueueTracks(songs: SongRecommendation[]): QueueTrack[] {
+function toQueueTracks(
+  songs: SongRecommendation[],
+  meta: { stationRunId?: string | null; prompt?: string } = {}
+): QueueTrack[] {
   return interleaveForPlayback(songs)
     .filter((s) => s.spotify_track_id)
-    .map((s) => ({
+    .map((s, index) => ({
       spotifyTrackId: s.spotify_track_id,
       trackName: s.track_name,
       artistName: s.artist_name,
+      trackId: s.track_id,
+      artistId: s.artist_id,
+      stationRunId: meta.stationRunId ?? null,
+      position: index + 1,
+      prompt: meta.prompt || undefined,
     }));
 }
 
@@ -1337,7 +1345,7 @@ export default function DiscoverView({
     const cached = readDiscoverCache(prompt, weights, currentStrategyKey);
     if (cached) {
       setResults(cached);
-      setQueue(toQueueTracks(cached));
+      setQueue(toQueueTracks(cached, { stationRunId: stationRunId, prompt }));
       void refreshTrackState(cached);
       setStationFallbackLevel("cache");
       setStationNotice("Playing your saved station while fresh picks tune.");
@@ -1351,8 +1359,9 @@ export default function DiscoverView({
       if (cancelled) return;
       if (station?.results?.length) {
         setResults(station.results);
-        setQueue(toQueueTracks(station.results));
-        setStationRunId(station.station_id ?? station.run_id ?? null);
+        const loadedStationId = station.station_id ?? station.run_id ?? null;
+        setQueue(toQueueTracks(station.results, { stationRunId: loadedStationId, prompt }));
+        setStationRunId(loadedStationId);
         setStationFallbackLevel(station.fallback_level ?? "cache");
         setStationNotice(
           station.fallback_level === "starter"
@@ -1483,7 +1492,7 @@ export default function DiscoverView({
           setStationRunId(cachedStationId);
           setStationFallbackLevel("fresh");
           setStationNotice(null);
-          setQueue(toQueueTracks(finalResults));
+          setQueue(toQueueTracks(finalResults, { stationRunId: cachedStationId, prompt }));
           await refreshTrackState(finalResults);
           return;
         }
@@ -1604,7 +1613,7 @@ export default function DiscoverView({
             setStationRunId(freshStationId ?? cachedStationId);
             setStationFallbackLevel(freshFallbackLevel);
             setStationNotice("Playing the strongest available picks. Reconnect Spotify to widen the station.");
-            setQueue(toQueueTracks(deduped));
+            setQueue(toQueueTracks(deduped, { stationRunId: freshStationId ?? cachedStationId, prompt }));
             void refreshTrackState(deduped);
             return;
           }
@@ -1778,6 +1787,7 @@ export default function DiscoverView({
       }
 
       setResults(finalResults);
+      let finalStationId: string | null = freshStationId;
       if (finalResults.length > 0) {
         writeDiscoverCache(prompt, weights, currentStrategyKey, finalResults);
         const stationSourceMix = Object.keys(freshSourceMix).length
@@ -1789,7 +1799,8 @@ export default function DiscoverView({
           results: finalResults,
           sourceMix: stationSourceMix,
         });
-        setStationRunId(freshStationId ?? cachedStationId);
+        finalStationId = freshStationId ?? cachedStationId;
+        setStationRunId(finalStationId);
         setStationFallbackLevel(freshFallbackLevel);
         const warningCopy = freshWarnings.includes("time_budget_exhausted")
           ? "Fresh picks were bounded by time, so this station uses the best available results."
@@ -1803,7 +1814,7 @@ export default function DiscoverView({
 
       // Set the player queue so songs auto-advance (Spotify users only)
       if (!isGuest) {
-        setQueue(toQueueTracks(finalResults));
+        setQueue(toQueueTracks(finalResults, { stationRunId: finalStationId, prompt }));
       }
 
       // Fetch initial favorite and feedback state
@@ -1826,10 +1837,15 @@ export default function DiscoverView({
     const tracks = songs.filter((s) => s.spotify_track_id);
     if (tracks.length === 0) return;
 
-    const qTracks: QueueTrack[] = tracks.map((s) => ({
+    const qTracks: QueueTrack[] = tracks.map((s, index) => ({
       spotifyTrackId: s.spotify_track_id,
       trackName: s.track_name,
       artistName: s.artist_name,
+      trackId: s.track_id,
+      artistId: s.artist_id,
+      stationRunId,
+      position: index + 1,
+      prompt: prompt || undefined,
     }));
     setQueue(qTracks);
     await playFromQueue(0);
