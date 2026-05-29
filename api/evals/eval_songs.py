@@ -621,6 +621,34 @@ def eval_prompted_search_scans_track_catalog() -> EvalResult:
     )
 
 
+def eval_prompt_exactness() -> EvalResult:
+    """Typed prompts should remain steering commands throughout the Radio flow."""
+    discover_file = _API_DIR.parent / "web" / "app" / "dashboard" / "discover-view.tsx"
+    recommend_route = _API_DIR.parent / "web" / "app" / "api" / "recommend-songs" / "route.ts"
+    discover_source = discover_file.read_text()
+    recommend_source = recommend_route.read_text()
+
+    required_patterns = [
+        "const promptSongsPromise = promptForLiveSearch && !isGuest",
+        "fetchPromptSpotifySongs(promptForLiveSearch",
+        "if (promptSongs.length > 0)",
+        "promptMode: true",
+        "taste_strategy: prompt.trim() ? null : tasteStrategy",
+        "taste_strategy: prompt ? null : tasteStrategy",
+    ]
+    sources = discover_source + "\n" + recommend_source
+    missing = [pattern for pattern in required_patterns if pattern not in sources]
+    passed = not missing
+    return EvalResult(
+        name="prompt_exactness",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="typed prompts run prompt Spotify search and do not apply saved taste strategy to backend prompt runs"
+        if passed
+        else f"missing={missing}",
+    )
+
+
 def eval_zero_play_added_at_tracks_do_not_crash() -> EvalResult:
     """Zero-play saved tracks with added_at should be valid song-ranking input."""
     now = datetime.now(timezone.utc)
@@ -849,6 +877,34 @@ def eval_client_composed_stations_record_runs() -> EvalResult:
     )
 
 
+def eval_cache_does_not_poison_prompt() -> EvalResult:
+    """Cached unprompted stations must not override a typed prompt station."""
+    discover_file = _API_DIR.parent / "web" / "app" / "dashboard" / "discover-view.tsx"
+    station_last = _API_DIR.parent / "web" / "app" / "api" / "station" / "last" / "route.ts"
+    discover_source = discover_file.read_text()
+    station_source = station_last.read_text()
+
+    required_patterns = [
+        "cached.prompt !== prompt",
+        "prompt: prompt.trim()",
+        "serverStationKey(prompt, strategy)",
+        "cacheKey(prompt, strategy)",
+        ".eq(\"cache_key\", key)",
+        "if (!prompt.trim())",
+    ]
+    sources = discover_source + "\n" + station_source
+    missing = [pattern for pattern in required_patterns if pattern not in sources]
+    passed = not missing
+    return EvalResult(
+        name="cache_does_not_poison_prompt",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="browser and server station caches include prompt in their keys; starter fallback is unprompted only"
+        if passed
+        else f"missing={missing}",
+    )
+
+
 # ── Suite runner ─────────────────────────────────────────────────
 
 
@@ -870,10 +926,12 @@ def run_suite() -> list[EvalResult]:
         eval_vibe_query_extracts_complaint_sentence(),
         eval_vibe_query_expands_activity_metaphor(),
         eval_prompted_search_scans_track_catalog(),
+        eval_prompt_exactness(),
         eval_zero_play_added_at_tracks_do_not_crash(),
         eval_audio_profile_prefers_recent_saves_without_play_counts(),
         eval_no_raw_abort_copy(),
         eval_play_learning_requires_dwell(),
         eval_station_fallbacks_are_observable(),
         eval_client_composed_stations_record_runs(),
+        eval_cache_does_not_poison_prompt(),
     ]
