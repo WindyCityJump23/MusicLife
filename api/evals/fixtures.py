@@ -349,6 +349,12 @@ def _make_track(
     artist_id: int,
     popularity: int = 70,
     vec_seed: int | None = None,
+    instrumentalness: float | None = None,
+    speechiness: float | None = None,
+    energy: float | None = None,
+    danceability: float | None = None,
+    valence: float | None = None,
+    acousticness: float | None = None,
 ) -> dict:
     return {
         "id": track_id,
@@ -359,13 +365,13 @@ def _make_track(
         "popularity": popularity,
         "spotify_track_id": f"sp_track_{track_id}",
         "explicit": False,
-        "energy": None,
-        "danceability": None,
-        "valence": None,
+        "energy": energy,
+        "danceability": danceability,
+        "valence": valence,
         "tempo": None,
-        "acousticness": None,
-        "instrumentalness": None,
-        "speechiness": None,
+        "acousticness": acousticness,
+        "instrumentalness": instrumentalness,
+        "speechiness": speechiness,
         "embedding": _rand_vec(8, seed=vec_seed or (track_id + 200)),
     }
 
@@ -389,6 +395,12 @@ TRACKS = [
     # Aphex Twin (artist 21)
     _make_track(151, "Windowlicker", 21, popularity=72, vec_seed=251),
     _make_track(152, "Come to Daddy", 21, popularity=65, vec_seed=252),
+    # Utility/instrumental test tracks (artist 1 — Miles Davis)
+    _make_track(103, "Meditation Ambient", 1, popularity=30, vec_seed=203, instrumentalness=0.95),
+    _make_track(104, "Podcast Intro", 1, popularity=25, vec_seed=204, speechiness=0.85),
+    # Audio feature test tracks (artist 11 — Led Zeppelin)
+    _make_track(133, "High Energy Track", 11, popularity=75, vec_seed=233, energy=0.95, danceability=0.8, valence=0.7, acousticness=0.1),
+    _make_track(134, "Mellow Acoustic", 11, popularity=75, vec_seed=234, energy=0.15, danceability=0.2, valence=0.3, acousticness=0.9),
 ]
 
 

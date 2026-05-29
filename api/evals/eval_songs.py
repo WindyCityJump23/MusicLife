@@ -23,6 +23,7 @@ from evals.fixtures import (
     JAZZ_TASTE_VECTOR,
     JAZZ_USER,
     ROCK_ARTISTS,
+    ROCK_TASTE_VECTOR,
     SOURCES,
     TRACKS,
     UserScenario,
@@ -927,6 +928,197 @@ def eval_api_health_is_lightweight() -> EvalResult:
     )
 
 
+# ── Content quality evals ───────────────────────────────────────
+
+
+def eval_instrumental_penalized() -> EvalResult:
+    """A highly instrumental track should score below a normal track from the same artist.
+
+    Miles Davis artist 1 has track 103 (instrumentalness=0.95) and track 101
+    (instrumentalness=None). The instrumental penalty (0.35x) should push
+    the utility track well below the normal track.
+    """
+    partial_user = UserScenario(
+        user_id="user_inst_test",
+        library_artist_ids=[1],
+        played_track_ids=[],
+        top_artist_ids=[1],
+        taste_vector=JAZZ_TASTE_VECTOR,
+    )
+    test_tracks = [t for t in TRACKS if t["artist_id"] == 1 and t["id"] in (101, 103)]
+    client = build_mock_client(partial_user, artists=JAZZ_ARTISTS[:1], tracks=test_tracks)
+    results = recommend_songs(
+        client=client,
+        user_id=partial_user.user_id,
+        taste_vector=JAZZ_TASTE_VECTOR,
+        prompt_vector=None,
+        weights=_weights(),
+        exclude_library=False,
+        limit=10,
+    )
+    by_track = {r["track_name"]: r for r in results}
+    normal = by_track.get("Kind of Blue")
+    instrumental = by_track.get("Meditation Ambient")
+
+    if normal is None:
+        return EvalResult(
+            name="instrumental_penalized",
+            passed=False,
+            score=0.0,
+            details="Normal track 'Kind of Blue' missing from results",
+        )
+
+    # Instrumental track may be completely excluded by the shortlist gate
+    if instrumental is None:
+        return EvalResult(
+            name="instrumental_penalized",
+            passed=True,
+            score=1.0,
+            details="Instrumental track filtered out by shortlist gate — correct behavior",
+        )
+
+    passed = normal["score"] > instrumental["score"]
+    return EvalResult(
+        name="instrumental_penalized",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=(
+            f"Normal 'Kind of Blue' score={normal['score']:.4f} vs "
+            f"instrumental 'Meditation Ambient' score={instrumental['score']:.4f}"
+        ),
+    )
+
+
+def eval_spoken_word_penalized() -> EvalResult:
+    """A high-speechiness track should score below a normal track from the same artist.
+
+    Miles Davis artist 1 has track 104 (speechiness=0.85) and track 101
+    (speechiness=None). The spoken-word penalty (0.30x) should push
+    the podcast-like track well below the normal track.
+    """
+    partial_user = UserScenario(
+        user_id="user_speech_test",
+        library_artist_ids=[1],
+        played_track_ids=[],
+        top_artist_ids=[1],
+        taste_vector=JAZZ_TASTE_VECTOR,
+    )
+    test_tracks = [t for t in TRACKS if t["artist_id"] == 1 and t["id"] in (101, 104)]
+    client = build_mock_client(partial_user, artists=JAZZ_ARTISTS[:1], tracks=test_tracks)
+    results = recommend_songs(
+        client=client,
+        user_id=partial_user.user_id,
+        taste_vector=JAZZ_TASTE_VECTOR,
+        prompt_vector=None,
+        weights=_weights(),
+        exclude_library=False,
+        limit=10,
+    )
+    by_track = {r["track_name"]: r for r in results}
+    normal = by_track.get("Kind of Blue")
+    spoken = by_track.get("Podcast Intro")
+
+    if normal is None:
+        return EvalResult(
+            name="spoken_word_penalized",
+            passed=False,
+            score=0.0,
+            details="Normal track 'Kind of Blue' missing from results",
+        )
+
+    if spoken is None:
+        return EvalResult(
+            name="spoken_word_penalized",
+            passed=True,
+            score=1.0,
+            details="Spoken-word track filtered out by shortlist gate — correct behavior",
+        )
+
+    passed = normal["score"] > spoken["score"]
+    return EvalResult(
+        name="spoken_word_penalized",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=(
+            f"Normal 'Kind of Blue' score={normal['score']:.4f} vs "
+            f"spoken-word 'Podcast Intro' score={spoken['score']:.4f}"
+        ),
+    )
+
+
+def eval_audio_match_meaningful() -> EvalResult:
+    """Audio feature matching should meaningfully differentiate tracks.
+
+    A user whose saved library is exclusively high-energy tracks should see
+    high-energy candidates score higher than mellow candidates. The user's
+    library contains only high-energy tracks (via a dedicated track) so the
+    audio profile is clearly high-energy, making the differentiation obvious.
+    """
+    # Create a library track with high energy for audio profile building.
+    # This is the ONLY saved track, so the profile is purely high-energy.
+    energy_lib_track = _make_track(
+        901, "Energy Lib", 11, popularity=80, vec_seed=901,
+        energy=0.92, danceability=0.85, valence=0.75, acousticness=0.05,
+    )
+    high_energy_user = UserScenario(
+        user_id="user_energy_test",
+        library_artist_ids=[11],
+        played_track_ids=[],
+        top_artist_ids=[11],
+        taste_vector=ROCK_TASTE_VECTOR,
+        user_tracks=[
+            {"track_id": 901, "play_count": 0, "last_played_at": None,
+             "added_at": (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()},
+        ],
+    )
+    test_tracks = [
+        energy_lib_track,
+        _make_track(902, "Candidate High Energy", 11, popularity=75, vec_seed=902,
+                    energy=0.90, danceability=0.80, valence=0.70, acousticness=0.10),
+        _make_track(903, "Candidate Mellow", 11, popularity=75, vec_seed=903,
+                    energy=0.15, danceability=0.20, valence=0.25, acousticness=0.90),
+    ]
+    client = build_mock_client(
+        high_energy_user,
+        artists=[a for a in ALL_ARTISTS if a["id"] == 11],
+        tracks=test_tracks,
+    )
+    results = recommend_songs(
+        client=client,
+        user_id=high_energy_user.user_id,
+        taste_vector=ROCK_TASTE_VECTOR,
+        prompt_vector=None,
+        weights=_weights(),
+        exclude_library=False,
+        limit=10,
+        exploration_seed=42,
+    )
+    by_track = {r["track_name"]: r for r in results}
+    high_e = by_track.get("Candidate High Energy")
+    low_e = by_track.get("Candidate Mellow")
+
+    if high_e is None or low_e is None:
+        present = [r["track_name"] for r in results]
+        return EvalResult(
+            name="audio_match_meaningful",
+            passed=False,
+            score=0.0,
+            details=f"Missing track(s). Present: {present}",
+        )
+
+    gap = high_e["score"] - low_e["score"]
+    passed = high_e["score"] > low_e["score"]
+    return EvalResult(
+        name="audio_match_meaningful",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=(
+            f"High energy score={high_e['score']:.4f} vs "
+            f"mellow score={low_e['score']:.4f} (gap={gap:.4f})"
+        ),
+    )
+
+
 # ── Suite runner ─────────────────────────────────────────────────
 
 
@@ -957,4 +1149,7 @@ def run_suite() -> list[EvalResult]:
         eval_client_composed_stations_record_runs(),
         eval_cache_does_not_poison_prompt(),
         eval_api_health_is_lightweight(),
+        eval_instrumental_penalized(),
+        eval_spoken_word_penalized(),
+        eval_audio_match_meaningful(),
     ]
