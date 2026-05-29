@@ -32,6 +32,49 @@ function cacheKey(prompt: string, strategy: unknown): string {
   });
 }
 
+async function recordStationRun({
+  userId,
+  prompt,
+  strategy,
+  status,
+  fallbackLevel,
+  resultCount,
+  latencyMs,
+  sourceMix,
+}: {
+  userId: string;
+  prompt: string | null;
+  strategy: unknown;
+  status: "cache" | "starter" | "empty";
+  fallbackLevel: "cache" | "starter" | "empty";
+  resultCount: number;
+  latencyMs: number;
+  sourceMix?: unknown;
+}): Promise<string | null> {
+  try {
+    const { data, error } = await supabaseServer()
+      .from("station_runs")
+      .insert({
+        user_id: userId,
+        prompt,
+        strategy: strategy && typeof strategy === "object" ? strategy : {},
+        status,
+        fallback_level: fallbackLevel,
+        result_count: resultCount,
+        latency_ms: latencyMs,
+        source_mix: sourceMix && typeof sourceMix === "object" ? sourceMix : {},
+        error_class: null,
+      })
+      .select("id")
+      .maybeSingle();
+    if (error) throw error;
+    return typeof data?.id === "string" ? data.id : null;
+  } catch (err) {
+    console.warn("station-last: station run telemetry failed", err);
+    return null;
+  }
+}
+
 function laneForPopularity(popularity: number): "deep_cuts" | "popular" | "radio_hits" {
   if (popularity >= 78) return "radio_hits";
   if (popularity < 46) return "deep_cuts";
@@ -144,6 +187,7 @@ async function buildStarterStation(userId: string) {
 }
 
 export async function GET(req: NextRequest) {
+  const startedAt = Date.now();
   const user = requireUser(req);
   if (isErrorResponse(user)) return user;
 
@@ -170,8 +214,19 @@ export async function GET(req: NextRequest) {
     .maybeSingle();
 
   if (cached?.results && Array.isArray(cached.results) && cached.results.length > 0) {
+    const runId = await recordStationRun({
+      userId: user.userId,
+      prompt: prompt.trim() || null,
+      strategy,
+      status: "cache",
+      fallbackLevel: "cache",
+      resultCount: cached.results.length,
+      latencyMs: Date.now() - startedAt,
+      sourceMix: cached.source_mix ?? {},
+    });
     return NextResponse.json({
       station_id: cached.id,
+      run_id: runId,
       fallback_level: "cache",
       results: cached.results,
       source_mix: cached.source_mix ?? {},
@@ -182,11 +237,37 @@ export async function GET(req: NextRequest) {
   if (!prompt.trim()) {
     const starter = await buildStarterStation(user.userId);
     if (starter) {
-      return NextResponse.json(starter);
+      const runId = await recordStationRun({
+        userId: user.userId,
+        prompt: null,
+        strategy,
+        status: "starter",
+        fallbackLevel: "starter",
+        resultCount: starter.results.length,
+        latencyMs: Date.now() - startedAt,
+        sourceMix: starter.source_mix,
+      });
+      return NextResponse.json({
+        ...starter,
+        station_id: runId,
+        run_id: runId,
+      });
     }
   }
 
+  const runId = await recordStationRun({
+    userId: user.userId,
+    prompt: prompt.trim() || null,
+    strategy,
+    status: "empty",
+    fallbackLevel: "empty",
+    resultCount: 0,
+    latencyMs: Date.now() - startedAt,
+    sourceMix: {},
+  });
   return NextResponse.json({
+    station_id: runId,
+    run_id: runId,
     fallback_level: "empty",
     results: [],
     source_mix: {},

@@ -775,6 +775,46 @@ def eval_play_learning_requires_dwell() -> EvalResult:
     )
 
 
+def eval_station_fallbacks_are_observable() -> EvalResult:
+    """Cache, starter, and empty Radio fallbacks should be visible in station telemetry."""
+    station_file = _API_DIR.parent / "web" / "app" / "api" / "station" / "last" / "route.ts"
+    health_file = _API_DIR.parent / "web" / "app" / "api" / "radio-health" / "route.ts"
+    station_source = station_file.read_text()
+    health_source = health_file.read_text()
+
+    required_station_patterns = [
+        '.from("station_runs")',
+        'status: "cache"',
+        'fallbackLevel: "cache"',
+        'status: "starter"',
+        'fallbackLevel: "starter"',
+        'status: "empty"',
+        'fallbackLevel: "empty"',
+        "run_id:",
+    ]
+    required_health_patterns = [
+        'run.fallback_level === "cache"',
+        'run.fallback_level === "starter"',
+        "cache_hit_rate",
+    ]
+    missing = [
+        pattern
+        for pattern in required_station_patterns
+        if pattern not in station_source
+    ] + [
+        pattern
+        for pattern in required_health_patterns
+        if pattern not in health_source
+    ]
+    passed = not missing
+    return EvalResult(
+        name="station_fallbacks_are_observable",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="cache/starter/empty station fallbacks write station_runs" if passed else f"missing={missing}",
+    )
+
+
 # ── Suite runner ─────────────────────────────────────────────────
 
 
@@ -800,4 +840,5 @@ def run_suite() -> list[EvalResult]:
         eval_audio_profile_prefers_recent_saves_without_play_counts(),
         eval_no_raw_abort_copy(),
         eval_play_learning_requires_dwell(),
+        eval_station_fallbacks_are_observable(),
     ]
