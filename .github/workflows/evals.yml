@@ -11,14 +11,23 @@ jobs:
   # ── PR: non-LLM suites ────────────────────────────────────────────
   evals-pr:
     if: github.event_name == 'pull_request'
-    name: Evals (non-LLM)
+    name: Build, Evals, and Diagnostics
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: api
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        run: npm --prefix web ci
+
+      - name: Build web
+        run: npm --prefix web run build
 
       - uses: actions/setup-python@v5
         with:
@@ -26,10 +35,24 @@ jobs:
           cache: pip
 
       - name: Install dependencies
+        working-directory: api
         run: pip install -r requirements.txt
 
       - name: Run non-LLM eval suites
+        working-directory: api
         run: python -m evals.run_evals --suite ranking,songs,context,synthesis --json eval-results/report.json
+
+      - name: Run static ranking diagnostics
+        working-directory: api
+        run: |
+          python - <<'PY'
+          from app.services.ranking_diagnostics import run_diagnostics
+          report = run_diagnostics(run_static=True, run_runtime=False).as_dict()
+          summary = report["summary"]
+          print(summary)
+          if summary["errors"] or summary["warnings"]:
+              raise SystemExit(f"static diagnostics failed: {summary}")
+          PY
 
   # ── Nightly: full suite with LLM-judge evals ─────────────────────
   evals-nightly:
