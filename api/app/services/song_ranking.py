@@ -45,6 +45,9 @@ from app.services.vector_rpc import (
 DISCOVERY_LANES = ("deep_cuts", "popular", "radio_hits")
 DEFAULT_DISCOVERY_MIX = {"deep_cuts": 38.0, "popular": 38.0, "radio_hits": 24.0}
 
+_AUDIO_DIMENSION_WEIGHTS = {"energy": 1.5, "valence": 1.3, "danceability": 1.0, "acousticness": 0.8}
+_AUDIO_DIM_WEIGHT_TOTAL = sum(_AUDIO_DIMENSION_WEIGHTS.values())
+
 _GENRE_PHRASES = {
     "alternative rock",
     "hip hop",
@@ -1238,12 +1241,6 @@ def recommend_songs(
                 track_boost *= 1.10
 
             # Audio feature alignment: prefer tracks that sound like the user's library.
-            _AUDIO_DIMENSION_WEIGHTS = {
-                "energy": 1.5,
-                "valence": 1.3,
-                "danceability": 1.0,
-                "acousticness": 0.8,
-            }
             if user_audio_pref:
                 _known_count = sum(1 for k in _AUDIO_DIMENSION_WEIGHTS if track.get(k) is not None)
                 if _known_count < 2:
@@ -1254,8 +1251,7 @@ def recommend_songs(
                         (float(track.get(k) or 0.5) - user_audio_pref.get(k, 0.5)) ** 2
                         for k in _AUDIO_DIMENSION_WEIGHTS
                     )
-                    _total_dim_weight = sum(_AUDIO_DIMENSION_WEIGHTS.values())
-                    _audio_match = 1.0 - math.sqrt(_weighted_diff_sq / _total_dim_weight)
+                    _audio_match = 1.0 - math.sqrt(_weighted_diff_sq / _AUDIO_DIM_WEIGHT_TOTAL)
                     track_boost *= 0.78 + 0.30 * _audio_match
 
             # Instrumental / spoken-word penalty: filter utility tracks
@@ -1333,35 +1329,7 @@ def recommend_songs(
                 release_age,
             )
 
-            # ── Lane assignment (moved before boost so deep cuts get quality scoring) ──
-            lane = _assign_lane(track_pop, in_library, is_library_artist, a_info["editorial"])
-
-            dcq = 0.0
-            if lane == "deep_cuts":
-                dcq = _deep_cut_quality(
-                    track_pop, a_info["editorial"], track_context,
-                    track_affinity, is_library_artist, used_track_embedding,
-                )
-                track_boost *= 0.88 + 0.24 * dcq
-            else:
-                track_boost *= 0.92 + 0.18 * novelty
-
-            # Exploration
-            exploration = rng.uniform(-EXPLORATION_STRENGTH, EXPLORATION_STRENGTH)
-
-            final_score = track_base * track_boost + exploration
-
-            familiarity_score = 0.0
-            if in_library:
-                familiarity_score = 1.0
-            elif is_library_artist:
-                familiarity_score = 0.6
-            elif aid in previously_recommended:
-                familiarity_score = 0.3
-
-            novelty_score = 1.0 - familiarity_score
-
-            # Build reasons
+            # ── Build reasons (needed by _lane_for_track below) ───────────────
             reasons = []
             if track_affinity > 0.55:
                 reasons.append("Matches your taste")
@@ -1391,6 +1359,10 @@ def recommend_songs(
             if not reasons:
                 reasons.append("Curated pick")
 
+            # ── Single lane assignment using the richer function ─────────────
+            # _lane_for_track considers genres (indie/underground) and reasons
+            # in addition to popularity, giving more accurate lane labels.
+            # This is computed before the boost so deep cuts get quality scoring.
             lane = _lane_for_track(
                 track_pop,
                 a_info["genres"],
@@ -1398,6 +1370,31 @@ def recommend_songs(
                 a_info["editorial"],
                 release_age,
             )
+
+            dcq = 0.0
+            if lane == "deep_cuts":
+                dcq = _deep_cut_quality(
+                    track_pop, a_info["editorial"], track_context,
+                    track_affinity, is_library_artist, used_track_embedding,
+                )
+                track_boost *= 0.88 + 0.24 * dcq
+            else:
+                track_boost *= 0.92 + 0.18 * novelty
+
+            # Exploration
+            exploration = rng.uniform(-EXPLORATION_STRENGTH, EXPLORATION_STRENGTH)
+
+            final_score = track_base * track_boost + exploration
+
+            familiarity_score = 0.0
+            if in_library:
+                familiarity_score = 1.0
+            elif is_library_artist:
+                familiarity_score = 0.6
+            elif aid in previously_recommended:
+                familiarity_score = 0.3
+
+            novelty_score = 1.0 - familiarity_score
 
             song_results.append({
                 "track_id": str(track_id) if track_id else None,
