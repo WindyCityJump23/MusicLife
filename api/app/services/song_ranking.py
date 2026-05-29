@@ -180,6 +180,26 @@ def _lane_for_track(
     return "popular"
 
 
+def _deep_cut_quality(
+    track_pop: float,
+    artist_editorial: float,
+    track_context: float,
+    track_affinity: float,
+    is_library_artist: bool,
+    has_track_embedding: bool,
+) -> float:
+    """Score how good a deep cut candidate is, independent of popularity."""
+    quality = 0.0
+    quality += 0.30 * min(1.0, artist_editorial * 2.0)
+    quality += 0.25 * track_affinity
+    quality += 0.20 * track_context
+    if is_library_artist:
+        quality += 0.15
+    if has_track_embedding:
+        quality += 0.10
+    return min(1.0, quality)
+
+
 def _novelty_score(
     track_pop: float,
     editorial: float,
@@ -606,9 +626,9 @@ def recommend_songs(
     if not has_explicit_prompt:
         redistributed = weights.get("context", 0.0)
         weights = {
-            "affinity": weights["affinity"] + redistributed * 0.8,
-            "context": 0.0,  # No prompt = no context signal
-            "editorial": weights["editorial"] + redistributed * 0.2,
+            "affinity": weights["affinity"] + redistributed * 0.35,
+            "context": 0.0,
+            "editorial": weights["editorial"] + redistributed * 0.65,
         }
 
     # Per-artist max(cosine(prompt|taste, mention.embedding)) computed in
@@ -750,6 +770,20 @@ def recommend_songs(
             # Scale: 0 for no overlap, up to ~0.15 boost for strong match
             affinity = min(1.0, affinity + genre_boost * 0.15)
 
+        # ── Taste diversity bonus ──────────────────────────────
+        # When a user likes multiple genres (jazz + electronic), the single
+        # taste centroid sits between them, giving mediocre affinity to
+        # everything. Rescue artists that match a strong user genre but
+        # scored poorly against the averaged centroid.
+        if user_genre_weights and artist_genres and affinity <= 0.65:
+            _best_genre_match = max(
+                (user_genre_weights.get(g, 0.0) for g in artist_genres),
+                default=0.0,
+            )
+            if _best_genre_match >= 0.4:
+                _gap = max(0.0, 0.65 - affinity)
+                affinity = min(1.0, affinity + min(0.15, _gap * _best_genre_match * 0.5))
+
         artist_mentions = mentions_by_artist.get(aid, [])
         editorial_components: list[float] = []
         best_mention: dict | None = None
@@ -797,6 +831,15 @@ def recommend_songs(
             + weights["context"] * context
             + weights["editorial"] * editorial
         )
+
+        # Editorial floor: when editorial is non-trivial but being drowned
+        # out by affinity, add a small floor so editorially-covered artists
+        # aren't invisible in unprompted discovery.
+        if not has_explicit_prompt and editorial > 0.1:
+            _aff_contrib = weights["affinity"] * affinity
+            _ed_contrib = weights["editorial"] * editorial
+            if _aff_contrib > 0 and _ed_contrib / _aff_contrib < 0.08:
+                base_score += editorial * 0.06
 
         if aid in previously_recommended:
             base_score *= 0.90 if has_explicit_prompt else 0.70
@@ -1289,15 +1332,24 @@ def recommend_songs(
                 is_library_artist,
                 release_age,
             )
-            track_boost *= 0.92 + 0.18 * novelty
+
+            # ── Lane assignment (moved before boost so deep cuts get quality scoring) ──
+            lane = _assign_lane(track_pop, in_library, is_library_artist, a_info["editorial"])
+
+            dcq = 0.0
+            if lane == "deep_cuts":
+                dcq = _deep_cut_quality(
+                    track_pop, a_info["editorial"], track_context,
+                    track_affinity, is_library_artist, used_track_embedding,
+                )
+                track_boost *= 0.88 + 0.24 * dcq
+            else:
+                track_boost *= 0.92 + 0.18 * novelty
 
             # Exploration
             exploration = rng.uniform(-EXPLORATION_STRENGTH, EXPLORATION_STRENGTH)
 
             final_score = track_base * track_boost + exploration
-
-            # ── Lane + novelty/familiarity assignment ──────────────
-            lane = _assign_lane(track_pop, in_library, is_library_artist, a_info["editorial"])
 
             familiarity_score = 0.0
             if in_library:
@@ -1368,6 +1420,7 @@ def recommend_songs(
                     "novelty": round(novelty, 4),
                     "familiarity": round(1.0 - novelty, 4),
                     "track_embedding": used_track_embedding,
+                    "deep_cut_quality": round(dcq, 4),
                 },
                 "lane": lane,
                 "genres": a_info["genres"],
@@ -1808,12 +1861,7 @@ def _lane_aware_rerank(scored: list[dict], limit: int, strategy: dict | None = N
 
     for lane, rows in pools.items():
         rows.sort(
-            key=lambda r: (
-                float((r.get("signals") or {}).get("novelty") or 0.0)
-                if lane == "deep_cuts"
-                else float(r.get("score") or 0.0),
-                float(r.get("score") or 0.0),
-            ),
+            key=lambda r: float(r.get("score") or 0.0),
             reverse=True,
         )
 
