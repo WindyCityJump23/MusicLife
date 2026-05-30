@@ -517,17 +517,17 @@ function stationMixSummary(
   const catalogCount = Math.max(0, songs.length - liveCount);
   const hasPrompt = Boolean(prompt.trim());
   const targetFreshAir = hasPrompt ? promptAirTarget(songs.length) : freshAirTarget(songs.length);
-  let sourceInsight = "MusicLife now reserves outside air for freshness when Spotify can supply strong live candidates, even when the catalog is healthy.";
+  let sourceInsight = "MusicLife leaves room for fresh Spotify finds when they strengthen the station.";
   if (liveCount > 0 && catalogCount > 0) {
     sourceInsight = hasPrompt
-      ? `Expanded outside the catalog for this prompt while keeping modeled tracks as support. Target: about ${targetFreshAir} of ${songs.length}.`
-      : `Added outside-air Spotify matches to keep the station fresh beyond the modeled catalog. Target: about ${targetFreshAir} of ${songs.length}.`;
+      ? `Expanded this prompt with fresh Spotify matches while keeping your strongest matches in place. Target: about ${targetFreshAir} of ${songs.length}.`
+      : `Added fresh Spotify matches to keep the station moving. Target: about ${targetFreshAir} of ${songs.length}.`;
   } else if (liveCount > 0) {
-    sourceInsight = "Built from live Spotify because the catalog did not return enough playable matches.";
+    sourceInsight = "Built from live Spotify because those were the strongest playable matches for this run.";
   } else if (songs.length === 0) {
-    sourceInsight = "Tune the station to see whether the queue comes from the catalog, live Spotify, or both.";
+    sourceInsight = "Tune the station to see how MusicLife balances known anchors and fresh finds.";
   } else {
-    sourceInsight = "Why 0? Spotify search did not return usable outside-air candidates for this run, or the session could not access live Spotify. The catalog still filled the station.";
+    sourceInsight = "Spotify did not return usable fresh candidates for this run, so MusicLife filled the station from its strongest matches.";
   }
 
   return {
@@ -1029,7 +1029,7 @@ function liveTrackToRecommendation(
       familiarity: 0,
     },
     genres: [],
-    reasons: ["Live Spotify search", intent.label ?? "Outside catalog"],
+    reasons: ["Fresh Spotify search", intent.label ?? "Fresh discovery"],
     mention_count: 0,
     top_mention: null,
   };
@@ -1477,7 +1477,7 @@ export default function DiscoverView({
         if (promptSongs.length > 0) {
           let promptStationSongs = promptSongs;
           try {
-            setLoadingStage("Finding nearby artists and outside-air tracks\u2026");
+            setLoadingStage("Finding nearby artists and fresh discoveries\u2026");
             const liveSongs = await fetchLiveCandidateSongs(promptForLiveSearch, promptSongs, tasteStrategy);
             if (liveSongs.length > 0) {
               promptStationSongs = mergeCandidateSongs(promptSongs, liveSongs, {
@@ -2403,7 +2403,7 @@ function StationMixStrip({
             </span>
           </div>
           <p className="mt-1 text-xs leading-relaxed text-neutral-500">
-            {mix.total} songs: {mix.catalogCount} catalog-ranked and {mix.liveCount} outside-air Spotify sourced.
+            {mix.total} songs: {mix.catalogCount} MusicLife picks and {mix.liveCount} fresh Spotify finds.
           </p>
           <p className="mt-1 text-xs leading-relaxed text-neutral-400">
             {mix.sourceInsight}
@@ -2417,20 +2417,20 @@ function StationMixStrip({
             </p>
             <div className="grid gap-2 sm:grid-cols-2">
               <MixTile
-                label="Catalog-ranked"
+                label="MusicLife picks"
                 value={mix.catalogCount}
                 pct={mix.catalogCount / sourceTotal}
                 tone="bg-neutral-800"
               />
               <MixTile
-                label="Outside air"
+                label="Fresh Spotify"
                 value={mix.liveCount}
                 pct={mix.liveCount / sourceTotal}
                 tone="bg-emerald-500"
                 hint={
                   mix.liveCount === 0
-                    ? "Why 0? MusicLife tried to reserve fresh air, but no usable live Spotify candidates were available for this run."
-                    : "Tracks found from live Spotify search outside the modeled catalog."
+                    ? "MusicLife checked for fresh Spotify candidates, but none were strong enough for this run."
+                    : "Tracks found from live Spotify search when they improved the station."
                 }
               />
             </div>
@@ -2792,13 +2792,9 @@ function SongRow({
             )}
             {isLiveSourced(song) ? (
               <span className="inline-block rounded-full bg-blue-50 px-1.5 py-0.5 text-[9px] font-medium text-blue-600">
-                Live Spotify
+                Fresh Spotify
               </span>
-            ) : (
-              <span className="inline-block rounded-full bg-neutral-100 px-1.5 py-0.5 text-[9px] font-medium text-neutral-500">
-                Catalog-ranked
-              </span>
-            )}
+            ) : null}
             {song.top_mention?.source && (
               <SourceBadge mention={song.top_mention} />
             )}

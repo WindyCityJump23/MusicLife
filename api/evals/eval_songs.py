@@ -945,6 +945,35 @@ def eval_taste_snapshots_are_durable() -> EvalResult:
     )
 
 
+def eval_radio_copy_hides_debug_source_language() -> EvalResult:
+    """Default Radio/Taste surfaces should use product language, not pipeline labels."""
+    discover_file = _API_DIR.parent / "web" / "app" / "dashboard" / "discover-view.tsx"
+    library_file = _API_DIR.parent / "web" / "app" / "dashboard" / "library-view.tsx"
+    source = discover_file.read_text() + "\n" + library_file.read_text()
+    forbidden = [
+        "Catalog-ranked",
+        "catalog-ranked",
+        "outside-air",
+        "Outside air",
+        "outside air",
+        "modeled catalog",
+        "modeled tracks",
+        "Live Spotify",
+        "outside-catalog",
+        "Outside catalog",
+    ]
+    hits = [pattern for pattern in forbidden if pattern in source]
+    passed = not hits
+    return EvalResult(
+        name="radio_copy_hides_debug_source_language",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="Radio/Taste copy avoids catalog/outside-air implementation language"
+        if passed
+        else f"found={hits}",
+    )
+
+
 def eval_api_health_is_lightweight() -> EvalResult:
     """Backend /health should be fast liveness, with DB checks isolated in /ready."""
     main_file = _API_DIR / "app" / "main.py"
@@ -1262,6 +1291,7 @@ def run_suite() -> list[EvalResult]:
         eval_client_composed_stations_record_runs(),
         eval_cache_does_not_poison_prompt(),
         eval_taste_snapshots_are_durable(),
+        eval_radio_copy_hides_debug_source_language(),
         eval_api_health_is_lightweight(),
         eval_instrumental_penalized(),
         eval_instrumental_preference_allows_instrumental_shortlist(),

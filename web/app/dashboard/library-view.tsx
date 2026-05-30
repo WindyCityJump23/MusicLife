@@ -110,9 +110,9 @@ const LANE_META: Array<{ id: LaneKey; label: string; help: string; feeling: stri
 ];
 
 const LIVE_OPTIONS: Array<{ id: TasteStrategy["live_expansion"]; label: string; body: string }> = [
-  { id: "auto", label: "Balanced air", body: "Use the catalog as the spine while leaving room for fresh Spotify finds." },
-  { id: "catalog", label: "Close to core", body: "Stay nearest to modeled MusicLife matches, with outside air still in reserve." },
-  { id: "live", label: "Wide open", body: "Keep a larger window open for outside-catalog Spotify discoveries." },
+  { id: "auto", label: "Balanced reach", body: "Use MusicLife's best matches while leaving room for fresh Spotify finds." },
+  { id: "catalog", label: "Close to core", body: "Stay nearest to your strongest matches, with a small lane for new finds." },
+  { id: "live", label: "Wide open", body: "Keep a larger window open for new Spotify discoveries." },
 ];
 
 const FRESHNESS_OPTIONS: Array<{ id: TasteStrategy["freshness"]; label: string; body: string }> = [
@@ -130,7 +130,7 @@ const POINT_OF_VIEW_PRESETS: Array<{
 }> = [
   {
     title: "Take me further out",
-    body: "Open the edges of the station and let newer outside-catalog tracks breathe.",
+    body: "Open the edges of the station and let newer discoveries breathe.",
     mix: { deep_cuts: 55, popular: 30, radio_hits: 15 },
     live_expansion: "live",
     freshness: "newer",
@@ -151,7 +151,7 @@ const POINT_OF_VIEW_PRESETS: Array<{
   },
   {
     title: "Stay close to my core",
-    body: "Use your taste model as the center of gravity and add only careful outside air.",
+    body: "Use your strongest taste signals as the center of gravity and add only careful surprises.",
     mix: { deep_cuts: 22, popular: 46, radio_hits: 32 },
     live_expansion: "catalog",
     freshness: "timeless",
@@ -232,20 +232,20 @@ function buildTasteThesis(
         : "without losing the thread between new and lasting";
   const liveText =
     strategy.live_expansion === "live"
-      ? "MusicLife will keep more outside air in the next station."
+      ? "MusicLife will give the next station a wider discovery lane."
       : strategy.live_expansion === "catalog"
-        ? "MusicLife will keep the catalog as the center of gravity while still checking for outside air."
-        : "MusicLife will use the catalog as the spine and add outside air when it improves the run.";
+        ? "MusicLife will keep the next station close to your strongest matches while still checking for careful surprises."
+        : "MusicLife will start from its strongest matches and add fresh finds when they improve the run.";
   const readiness = data.readiness.radioReady
-    ? "The model is ready to make song-level calls."
-    : "The model is still learning, so setup progress will improve the thesis.";
+    ? "Radio has enough signal to make song-level calls."
+    : "Radio is still learning, so setup progress will improve the thesis.";
 
   return {
     headline: `Your taste reads as ${laneText}.`,
     body: `The strongest signals are ${core}, ${freshnessText}. ${liveText}`,
     cues: [
       `${data.stats.artistCount.toLocaleString()} artists in the taste graph`,
-      `${data.stats.modeledTrackCount.toLocaleString()} modeled songs`,
+      `${data.stats.modeledTrackCount.toLocaleString()} songs ready for matching`,
       readiness,
     ],
   };
@@ -267,9 +267,9 @@ function pointOfViewSentence(strategy: TasteStrategy): string {
         : "balance fresh records with durable favorites";
   const livePhrase =
     strategy.live_expansion === "live"
-      ? "with a wider outside-air lane"
+      ? "with a wider discovery lane"
       : strategy.live_expansion === "catalog"
-        ? "with the catalog as the center of gravity"
+        ? "close to your strongest matches"
         : "with fresh Spotify finds held in reserve";
   return `Next Radio should ${lanePhrase}, ${freshnessPhrase}, ${livePhrase}.`;
 }
@@ -779,7 +779,7 @@ export default function LibraryView({
 
           <div className="grid gap-3 border-t border-neutral-100 pt-4 md:grid-cols-2">
             <OptionGroup
-              title="Outside air"
+              title="Discovery reach"
               options={LIVE_OPTIONS}
               value={strategy.live_expansion}
               onChange={(value) => setStrategy((current) => ({ ...current, live_expansion: value as TasteStrategy["live_expansion"] }))}
@@ -817,10 +817,10 @@ export default function LibraryView({
             </div>
             <div className="mt-4 rounded-lg bg-neutral-50 p-3 text-xs leading-relaxed text-neutral-500">
               {strategy.live_expansion === "catalog"
-                ? "Close-to-core mode still allows outside air, but the modeled catalog remains the station's center."
+                ? "Close-to-core mode still allows careful surprises, but your strongest matches remain the station's center."
                 : strategy.live_expansion === "live"
                   ? "Wide-open mode gives the next station a larger live Spotify window."
-                  : "Balanced-air mode keeps the catalog as the spine and reserves room for fresh Spotify finds."}
+                  : "Balanced-reach mode starts from strong matches and reserves room for fresh Spotify finds."}
             </div>
           </section>
 
