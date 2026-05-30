@@ -989,6 +989,80 @@ def eval_instrumental_penalized() -> EvalResult:
     )
 
 
+def eval_instrumental_preference_allows_instrumental_shortlist() -> EvalResult:
+    """Instrumental-loving users should not lose instrumental candidates before final scoring."""
+    artist = _make_artist(930, "Instrumental Preference Artist", ["electronic"], vec_seed=930, popularity=55)
+    saved_instrumental = _make_track(
+        9300,
+        "Saved Instrumental Anchor",
+        930,
+        popularity=5,
+        vec_seed=9300,
+        instrumentalness=0.96,
+        energy=0.65,
+        danceability=0.55,
+        valence=0.45,
+        acousticness=0.20,
+    )
+    target = _make_track(
+        9301,
+        "Instrumental Candidate",
+        930,
+        popularity=99,
+        vec_seed=9301,
+        instrumentalness=0.96,
+        energy=0.65,
+        danceability=0.55,
+        valence=0.45,
+        acousticness=0.20,
+    )
+    decoys = [
+        _make_track(9310 + idx, f"Vocal Decoy {idx}", 930, popularity=10, vec_seed=9310 + idx)
+        for idx in range(4)
+    ]
+    scenario = UserScenario(
+        user_id="user_instrumental_preference",
+        library_artist_ids=[930],
+        played_track_ids=[],
+        top_artist_ids=[930],
+        taste_vector=artist["embedding"],
+        user_tracks=[
+            {
+                "track_id": 9300,
+                "play_count": 0,
+                "last_played_at": None,
+                "added_at": (datetime.now(timezone.utc) - timedelta(days=5)).isoformat(),
+            },
+        ],
+    )
+    results = recommend_songs(
+        client=build_mock_client(
+            scenario,
+            artists=[artist],
+            tracks=[saved_instrumental, target, *decoys],
+            mentions=[],
+        ),
+        user_id=scenario.user_id,
+        taste_vector=artist["embedding"],
+        prompt_vector=None,
+        weights=_weights(),
+        exclude_library=False,
+        limit=10,
+        exploration_seed=1,
+    )
+    names = [r["track_name"] for r in results]
+    passed = "Instrumental Candidate" in names
+    return EvalResult(
+        name="instrumental_preference_allows_instrumental_shortlist",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=(
+            "high-instrumental candidate remained eligible for a user whose saved tracks "
+            f"show instrumental preference; returned={names}"
+        ),
+    )
+
+
 def eval_spoken_word_penalized() -> EvalResult:
     """A high-speechiness track should score below a normal track from the same artist.
 
@@ -1150,6 +1224,7 @@ def run_suite() -> list[EvalResult]:
         eval_cache_does_not_poison_prompt(),
         eval_api_health_is_lightweight(),
         eval_instrumental_penalized(),
+        eval_instrumental_preference_allows_instrumental_shortlist(),
         eval_spoken_word_penalized(),
         eval_audio_match_meaningful(),
     ]

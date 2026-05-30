@@ -45,7 +45,13 @@ from app.services.vector_rpc import (
 DISCOVERY_LANES = ("deep_cuts", "popular", "radio_hits")
 DEFAULT_DISCOVERY_MIX = {"deep_cuts": 38.0, "popular": 38.0, "radio_hits": 24.0}
 
-_AUDIO_DIMENSION_WEIGHTS = {"energy": 1.5, "valence": 1.3, "danceability": 1.0, "acousticness": 0.8}
+_AUDIO_DIMENSION_WEIGHTS = {
+    "energy": 1.5,
+    "valence": 1.3,
+    "danceability": 1.0,
+    "acousticness": 0.8,
+    "instrumentalness": 0.7,
+}
 _AUDIO_DIM_WEIGHT_TOTAL = sum(_AUDIO_DIMENSION_WEIGHTS.values())
 
 _GENRE_PHRASES = {
@@ -1084,9 +1090,25 @@ def recommend_songs(
     # ── Phase 3: Score individual songs ──────────────────────────
     song_results: list[dict] = []
     seen_songs: set[str] = set()
+    user_prefers_instrumental = bool(
+        user_audio_pref and user_audio_pref.get("instrumentalness", 0.0) > 0.6
+    )
 
     # Defined once outside the artist loop — closes over effective_prompt_vector,
     # rng, and now which are all fixed for the lifetime of this request.
+    def _track_audio_match(t: dict) -> float | None:
+        if not user_audio_pref:
+            return None
+        known = [k for k in _AUDIO_DIMENSION_WEIGHTS if t.get(k) is not None]
+        if len(known) < 2:
+            return None
+        weighted_diff_sq = sum(
+            _AUDIO_DIMENSION_WEIGHTS[k] *
+            (float(t.get(k) or 0.5) - user_audio_pref.get(k, 0.5)) ** 2
+            for k in _AUDIO_DIMENSION_WEIGHTS
+        )
+        return max(0.0, min(1.0, 1.0 - math.sqrt(weighted_diff_sq / _AUDIO_DIM_WEIGHT_TOTAL)))
+
     def _track_shortlist_score(t: dict) -> float:
         """Score a track for shortlist selection within an artist's catalog.
 
@@ -1098,8 +1120,9 @@ def recommend_songs(
         pop = float(t.get("popularity") or 0) / 100.0
         _inst = float(t.get("instrumentalness") or -1)
         _speech = float(t.get("speechiness") or -1)
-        if _inst > 0.85 or _speech > 0.75:
+        if (_inst > 0.85 and not user_prefers_instrumental) or _speech > 0.75:
             return -1.0
+        audio_match = _track_audio_match(t)
         recency = 0.0
         _rd = t.get("release_date")
         if _rd:
@@ -1114,8 +1137,19 @@ def recommend_songs(
         local_ctx = _local_track_similarity(t, effective_prompt_vector)
         if effective_prompt_vector and tid is not None and (tid in track_context_sim or local_ctx is not None):
             ctx = _normalize_01(track_context_sim[tid] if tid in track_context_sim else local_ctx or 0.0)
-            return 0.60 * ctx + 0.12 * pop + 0.10 * recency + 0.18 * rng.random()
-        return 0.28 * pop + 0.12 * recency + 0.60 * rng.random()
+            return (
+                0.55 * ctx
+                + 0.12 * pop
+                + 0.10 * recency
+                + 0.13 * rng.random()
+                + 0.10 * (audio_match if audio_match is not None else 0.5)
+            )
+        return (
+            0.24 * pop
+            + 0.10 * recency
+            + 0.48 * rng.random()
+            + 0.18 * (audio_match if audio_match is not None else 0.5)
+        )
 
     for aid in top_artist_ids:
         a_info = artist_scores.get(aid)
@@ -1242,16 +1276,10 @@ def recommend_songs(
 
             # Audio feature alignment: prefer tracks that sound like the user's library.
             if user_audio_pref:
-                _known_count = sum(1 for k in _AUDIO_DIMENSION_WEIGHTS if track.get(k) is not None)
-                if _known_count < 2:
+                _audio_match = _track_audio_match(track)
+                if _audio_match is None:
                     track_boost *= 0.96
                 else:
-                    _weighted_diff_sq = sum(
-                        _AUDIO_DIMENSION_WEIGHTS[k] *
-                        (float(track.get(k) or 0.5) - user_audio_pref.get(k, 0.5)) ** 2
-                        for k in _AUDIO_DIMENSION_WEIGHTS
-                    )
-                    _audio_match = 1.0 - math.sqrt(_weighted_diff_sq / _AUDIO_DIM_WEIGHT_TOTAL)
                     track_boost *= 0.78 + 0.30 * _audio_match
 
             # Instrumental / spoken-word penalty: filter utility tracks
@@ -1259,7 +1287,7 @@ def recommend_songs(
             _instrumentalness = track.get("instrumentalness")
             _speechiness = track.get("speechiness")
             if _instrumentalness is not None and _instrumentalness > 0.8:
-                if user_audio_pref and user_audio_pref.get("instrumentalness", 0.5) > 0.6:
+                if user_prefers_instrumental:
                     track_boost *= 0.85
                 else:
                     track_boost *= 0.35
