@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
+import { supabaseServer } from "@/lib/supabase-server";
+import { createTasteSnapshot } from "@/lib/taste-snapshot";
 
 export const dynamic = "force-dynamic";
 
@@ -35,5 +37,15 @@ export async function GET(req: NextRequest) {
   });
 
   const data = await upstream.json().catch(() => ({}));
+
+  if (upstream.ok && jobId && data?.status === "success") {
+    await createTasteSnapshot({
+      sb: supabaseServer(),
+      userId: user.userId,
+      reason: `setup_all:${jobId}`,
+      dedupeReason: true,
+    });
+  }
+
   return NextResponse.json(data, { status: upstream.status });
 }

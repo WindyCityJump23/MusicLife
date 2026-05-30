@@ -52,7 +52,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  void maybeCreateFeedbackTasteSnapshot({ sb, userId: user.userId });
+  await maybeCreateFeedbackTasteSnapshot({
+    sb,
+    userId: user.userId,
+    eventType,
+  });
 
   return NextResponse.json({ ok: true });
 }

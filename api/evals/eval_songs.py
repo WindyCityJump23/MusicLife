@@ -906,6 +906,45 @@ def eval_cache_does_not_poison_prompt() -> EvalResult:
     )
 
 
+def eval_taste_snapshots_are_durable() -> EvalResult:
+    """Taste snapshots should be awaited after setup/import/feedback milestones."""
+    taste_lib = _API_DIR.parent / "web" / "lib" / "taste-snapshot.ts"
+    import_route = _API_DIR.parent / "web" / "app" / "api" / "import-playlist" / "route.ts"
+    event_route = _API_DIR.parent / "web" / "app" / "api" / "recommendation-event" / "route.ts"
+    job_status_route = _API_DIR.parent / "web" / "app" / "api" / "job-status" / "route.ts"
+    taste_source = taste_lib.read_text()
+    import_source = import_route.read_text()
+    event_source = event_route.read_text()
+    job_status_source = job_status_route.read_text()
+
+    required_patterns = [
+        "await createTasteSnapshot({ sb, userId, reason: \"playlist_import\" })",
+        "await maybeCreateFeedbackTasteSnapshot({",
+        "eventType,",
+        "data?.status === \"success\"",
+        "reason: `setup_all:${jobId}`",
+        "dedupeReason: true",
+        "reason: `feedback_milestone:${count}`",
+        "if (!isMeaningfulTasteEvent(eventType)) return;",
+    ]
+    sources = "\n".join([taste_source, import_source, event_source, job_status_source])
+    missing = [pattern for pattern in required_patterns if pattern not in sources]
+    forbidden = [
+        "void createTasteSnapshot({ sb, userId, reason: \"playlist_import\" })",
+        "void maybeCreateFeedbackTasteSnapshot",
+    ]
+    found_forbidden = [pattern for pattern in forbidden if pattern in sources]
+    passed = not missing and not found_forbidden
+    return EvalResult(
+        name="taste_snapshots_are_durable",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="setup/import/feedback snapshot writes are awaited and deduped"
+        if passed
+        else f"missing={missing}, forbidden={found_forbidden}",
+    )
+
+
 def eval_api_health_is_lightweight() -> EvalResult:
     """Backend /health should be fast liveness, with DB checks isolated in /ready."""
     main_file = _API_DIR / "app" / "main.py"
@@ -1222,6 +1261,7 @@ def run_suite() -> list[EvalResult]:
         eval_station_fallbacks_are_observable(),
         eval_client_composed_stations_record_runs(),
         eval_cache_does_not_poison_prompt(),
+        eval_taste_snapshots_are_durable(),
         eval_api_health_is_lightweight(),
         eval_instrumental_penalized(),
         eval_instrumental_preference_allows_instrumental_shortlist(),

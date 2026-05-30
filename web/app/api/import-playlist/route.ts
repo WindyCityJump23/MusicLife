@@ -371,7 +371,7 @@ export async function POST(req: NextRequest) {
       .upsert(batch, { onConflict: "user_id,track_id", ignoreDuplicates: true });
   }
 
-  void createTasteSnapshot({ sb, userId, reason: "playlist_import" });
+  await createTasteSnapshot({ sb, userId, reason: "playlist_import" });
 
   // ── Kick off enrichment pipeline ──────────────────────────────
   const apiUrl = process.env.NEXT_PUBLIC_API_URL;

@@ -14,6 +14,10 @@ const MEANINGFUL_EVENTS = [
   "open_spotify",
 ];
 
+export function isMeaningfulTasteEvent(eventType: string): boolean {
+  return MEANINGFUL_EVENTS.includes(eventType);
+}
+
 function topEntries<T>(map: Map<string, T & { count: number }>, limit: number): Array<T & { count: number }> {
   return [...map.values()].sort((a, b) => b.count - a.count).slice(0, limit);
 }
@@ -22,12 +26,24 @@ export async function createTasteSnapshot({
   sb,
   userId,
   reason,
+  dedupeReason = false,
 }: {
   sb: SupabaseLike;
   userId: string;
   reason: string;
+  dedupeReason?: boolean;
 }) {
   try {
+    if (dedupeReason) {
+      const { data: existing } = await sb
+        .from("taste_snapshots")
+        .select("id")
+        .eq("user_id", userId)
+        .contains("feedback_summary", { reason })
+        .limit(1);
+      if (Array.isArray(existing) && existing.length > 0) return;
+    }
+
     const { data: userTracks } = await sb
       .from("user_tracks")
       .select("tracks(artist_id,artists(id,name,genres))")
@@ -90,18 +106,26 @@ export async function createTasteSnapshot({
 export async function maybeCreateFeedbackTasteSnapshot({
   sb,
   userId,
+  eventType,
 }: {
   sb: SupabaseLike;
   userId: string;
+  eventType: string;
 }) {
   try {
+    if (!isMeaningfulTasteEvent(eventType)) return;
     const { count } = await sb
       .from("recommendation_events")
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
       .in("event_type", MEANINGFUL_EVENTS);
     if (typeof count === "number" && count > 0 && count % 10 === 0) {
-      await createTasteSnapshot({ sb, userId, reason: "feedback_milestone" });
+      await createTasteSnapshot({
+        sb,
+        userId,
+        reason: `feedback_milestone:${count}`,
+        dedupeReason: true,
+      });
     }
   } catch (err) {
     console.warn("feedback taste snapshot skipped", err);
