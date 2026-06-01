@@ -171,7 +171,15 @@ const POINT_OF_VIEW_PRESETS: Array<{
 ];
 
 function normalizeGenre(value: string): string {
-  return value.trim().toLowerCase().slice(0, 48);
+  const normalized = value.trim().toLowerCase().slice(0, 48);
+  if (
+    normalized.includes("_") ||
+    normalized.includes("lidarr") ||
+    normalized.includes("batch")
+  ) {
+    return "";
+  }
+  return normalized;
 }
 
 function normalizeMix(mix: DiscoveryMix): DiscoveryMix {
@@ -295,9 +303,9 @@ function tasteSnapshotSummary(
 ): Array<{ label: string; body: string }> {
   const snapshot = data.tasteSnapshot;
   const genres = (snapshot?.top_genres ?? topGenres)
-    .slice(0, 3)
-    .map((item) => item.genre)
-    .filter(Boolean);
+    .map((item) => normalizeGenre(item.genre))
+    .filter(Boolean)
+    .slice(0, 3);
   const anchors = (snapshot?.anchor_artists ?? influenceArtists)
     .slice(0, 3)
     .map((item) => item.name)

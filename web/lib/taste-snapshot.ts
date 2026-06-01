@@ -22,6 +22,19 @@ function topEntries<T>(map: Map<string, T & { count: number }>, limit: number): 
   return [...map.values()].sort((a, b) => b.count - a.count).slice(0, limit);
 }
 
+function normalizeSnapshotGenre(value: unknown): string {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (
+    !normalized ||
+    normalized.includes("_") ||
+    normalized.includes("lidarr") ||
+    normalized.includes("batch")
+  ) {
+    return "";
+  }
+  return normalized;
+}
+
 export async function createTasteSnapshot({
   sb,
   userId,
@@ -62,7 +75,7 @@ export async function createTasteSnapshot({
         artistCounts.set(key, current);
       }
       for (const genre of artist?.genres ?? []) {
-        const key = String(genre).toLowerCase();
+        const key = normalizeSnapshotGenre(genre);
         if (!key) continue;
         const current = genreCounts.get(key) ?? { genre: key, count: 0 };
         current.count += 1;

@@ -1003,6 +1003,35 @@ def eval_taste_profile_explains_recent_learning() -> EvalResult:
     )
 
 
+def eval_unprompted_live_fill_is_bounded() -> EvalResult:
+    """Unprompted stations should not refill past their fresh-air quota with generic live search tracks."""
+    discover_file = _API_DIR.parent / "web" / "app" / "dashboard" / "discover-view.tsx"
+    taste_view = _API_DIR.parent / "web" / "app" / "dashboard" / "library-view.tsx"
+    snapshot_lib = _API_DIR.parent / "web" / "lib" / "taste-snapshot.ts"
+    discover_source = discover_file.read_text()
+    taste_source = taste_view.read_text() + "\n" + snapshot_lib.read_text()
+    required_patterns = [
+        "const MIN_PLAYABLE_STATION_TRACKS = 12;",
+        "catalogFilled.length >= MIN_PLAYABLE_STATION_TRACKS",
+        "options.promptMode || catalogCandidates.length === 0",
+        ": Math.min(target, MIN_PLAYABLE_STATION_TRACKS);",
+        'normalized.includes("_")',
+        'normalized.includes("lidarr")',
+        'normalized.includes("batch")',
+    ]
+    source = discover_source + "\n" + taste_source
+    missing = [pattern for pattern in required_patterns if pattern not in source]
+    passed = not missing
+    return EvalResult(
+        name="unprompted_live_fill_is_bounded",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="unprompted stations cap live refill at the playable minimum and hide internal genre tags"
+        if passed
+        else f"missing={missing}",
+    )
+
+
 def eval_api_health_is_lightweight() -> EvalResult:
     """Backend /health should be fast liveness, with DB checks isolated in /ready."""
     main_file = _API_DIR / "app" / "main.py"
@@ -1322,6 +1351,7 @@ def run_suite() -> list[EvalResult]:
         eval_taste_snapshots_are_durable(),
         eval_radio_copy_hides_debug_source_language(),
         eval_taste_profile_explains_recent_learning(),
+        eval_unprompted_live_fill_is_bounded(),
         eval_api_health_is_lightweight(),
         eval_instrumental_penalized(),
         eval_instrumental_preference_allows_instrumental_shortlist(),

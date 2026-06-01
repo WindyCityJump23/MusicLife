@@ -121,6 +121,7 @@ const LIVE_EXPANSION_TRACKS_PER_INTENT = 5;
 const LIVE_EXPANSION_POOL_TARGET = 40;
 const FRESH_AIR_TARGET_RATIO = 0.25;
 const PROMPT_LIVE_TARGET_RATIO = 0.4;
+const MIN_PLAYABLE_STATION_TRACKS = 12;
 const DISCOVERY_API_TIMEOUT_MS = 22_000;
 const SPOTIFY_BROWSER_TIMEOUT_MS = 8_000;
 const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v7";
@@ -516,12 +517,11 @@ function stationMixSummary(
   const liveCount = songs.filter(isLiveSourced).length;
   const catalogCount = Math.max(0, songs.length - liveCount);
   const hasPrompt = Boolean(prompt.trim());
-  const targetFreshAir = hasPrompt ? promptAirTarget(songs.length) : freshAirTarget(songs.length);
   let sourceInsight = "MusicLife leaves room for fresh Spotify finds when they strengthen the station.";
   if (liveCount > 0 && catalogCount > 0) {
     sourceInsight = hasPrompt
-      ? `Expanded this prompt with fresh Spotify matches while keeping your strongest matches in place. Target: about ${targetFreshAir} of ${songs.length}.`
-      : `Added fresh Spotify matches to keep the station moving. Target: about ${targetFreshAir} of ${songs.length}.`;
+      ? "Expanded this prompt with fresh Spotify matches while keeping your strongest matches in place."
+      : "Added fresh Spotify matches to keep the station moving.";
   } else if (liveCount > 0) {
     sourceInsight = "Built from live Spotify because those were the strongest playable matches for this run.";
   } else if (songs.length === 0) {
@@ -668,11 +668,30 @@ function shapeStationForFreshAir(
   if (blended.length >= target) return blended;
 
   const blendedKeys = new Set(blended.map(trackIdentity));
-  const fill = spreadArtistsForDisplay(
-    songs.filter((song) => !blendedKeys.has(trackIdentity(song))),
+  const catalogFill = spreadArtistsForDisplay(
+    catalogCandidates.filter((song) => !blendedKeys.has(trackIdentity(song))),
     target - blended.length
   );
-  return [...blended, ...fill].slice(0, target);
+  const catalogFilled = [...blended, ...catalogFill];
+  if (
+    catalogFilled.length >= target ||
+    (!options.promptMode &&
+      catalogCandidates.length > 0 &&
+      catalogFilled.length >= MIN_PLAYABLE_STATION_TRACKS)
+  ) {
+    return catalogFilled.slice(0, target);
+  }
+
+  const filledKeys = new Set(catalogFilled.map(trackIdentity));
+  const liveFillTarget =
+    options.promptMode || catalogCandidates.length === 0
+      ? target
+      : Math.min(target, MIN_PLAYABLE_STATION_TRACKS);
+  const liveFill = spreadArtistsForDisplay(
+    liveCandidates.filter((song) => !filledKeys.has(trackIdentity(song))),
+    Math.max(0, liveFillTarget - catalogFilled.length)
+  );
+  return [...catalogFilled, ...liveFill].slice(0, target);
 }
 
 function toQueueTracks(
@@ -1790,7 +1809,7 @@ export default function DiscoverView({
         promptMode: Boolean(prompt.trim()),
       });
 
-      if (preserveResults && results && results.length > 0 && finalResults.length < 12) {
+      if (preserveResults && results && results.length > 0 && finalResults.length < MIN_PLAYABLE_STATION_TRACKS) {
         setError(null);
         setStationNotice("Still tuning fresh picks. Playing your saved station.");
         return;
