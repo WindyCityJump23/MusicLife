@@ -39,6 +39,15 @@ export async function GET(req: NextRequest) {
 
   const sb = supabaseServer();
 
+  const tasteSnapshotPromise = sb
+    .from("taste_snapshots")
+    .select("generated_at,top_genres,anchor_artists,feedback_summary,thesis")
+    .eq("user_id", user.userId)
+    .order("generated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+    .then((result) => result);
+
   const { data: userTracks, error: utErr } = await sb
     .from("user_tracks")
     .select("track_id, tracks(artist_id)", { count: "exact" })
@@ -118,6 +127,8 @@ export async function GET(req: NextRequest) {
     .from("tracks")
     .select("id", { count: "exact", head: true });
 
+  const { data: tasteSnapshot } = await tasteSnapshotPromise;
+
   let playableTrackCount = 0;
   let modeledTrackCount = 0;
   for (const ids of chunk(artistIds)) {
@@ -178,6 +189,7 @@ export async function GET(req: NextRequest) {
           requiredModeledTracks > 0 && modeledTrackCount >= requiredModeledTracks,
       },
     },
+    tasteSnapshot: tasteSnapshot ?? null,
     artists,
   });
 }

@@ -44,7 +44,19 @@ type LibraryData = {
     mentionCount: number;
   };
   readiness: Readiness;
+  tasteSnapshot: TasteSnapshot | null;
   artists: Artist[];
+};
+
+type TasteSnapshot = {
+  generated_at: string;
+  top_genres: Array<{ genre: string; count: number }>;
+  anchor_artists: Array<{ id: number | null; name: string; count: number }>;
+  feedback_summary: {
+    reason?: string;
+    events?: Record<string, number>;
+  };
+  thesis: string;
 };
 
 type DiscoveryMix = {
@@ -274,6 +286,76 @@ function pointOfViewSentence(strategy: TasteStrategy): string {
   return `Next Radio should ${lanePhrase}, ${freshnessPhrase}, ${livePhrase}.`;
 }
 
+function tasteSnapshotSummary(
+  data: LibraryData,
+  topGenres: Array<{ genre: string; count: number }>,
+  influenceArtists: Artist[],
+  strategy: TasteStrategy,
+  isGuest: boolean
+): Array<{ label: string; body: string }> {
+  const snapshot = data.tasteSnapshot;
+  const genres = (snapshot?.top_genres ?? topGenres)
+    .slice(0, 3)
+    .map((item) => item.genre)
+    .filter(Boolean);
+  const anchors = (snapshot?.anchor_artists ?? influenceArtists)
+    .slice(0, 3)
+    .map((item) => item.name)
+    .filter(Boolean);
+  const reason = snapshot?.feedback_summary?.reason ?? "";
+  const eventLabels: Record<string, string> = {
+    play: "plays",
+    skip: "skips",
+    thumb_up: "likes",
+    thumb_down: "dislikes",
+    too_familiar: "too-familiar notes",
+    too_far: "too-far-out notes",
+    favorite: "favorites",
+    save_playlist: "playlist saves",
+    open_spotify: "Spotify opens",
+  };
+  const recentSignals = Object.entries(snapshot?.feedback_summary?.events ?? {})
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([event, count]) => `${count} ${eventLabels[event] ?? "Radio signals"}`);
+  const learnedFrom =
+    recentSignals.length > 0
+      ? recentSignals.join(", ")
+      : reason === "playlist_import"
+        ? "your latest playlist import"
+        : reason.startsWith("setup_all:")
+          ? "your latest Spotify sync"
+          : isGuest
+            ? "your imported playlist"
+            : "your Spotify history";
+  const reach =
+    strategy.station_distance === "closer"
+      ? "Closer to your anchors, with careful surprises."
+      : strategy.station_distance === "further"
+        ? "Further into new artists and deep cuts."
+        : "Between trusted anchors and fresh discoveries.";
+
+  return [
+    {
+      label: "You lean toward",
+      body: genres.length > 0 ? genres.join(", ") : "the artists already shaping your library",
+    },
+    {
+      label: "Radio will reach",
+      body: reach,
+    },
+    {
+      label: "Your strongest anchors are",
+      body: anchors.length > 0 ? anchors.join(", ") : "still taking shape",
+    },
+    {
+      label: "Recently learned from",
+      body: learnedFrom,
+    },
+  ];
+}
+
 export default function LibraryView({
   onSetupComplete,
 }: {
@@ -364,6 +446,10 @@ export default function LibraryView({
   const tasteThesis = useMemo(() => {
     return data ? buildTasteThesis(data, topGenres, strategy) : null;
   }, [data, topGenres, strategy]);
+
+  const thesisSummary = useMemo(() => {
+    return data ? tasteSnapshotSummary(data, topGenres, influenceArtists, strategy, isGuest) : [];
+  }, [data, topGenres, influenceArtists, strategy, isGuest]);
 
   const dirty = !sameStrategy(strategy, savedStrategy);
 
@@ -656,6 +742,16 @@ export default function LibraryView({
             <p className="mt-1 max-w-3xl text-sm leading-relaxed text-neutral-600">
               {tasteThesis.body}
             </p>
+            <div className="mt-4 grid gap-2 sm:grid-cols-2">
+              {thesisSummary.map((item) => (
+                <div key={item.label} className="rounded-md border border-emerald-100 bg-white/80 px-3 py-2.5">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-700">
+                    {item.label}
+                  </p>
+                  <p className="mt-1 text-xs leading-relaxed text-neutral-700">{item.body}</p>
+                </div>
+              ))}
+            </div>
             <div className="mt-3 flex flex-wrap gap-1.5">
               {tasteThesis.cues.map((cue) => (
                 <span key={cue} className="rounded-full border border-emerald-100 bg-white/80 px-2.5 py-1 text-[11px] text-emerald-800">

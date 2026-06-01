@@ -974,6 +974,35 @@ def eval_radio_copy_hides_debug_source_language() -> EvalResult:
     )
 
 
+def eval_taste_profile_explains_recent_learning() -> EvalResult:
+    """Taste Profile should show human-readable snapshot evidence and keep Radio diagnostics secondary."""
+    library_route = _API_DIR.parent / "web" / "app" / "api" / "library" / "route.ts"
+    library_view = _API_DIR.parent / "web" / "app" / "dashboard" / "library-view.tsx"
+    discover_view = _API_DIR.parent / "web" / "app" / "dashboard" / "discover-view.tsx"
+    source = library_route.read_text() + "\n" + library_view.read_text()
+    discover_source = discover_view.read_text()
+    required_patterns = [
+        '.from("taste_snapshots")',
+        '"You lean toward"',
+        '"Radio will reach"',
+        '"Your strongest anchors are"',
+        '"Recently learned from"',
+        '<details className="rounded-lg border border-neutral-200 bg-white px-4 py-3',
+        "Station mix",
+    ]
+    combined = source + "\n" + discover_source
+    missing = [pattern for pattern in required_patterns if pattern not in combined]
+    passed = not missing
+    return EvalResult(
+        name="taste_profile_explains_recent_learning",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="Taste Profile reads the latest snapshot and Radio mix details stay collapsed"
+        if passed
+        else f"missing={missing}",
+    )
+
+
 def eval_api_health_is_lightweight() -> EvalResult:
     """Backend /health should be fast liveness, with DB checks isolated in /ready."""
     main_file = _API_DIR / "app" / "main.py"
@@ -1292,6 +1321,7 @@ def run_suite() -> list[EvalResult]:
         eval_cache_does_not_poison_prompt(),
         eval_taste_snapshots_are_durable(),
         eval_radio_copy_hides_debug_source_language(),
+        eval_taste_profile_explains_recent_learning(),
         eval_api_health_is_lightweight(),
         eval_instrumental_penalized(),
         eval_instrumental_preference_allows_instrumental_shortlist(),

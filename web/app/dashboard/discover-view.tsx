@@ -2390,8 +2390,11 @@ function StationMixStrip({
   );
 
   return (
-    <section className="rounded-lg border border-neutral-200 bg-white px-4 py-3 shadow-sm shadow-neutral-100/70">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+    <details className="rounded-lg border border-neutral-200 bg-white px-4 py-3 shadow-sm shadow-neutral-100/70">
+      <summary className="cursor-pointer text-sm font-semibold text-neutral-950">
+        Station mix
+      </summary>
+      <div className="mt-3 flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-semibold text-neutral-950">Station Mix</h3>
@@ -2463,7 +2466,7 @@ function StationMixStrip({
           </div>
         </div>
       </div>
-    </section>
+    </details>
   );
 }
 
