@@ -15,19 +15,19 @@ type ReadinessStats = {
 const STEP_LABELS_SPOTIFY = [
   { title: "Import Spotify library", body: "Saved songs, artists, and recent plays" },
   { title: "Learn artist taste", body: "Genres and artist metadata" },
-  { title: "Model artist similarity", body: "Taste vectors for recommendations" },
+  { title: "Connect your taste", body: "Prepare stronger station matches" },
   { title: "Add music context", body: "Editorial and source signals" },
   { title: "Prepare playable songs", body: "Spotify tracks for your artists" },
-  { title: "Model song matches", body: "Track-level search and audio context" },
+  { title: "Refine discovery", body: "Improve song-level matching over time" },
 ];
 
 const STEP_LABELS_GUEST = [
   { title: "Import playlist", body: "Artists and tracks from your playlist" },
   { title: "Learn artist taste", body: "Genres and artist metadata" },
-  { title: "Model artist similarity", body: "Taste vectors for recommendations" },
+  { title: "Connect your taste", body: "Prepare stronger station matches" },
   { title: "Add music context", body: "Editorial and source signals" },
   { title: "Prepare playable songs", body: "Tracks for recommendations" },
-  { title: "Model song matches", body: "Track-level search and audio context" },
+  { title: "Refine discovery", body: "Improve song-level matching over time" },
 ];
 
 export default function SetupBanner({
@@ -112,7 +112,7 @@ export default function SetupBanner({
         <SetupStat label="Saved tracks" value={stats?.trackCount} />
         <SetupStat label="Artists" value={stats?.artistCount} />
         <SetupStat label="Playable songs" value={stats?.playableTrackCount} />
-        <SetupStat label="Modeled songs" value={stats?.modeledTrackCount} />
+        <SetupStat label="Discovery-ready songs" value={stats?.modeledTrackCount} />
       </div>
 
       <div className="space-y-2">

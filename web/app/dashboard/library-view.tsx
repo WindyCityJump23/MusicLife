@@ -624,11 +624,11 @@ export default function LibraryView({
         <div className="space-y-2.5 pt-1">
           {[
             { n: 1, title: "Sync library", desc: "Import artists and listening history" },
-            { n: 2, title: "Enrich artists", desc: "Fetch genres, tags, and metadata" },
-            { n: 3, title: "Generate embeddings", desc: "Build taste vectors for matching" },
-            { n: 4, title: "Sync sources", desc: "Add editorial context and reviews" },
-            { n: 5, title: "Populate tracks", desc: "Fetch playable songs for Radio" },
-            { n: 6, title: "Model songs", desc: "Build song-level context for fresher lanes" },
+            { n: 2, title: "Learn your artists", desc: "Add genres and artist context" },
+            { n: 3, title: "Connect your taste", desc: "Prepare stronger station matches" },
+            { n: 4, title: "Add music context", desc: "Include editorial context and reviews" },
+            { n: 5, title: "Prepare playable songs", desc: "Load songs for Radio" },
+            { n: 6, title: "Refine discovery", desc: "Improve song-level matching over time" },
           ].map(({ n, title, desc }) => (
             <div key={n} className="flex items-start gap-2.5">
               <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-neutral-200 text-[10px] font-bold text-neutral-500">
@@ -658,8 +658,8 @@ export default function LibraryView({
             </h3>
             <p className="mt-1 max-w-2xl text-sm leading-relaxed text-neutral-500">
               {isGuest
-                ? "Your imported playlist builds the model. Adjust your station point of view to tell Radio how far to reach and which genres should carry more gravity."
-                : "Your Spotify history builds the model. Your station point of view tells Radio how far to reach, how current to feel, and which genres should carry more gravity."}
+                ? "Your imported playlist shapes your taste profile. Adjust your station point of view to tell Radio how far to reach and which genres should carry more gravity."
+                : "Your Spotify history shapes your taste profile. Your station point of view tells Radio how far to reach, how current to feel, and which genres should carry more gravity."}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -1210,11 +1210,6 @@ function ArtistCard({
         </div>
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-1.5">
-        <StatusBadge on={artist.enriched} label="enriched" />
-        <StatusBadge on={artist.embedded} label="embedded" />
-      </div>
-
       <div className="mt-3 grid grid-cols-2 gap-2">
         <button
           onClick={() => primaryGenre && onBoost(primaryGenre)}
@@ -1232,21 +1227,5 @@ function ArtistCard({
         </button>
       </div>
     </div>
-  );
-}
-
-function StatusBadge({ on, label }: { on: boolean; label: string }) {
-  return (
-    <span
-      className={[
-        "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px]",
-        on
-          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-          : "border-neutral-200 bg-neutral-50 text-neutral-400",
-      ].join(" ")}
-    >
-      <span className={on ? "h-1 w-1 rounded-full bg-emerald-500" : "h-1 w-1 rounded-full bg-neutral-300"} />
-      {label}
-    </span>
   );
 }

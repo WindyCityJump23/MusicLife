@@ -334,8 +334,8 @@ function readableReason(reason: string): string {
   if (lower === "new release") return "recent release";
   if (lower === "already in your library") return "familiar from your library";
   if (lower === "recently surfaced") return "recently surfaced in MusicLife";
-  if (lower === "live spotify search") return "came from a live Spotify search outside the catalog";
-  if (lower === "outside catalog") return "was sourced outside the local catalog";
+  if (lower === "live spotify search") return "came from a fresh Spotify discovery";
+  if (lower === "outside catalog") return "was found through fresh Spotify discovery";
   if (lower === "prompt expansion") return "matches a live expansion of your prompt";
   if (lower === "mood expansion") return "matches a live mood expansion";
   if (lower === "fresh genre search") return "came from a fresh live genre search";
@@ -1526,7 +1526,7 @@ export default function DiscoverView({
           return;
         }
 
-        setLoadingStage("Prompt search was limited; checking catalog and fallbacks\u2026");
+        setLoadingStage("Prompt search was limited; checking more sources\u2026");
       }
 
       // Attempt 1: Server-side song recommendations (uses tracks in DB)
@@ -1779,7 +1779,7 @@ export default function DiscoverView({
       try {
         const livePrompt = prompt.trim() || interpretedPrompt;
         if (!isGuest && shouldRunLiveExpansion(deduped, livePrompt, tasteStrategy)) {
-          setLoadingStage("Expanding live search beyond the catalog\u2026");
+          setLoadingStage("Checking fresh Spotify discoveries\u2026");
           const liveSongs = await fetchLiveCandidateSongs(livePrompt, deduped, tasteStrategy);
           if (liveSongs.length > 0) {
             deduped = mergeCandidateSongs(deduped, liveSongs);
@@ -2041,7 +2041,7 @@ export default function DiscoverView({
               <p className="mt-1 max-w-2xl text-xs leading-relaxed text-neutral-500">
                 {isGuest
                   ? "Discover songs based on your imported playlist. Tap to open in Spotify."
-                  : "Build a queue from your taste, live Spotify search, and current music context."}
+                  : "Build a queue from your taste, fresh Spotify discovery, and current music context."}
               </p>
             </div>
             {readiness && (
@@ -2452,7 +2452,7 @@ function StationMixStrip({
                 hint={
                   mix.liveCount === 0
                     ? "MusicLife checked for fresh Spotify candidates, but none were strong enough for this run."
-                    : "Tracks found from live Spotify search when they improved the station."
+                    : "Tracks found through fresh Spotify discovery when they improved the station."
                 }
               />
             </div>
@@ -3316,20 +3316,20 @@ function EmptyNoResults() {
       body: "Click \u201cSync Library\u201d (step 1) in the left sidebar to import your Spotify artists.",
     },
     enrich: {
-      title: "Enrich your artists next",
-      body: "Click \u201cEnrich Artists\u201d (step 2) in the left sidebar to fetch genres and metadata.",
+      title: "Add artist context next",
+      body: "Re-run \u201cSet up music profile\u201d so Radio can learn genres and artist context.",
     },
     embed: {
-      title: "Generate embeddings next",
-      body: "Click \u201cGenerate Embeddings\u201d (step 3) in the left sidebar. This is what powers Discover.",
+      title: "Keep building your taste profile",
+      body: "Re-run \u201cSet up music profile\u201d so Radio can connect your strongest music relationships.",
     },
     tracks: {
-      title: "Track catalog is empty",
-      body: "Your artists are ready but no playable tracks were loaded \u2014 this usually happens when Spotify rate limits block the initial setup. Re-run \u201cSet up music profile\u201d to try again.",
+      title: "Playable songs are still loading",
+      body: "Re-run \u201cSet up music profile\u201d to fetch enough playable songs for Radio.",
     },
     modeledTracks: {
-      title: "Track embeddings missing",
-      body: "Tracks exist but haven\u2019t been modeled yet. Re-run \u201cSet up music profile\u201d to generate track embeddings.",
+      title: "Song matching is still learning",
+      body: "Re-run \u201cSet up music profile\u201d to refine song-level discovery.",
     },
     ready: {
       title: "Nothing matched right now",
@@ -3337,7 +3337,7 @@ function EmptyNoResults() {
     },
     unknown: {
       title: "No songs found",
-      body: "Make sure you\u2019ve synced, enriched, and embedded your library first.",
+      body: "Re-run \u201cSet up music profile\u201d to refresh the signals Radio uses.",
     },
   }[missingStep];
 

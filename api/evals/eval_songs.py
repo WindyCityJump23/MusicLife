@@ -1032,6 +1032,47 @@ def eval_unprompted_live_fill_is_bounded() -> EvalResult:
     )
 
 
+def eval_onboarding_copy_hides_pipeline_language() -> EvalResult:
+    """Default onboarding surfaces should explain the product without exposing pipeline vocabulary."""
+    dashboard_dir = _API_DIR.parent / "web" / "app" / "dashboard"
+    files = [
+        dashboard_dir / "SetupAllButton.tsx",
+        dashboard_dir / "sidebar.tsx",
+        dashboard_dir / "setup-banner.tsx",
+        dashboard_dir / "radio-view.tsx",
+        dashboard_dir / "library-view.tsx",
+        dashboard_dir / "discover-view.tsx",
+    ]
+    source = "\n".join(file.read_text() for file in files)
+    forbidden = [
+        "Generate embeddings",
+        "Track embeddings missing",
+        "Catalog tracks",
+        "playable catalog tracks",
+        'label="enriched"',
+        'label="embedded"',
+        "Prepare song catalog",
+        "Model songs",
+        "Model artist similarity",
+        "Model song matches",
+        "Track catalog is empty",
+        "synced, enriched, and embedded",
+        "outside the catalog",
+        "local catalog",
+        "live Spotify search",
+    ]
+    hits = [pattern for pattern in forbidden if pattern in source]
+    passed = not hits
+    return EvalResult(
+        name="onboarding_copy_hides_pipeline_language",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="onboarding and default Radio/Taste surfaces use user-facing language"
+        if passed
+        else f"found={hits}",
+    )
+
+
 def eval_api_health_is_lightweight() -> EvalResult:
     """Backend /health should be fast liveness, with DB checks isolated in /ready."""
     main_file = _API_DIR / "app" / "main.py"
@@ -1352,6 +1393,7 @@ def run_suite() -> list[EvalResult]:
         eval_radio_copy_hides_debug_source_language(),
         eval_taste_profile_explains_recent_learning(),
         eval_unprompted_live_fill_is_bounded(),
+        eval_onboarding_copy_hides_pipeline_language(),
         eval_api_health_is_lightweight(),
         eval_instrumental_penalized(),
         eval_instrumental_preference_allows_instrumental_shortlist(),

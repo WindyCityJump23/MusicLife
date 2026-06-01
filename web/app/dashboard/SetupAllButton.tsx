@@ -22,11 +22,52 @@ export type SetupStatusSnapshot = {
 const TOTAL_STEPS = 6;
 const STORAGE_KEY = "musiclife.setupAll.jobId";
 const POLL_INTERVAL_MS = 2500;
+const USER_FACING_STEP_LABELS = [
+  "Importing your music",
+  "Learning your artists",
+  "Connecting your taste",
+  "Adding music context",
+  "Preparing playable songs",
+  "Refining discovery",
+];
 
-function parseStep(message: string): { step: number; label: string } | null {
+function parseStep(message: string): { step: number; total: number; label: string } | null {
   const match = message.match(/^Step\s+(\d+)\/(\d+):\s*(.+)$/i);
   if (!match) return null;
-  return { step: parseInt(match[1], 10), label: match[3].trim() };
+  return {
+    step: parseInt(match[1], 10),
+    total: parseInt(match[2], 10),
+    label: match[3].trim(),
+  };
+}
+
+function userFacingSetupMessage(message: string): string {
+  const parsed = parseStep(message);
+  if (parsed && parsed.step >= 1 && parsed.step <= USER_FACING_STEP_LABELS.length) {
+    return `Step ${parsed.step}/${parsed.total}: ${USER_FACING_STEP_LABELS[parsed.step - 1]}`;
+  }
+
+  const lower = message.toLowerCase();
+  if (
+    lower.includes("track catalog will update") ||
+    lower.includes("embedding warning") ||
+    lower.includes("radio needs")
+  ) {
+    return "Music profile ready. Some song matches are still updating.";
+  }
+  if (lower.includes("radio setup complete")) {
+    return "Music profile ready. Radio is tuning your station.";
+  }
+  if (lower.includes("embedding") || lower.includes("vector") || lower.includes("model")) {
+    return "Connecting your taste signals…";
+  }
+  if (lower.includes("catalog") || lower.includes("track")) {
+    return "Preparing playable songs…";
+  }
+  if (lower.includes("enrich") || lower.includes("metadata")) {
+    return "Learning your artists…";
+  }
+  return message;
 }
 
 export default function SetupAllButton({
@@ -78,7 +119,7 @@ export default function SetupAllButton({
     (data: JobStatusResponse): boolean => {
       if (data.status === "queued" || data.status === "running") {
         setState("running");
-        setMessage(data.message || "Working…");
+        setMessage(userFacingSetupMessage(data.message || "Working…"));
         const parsed = parseStep(data.message || "");
         if (typeof data.step === "number" && data.step > 0) {
           setStep(data.step);
@@ -96,7 +137,7 @@ export default function SetupAllButton({
         try { localStorage.removeItem(STORAGE_KEY); } catch {}
         setState("success");
         setStep(TOTAL_STEPS);
-        setMessage(data.message || "Setup complete");
+        setMessage(userFacingSetupMessage(data.message || "Music profile ready"));
         const msg = (data.message || "").toLowerCase();
         setPartialSuccess(
           msg.includes("track catalog will update") || msg.includes("radio needs")
@@ -112,7 +153,7 @@ export default function SetupAllButton({
         cleanup();
         try { localStorage.removeItem(STORAGE_KEY); } catch {}
         setState("error");
-        setMessage(data.message || "Setup failed");
+        setMessage(userFacingSetupMessage(data.message || "Setup failed"));
         return true;
       }
       // unknown — job expired or never existed

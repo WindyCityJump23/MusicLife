@@ -148,7 +148,7 @@ function RadioSetupGate({
             </h3>
             <p className="mt-2 text-sm text-neutral-500 leading-relaxed max-w-xl">
               MusicLife builds a taste profile first, then prepares enough
-              playable catalog tracks from your artists to make radio feel immediate.
+              playable songs from your artists to make radio feel immediate.
             </p>
           </div>
 
@@ -162,7 +162,7 @@ function RadioSetupGate({
             ready={readiness.artistCount > 0}
           />
           <ReadinessTile
-            label="Taste modeled"
+            label="Taste anchors"
             value={`${readiness.embeddedCount}/${readiness.requiredArtistCount}`}
             ready={
               readiness.requiredArtistCount > 0 &&
@@ -170,7 +170,7 @@ function RadioSetupGate({
             }
           />
           <ReadinessTile
-            label="Catalog tracks"
+            label="Playable songs"
             value={
               tracksNeeded > 0
                 ? `${readiness.playableTrackCount}/${readiness.requiredPlayableTrackCount}`

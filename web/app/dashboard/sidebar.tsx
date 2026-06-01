@@ -17,19 +17,19 @@ const NAV: { id: View; label: string; icon: string }[] = [
 const STEP_META_SPOTIFY = [
   { step: 1, title: "Import listening history", desc: "Bring in your Spotify artists and recent plays" },
   { step: 2, title: "Learn your taste",         desc: "Add genre and artist context" },
-  { step: 3, title: "Build your radio model",   desc: "Prepare matching signals for better stations" },
+  { step: 3, title: "Connect your taste",        desc: "Prepare matching signals for better stations" },
   { step: 4, title: "Add music context",        desc: "Blend in editorial sources and buzz" },
-  { step: 5, title: "Prepare song catalog",     desc: "Load playable tracks for radio and playlists" },
-  { step: 6, title: "Model songs",              desc: "Build song-level context for fresher lanes" },
+  { step: 5, title: "Prepare playable songs",   desc: "Load songs for radio and playlists" },
+  { step: 6, title: "Refine discovery",         desc: "Improve song-level matching for fresher stations" },
 ];
 
 const STEP_META_GUEST = [
   { step: 1, title: "Import playlist",          desc: "Tracks imported from your playlist" },
   { step: 2, title: "Learn your taste",         desc: "Add genre and artist context" },
-  { step: 3, title: "Build your radio model",   desc: "Prepare matching signals for better stations" },
+  { step: 3, title: "Connect your taste",        desc: "Prepare matching signals for better stations" },
   { step: 4, title: "Add music context",        desc: "Blend in editorial sources and buzz" },
-  { step: 5, title: "Prepare song catalog",     desc: "Load playable tracks for recommendations" },
-  { step: 6, title: "Model songs",              desc: "Build song-level context for fresher lanes" },
+  { step: 5, title: "Prepare playable songs",   desc: "Load songs for recommendations" },
+  { step: 6, title: "Refine discovery",         desc: "Improve song-level matching for fresher stations" },
 ];
 
 // Guest users only see Radio and Taste Profile
@@ -220,18 +220,10 @@ export default function Sidebar({
         {catalogStats && (
           <p
             className="px-1 -mt-1 text-[10px] text-neutral-500 leading-snug"
-            title="Run Enrich + Embed again to grow the discovered catalog"
+            title="Refresh your profile to add more discovery matches"
           >
-            Catalog: {catalogStats.library.toLocaleString()} library,{" "}
-            {catalogStats.discovered.toLocaleString()} discovered
-            {catalogStats.embedded > 0 && (
-              <>
-                {" "}
-                <span className="text-neutral-400">
-                  ({catalogStats.embedded.toLocaleString()} embedded)
-                </span>
-              </>
-            )}
+            Songs: {catalogStats.library.toLocaleString()} saved,{" "}
+            {catalogStats.discovered.toLocaleString()} ready for discovery
           </p>
         )}
 
