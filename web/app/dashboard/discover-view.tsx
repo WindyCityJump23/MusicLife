@@ -203,6 +203,7 @@ type StationResponse = {
 type SubmitOptions = {
   preserveResults?: boolean;
   background?: boolean;
+  fallbackResults?: SongRecommendation[];
 };
 
 async function fetchWithTimeout(
@@ -1378,7 +1379,11 @@ export default function DiscoverView({
       void refreshTrackState(cached);
       setStationFallbackLevel("cache");
       setStationNotice("Playing your saved station while fresh picks tune.");
-      void handleSubmit({ preserveResults: true, background: true });
+      void handleSubmit({
+        preserveResults: true,
+        background: true,
+        fallbackResults: cached,
+      });
       return () => {
         cancelled = true;
       };
@@ -1398,7 +1403,11 @@ export default function DiscoverView({
             : "Playing your saved station while fresh picks tune."
         );
         void refreshTrackState(station.results);
-        void handleSubmit({ preserveResults: true, background: true });
+        void handleSubmit({
+          preserveResults: true,
+          background: true,
+          fallbackResults: station.results,
+        });
       } else {
         void handleSubmit();
       }
@@ -1428,6 +1437,7 @@ export default function DiscoverView({
   async function handleSubmit(options: SubmitOptions = {}) {
     const preserveResults = Boolean(options.preserveResults);
     const background = Boolean(options.background);
+    const fallbackResults = options.fallbackResults ?? results;
     setLoading(true);
     setError(null);
     if (!preserveResults) {
@@ -1791,7 +1801,7 @@ export default function DiscoverView({
 
       if (deduped.length === 0) {
         const failureReason = dbError ?? artistFallbackError ?? promptSpotifyError;
-        if (preserveResults && results && results.length > 0) {
+        if (preserveResults && fallbackResults && fallbackResults.length > 0) {
           setError(null);
           setStationNotice(
             failureReason
@@ -1809,7 +1819,7 @@ export default function DiscoverView({
         promptMode: Boolean(prompt.trim()),
       });
 
-      if (preserveResults && results && results.length > 0 && finalResults.length < MIN_PLAYABLE_STATION_TRACKS) {
+      if (preserveResults && fallbackResults && fallbackResults.length > 0 && finalResults.length < MIN_PLAYABLE_STATION_TRACKS) {
         setError(null);
         setStationNotice("Still tuning fresh picks. Playing your saved station.");
         return;
@@ -1849,7 +1859,7 @@ export default function DiscoverView({
       // Fetch initial favorite and feedback state
       await refreshTrackState(finalResults);
     } catch (err) {
-      if (preserveResults && results && results.length > 0) {
+      if (preserveResults && fallbackResults && fallbackResults.length > 0) {
         setError(null);
         setStationNotice("Still tuning fresh picks. Playing your saved station.");
       } else {

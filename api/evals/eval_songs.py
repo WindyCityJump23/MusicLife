@@ -773,6 +773,29 @@ def eval_no_raw_abort_copy() -> EvalResult:
     )
 
 
+def eval_background_tuning_retains_loaded_station() -> EvalResult:
+    """Background tuning must preserve the station loaded before React commits state."""
+    web_file = _API_DIR.parent / "web" / "app" / "dashboard" / "discover-view.tsx"
+    source = web_file.read_text()
+    required_patterns = [
+        "fallbackResults?: SongRecommendation[];",
+        "fallbackResults: cached",
+        "fallbackResults: station.results",
+        "const fallbackResults = options.fallbackResults ?? results;",
+        "preserveResults && fallbackResults && fallbackResults.length > 0",
+    ]
+    missing = [pattern for pattern in required_patterns if pattern not in source]
+    passed = not missing
+    return EvalResult(
+        name="background_tuning_retains_loaded_station",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="background refresh receives the rendered fallback station explicitly"
+        if passed
+        else f"missing={missing}",
+    )
+
+
 def eval_play_learning_requires_dwell() -> EvalResult:
     """Radio should only learn positive play intent from the player dwell timer.
 
@@ -1433,6 +1456,7 @@ def run_suite() -> list[EvalResult]:
         eval_zero_play_added_at_tracks_do_not_crash(),
         eval_audio_profile_prefers_recent_saves_without_play_counts(),
         eval_no_raw_abort_copy(),
+        eval_background_tuning_retains_loaded_station(),
         eval_play_learning_requires_dwell(),
         eval_station_fallbacks_are_observable(),
         eval_client_composed_stations_record_runs(),
