@@ -149,18 +149,39 @@ jobs:
           }
           NODE
 
-          api_status=$(curl --silent --show-error --output /dev/null --write-out "%{http_code} %{time_total}" --max-time 30 "$PRODUCTION_API_URL/health")
-          api_code=${api_status%% *}
-          api_time=${api_status##* }
-          echo "api_health status=$api_code time=${api_time}s"
-          if [ "$api_code" -lt 200 ] || [ "$api_code" -ge 400 ]; then
-            echo "::error::API health returned $api_code"
+          # Render deploy hooks return before the replacement instance is ready.
+          # Wait for that restart, then measure a separate warm request so the
+          # latency gate still catches an unhealthy steady-state API.
+          api_status=""
+          api_code="000"
+          api_time="0"
+          for attempt in 1 2 3 4 5 6; do
+            api_status=$(curl --silent --show-error --output /dev/null --write-out "%{http_code} %{time_total}" --max-time 30 "$PRODUCTION_API_URL/health" || true)
+            api_code=${api_status%% *}
+            api_time=${api_status##* }
+            echo "api_health attempt=$attempt status=${api_code:-000} time=${api_time:-timeout}s"
+            if [ -n "$api_status" ] && [ "$api_code" -ge 200 ] && [ "$api_code" -lt 400 ]; then
+              break
+            fi
+            sleep 10
+          done
+          if [ -z "$api_status" ] || [ "$api_code" -lt 200 ] || [ "$api_code" -ge 400 ]; then
+            echo "::error::API health did not recover after Render deploy"
             exit 1
           fi
-          API_HEALTH_TIME="$api_time" node - <<'NODE'
+
+          warm_api_status=$(curl --silent --show-error --output /dev/null --write-out "%{http_code} %{time_total}" --max-time 20 "$PRODUCTION_API_URL/health")
+          warm_api_code=${warm_api_status%% *}
+          warm_api_time=${warm_api_status##* }
+          echo "api_health_warm status=$warm_api_code time=${warm_api_time}s"
+          if [ "$warm_api_code" -lt 200 ] || [ "$warm_api_code" -ge 400 ]; then
+            echo "::error::Warm API health returned $warm_api_code"
+            exit 1
+          fi
+          API_HEALTH_TIME="$warm_api_time" node - <<'NODE'
           const seconds = Number(process.env.API_HEALTH_TIME || "0");
           if (seconds > 15) {
-            console.error(`API health was too slow: ${seconds.toFixed(3)}s`);
+            console.error(`Warm API health was too slow: ${seconds.toFixed(3)}s`);
             process.exit(1);
           }
           NODE
