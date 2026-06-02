@@ -36,6 +36,10 @@ from app.services.ranking import (
     _percentile_rank,
 )
 from app.services.preference_weights import recency_multiplier, track_preference_weight
+from app.services.track_quality import (
+    prompt_requests_utility_tracks,
+    should_exclude_utility_track,
+)
 from app.services.vector_rpc import (
     match_artists,
     match_tracks,
@@ -556,6 +560,9 @@ def recommend_songs(
     # so they should only protect against repeats, not steer taste.
     _AUDIO_FEATS = ("energy", "danceability", "valence", "acousticness", "instrumentalness")
     user_audio_pref: dict[str, float] | None = None
+    saved_instrumental_track_count = 0
+    saved_instrumental_weight = 0.0
+    saved_known_instrumental_weight = 0.0
     saved_track_map = {
         tid: row
         for tid, row in user_track_map.items()
@@ -589,6 +596,12 @@ def recommend_songs(
                     if _v is not None:
                         _feat_totals[_feat] += float(_v) * _play
                         _has_feat = True
+                _instrumentalness = _t.get("instrumentalness")
+                if _instrumentalness is not None:
+                    saved_known_instrumental_weight += _play
+                    if float(_instrumentalness) > 0.65:
+                        saved_instrumental_track_count += 1
+                        saved_instrumental_weight += _play
                 if _has_feat:
                     _feat_weight += _play
             if _feat_weight > 0 and len(_feat_totals) >= 2:
@@ -637,6 +650,16 @@ def recommend_songs(
 
     effective_prompt_vector = prompt_vector if prompt_vector else taste_vector
     has_explicit_prompt = prompt_vector is not None
+    user_prefers_instrumental = bool(
+        user_audio_pref
+        and user_audio_pref.get("instrumentalness", 0.0) > 0.6
+        and saved_instrumental_track_count >= 3
+        and saved_known_instrumental_weight > 0
+        and saved_instrumental_weight / saved_known_instrumental_weight >= 0.65
+    )
+    allow_instrumental_utility_tracks = (
+        user_prefers_instrumental or prompt_requests_utility_tracks(prompt_text)
+    )
 
     # When there's no explicit prompt, zero out the context weight and
     # redistribute it to affinity. The old behavior used the taste vector
@@ -1081,6 +1104,11 @@ def recommend_songs(
             continue
         if excluded_track_ids and (t.get("spotify_track_id") or "") in excluded_track_ids:
             continue
+        if should_exclude_utility_track(
+            t,
+            allow_instrumental_utility=allow_instrumental_utility_tracks,
+        ):
+            continue
         tracks_by_artist[int(aid)].append(t)
 
     # ── Per-track cosine similarity via RPC (no embedding pulled) ─
@@ -1111,9 +1139,6 @@ def recommend_songs(
     # ── Phase 3: Score individual songs ──────────────────────────
     song_results: list[dict] = []
     seen_songs: set[str] = set()
-    user_prefers_instrumental = bool(
-        user_audio_pref and user_audio_pref.get("instrumentalness", 0.0) > 0.6
-    )
 
     # Defined once outside the artist loop — closes over effective_prompt_vector,
     # rng, and now which are all fixed for the lifetime of this request.
@@ -1139,9 +1164,10 @@ def recommend_songs(
         the wire.
         """
         pop = float(t.get("popularity") or 0) / 100.0
-        _inst = float(t.get("instrumentalness") or -1)
-        _speech = float(t.get("speechiness") or -1)
-        if (_inst > 0.85 and not user_prefers_instrumental) or _speech > 0.75:
+        if should_exclude_utility_track(
+            t,
+            allow_instrumental_utility=allow_instrumental_utility_tracks,
+        ):
             return -1.0
         audio_match = _track_audio_match(t)
         recency = 0.0
@@ -1530,7 +1556,10 @@ def recommend_songs(
             supp_by_artist: dict[int, list[dict]] = {}
             for t in supp_tracks:
                 aid = t.get("artist_id")
-                if aid is not None:
+                if aid is not None and not should_exclude_utility_track(
+                    t,
+                    allow_instrumental_utility=allow_instrumental_utility_tracks,
+                ):
                     supp_by_artist.setdefault(int(aid), []).append(t)
 
             existing_name_keys = {

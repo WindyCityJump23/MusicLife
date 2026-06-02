@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
 import { supabaseServer } from "@/lib/supabase-server";
+import { isExplicitUtilityTrackRequest, isUtilityTrack } from "@/lib/track-quality";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,8 @@ type StarterTrack = {
   duration_ms: number | null;
   explicit: boolean | null;
   popularity: number | null;
+  instrumentalness: number | null;
+  speechiness: number | null;
   spotify_track_id: string | null;
   artists?: {
     id?: number;
@@ -146,7 +149,7 @@ async function buildStarterStation(userId: string) {
 
   const { data: tracks, error } = await sb
     .from("tracks")
-    .select("id,name,artist_id,album_name,release_date,duration_ms,explicit,popularity,spotify_track_id,artists(id,name,genres)")
+    .select("id,name,artist_id,album_name,release_date,duration_ms,explicit,popularity,instrumentalness,speechiness,spotify_track_id,artists(id,name,genres)")
     .in("id", orderedIds)
     .not("spotify_track_id", "is", null)
     .limit(50);
@@ -162,6 +165,7 @@ async function buildStarterStation(userId: string) {
   const starter = orderedIds
     .map((id) => byId.get(id))
     .filter((track): track is StarterTrack => Boolean(track?.spotify_track_id))
+    .filter((track) => !isUtilityTrack(track))
     .sort((a, b) => Number(b.popularity ?? 0) - Number(a.popularity ?? 0))
     .filter((track) => {
       const artistKey = String(track.artist_id ?? track.artists?.name ?? "unknown");
@@ -213,14 +217,24 @@ export async function GET(req: NextRequest) {
     .limit(1)
     .maybeSingle();
 
-  if (cached?.results && Array.isArray(cached.results) && cached.results.length > 0) {
+  const cachedResults = Array.isArray(cached?.results)
+    ? cached.results.filter((track) =>
+        isExplicitUtilityTrackRequest(prompt) ||
+        !isUtilityTrack({
+          name: track?.track_name,
+          album_name: track?.album_name,
+        })
+      )
+    : [];
+
+  if (cached && cachedResults.length > 0) {
     const runId = await recordStationRun({
       userId: user.userId,
       prompt: prompt.trim() || null,
       strategy,
       status: "cache",
       fallbackLevel: "cache",
-      resultCount: cached.results.length,
+      resultCount: cachedResults.length,
       latencyMs: Date.now() - startedAt,
       sourceMix: cached.source_mix ?? {},
     });
@@ -228,7 +242,7 @@ export async function GET(req: NextRequest) {
       station_id: cached.id,
       run_id: runId,
       fallback_level: "cache",
-      results: cached.results,
+      results: cachedResults,
       source_mix: cached.source_mix ?? {},
       cached_at: cached.created_at,
     });

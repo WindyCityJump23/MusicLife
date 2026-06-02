@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
 import { supabaseServer } from "@/lib/supabase-server";
+import { isExplicitUtilityTrackRequest, isUtilityTrack } from "@/lib/track-quality";
 
 export const dynamic = "force-dynamic";
 
@@ -55,7 +56,15 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const prompt = typeof body.prompt === "string" ? body.prompt : "";
   const strategy = body.strategy ?? null;
-  const results = Array.isArray(body.results) ? body.results : [];
+  const rawResults: Array<{ track_name?: string | null; album_name?: string | null }> =
+    Array.isArray(body.results) ? body.results : [];
+  const results = rawResults.filter((track) =>
+    isExplicitUtilityTrackRequest(prompt) ||
+    !isUtilityTrack({
+      name: track?.track_name,
+      album_name: track?.album_name,
+    })
+  );
   const sourceMix = body.source_mix && typeof body.source_mix === "object" ? body.source_mix : {};
 
   if (results.length < 8) {

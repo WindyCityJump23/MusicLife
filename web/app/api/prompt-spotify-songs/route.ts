@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isErrorResponse } from "@/lib/session";
 import { applySpotifyTokenCookies, getSpotifyToken } from "@/lib/spotify-token";
 import { supabaseServer } from "@/lib/supabase-server";
+import { isExplicitUtilityTrackRequest, isUtilityTrack } from "@/lib/track-quality";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 25;
@@ -47,6 +48,8 @@ type CatalogTrack = {
   duration_ms?: number | null;
   explicit?: boolean | null;
   popularity?: number | null;
+  instrumentalness?: number | null;
+  speechiness?: number | null;
   spotify_track_id?: string | null;
   artists?: {
     id?: number | string;
@@ -322,7 +325,7 @@ async function fetchCatalogTracksForArtists(
         const { data, error } = await supabase
           .from("tracks")
           .select(
-            "id,name,artist_id,album_name,release_date,duration_ms,explicit,popularity,spotify_track_id,artists(id,name,genres,spotify_artist_id)"
+            "id,name,artist_id,album_name,release_date,duration_ms,explicit,popularity,instrumentalness,speechiness,spotify_track_id,artists(id,name,genres,spotify_artist_id)"
           )
           .eq("artist_id", artist.catalogArtistId)
           .not("spotify_track_id", "is", null)
@@ -359,9 +362,10 @@ function spotifySearchUrl(query: string, type: "artist" | "track", limit: number
   return `https://api.spotify.com/v1/search?${params.toString()}`;
 }
 
-function chooseFallbackTracks(tracks: SpotifyTrack[]): SpotifyTrack[] {
+function chooseFallbackTracks(tracks: SpotifyTrack[], allowUtilityTracks = false): SpotifyTrack[] {
   const seen = new Set<string>();
   const unique = tracks.filter((track) => {
+    if (!allowUtilityTracks && isUtilityTrack(track)) return false;
     const key = `${track?.name ?? ""}|${track?.artists?.[0]?.name ?? ""}`.toLowerCase();
     if (!key.trim() || seen.has(key)) return false;
     seen.add(key);
@@ -382,10 +386,13 @@ function trackToRecommendation(
   track: SpotifyTrack,
   intent: LiveIntent,
   intentIndex: number,
-  trackIndex: number
+  trackIndex: number,
+  allowUtilityTracks = false
 ) {
   const artist = track.artists?.[0];
-  if (!track.id || !track.name || !artist?.name) return null;
+  if (!track.id || !track.name || !artist?.name || (!allowUtilityTracks && isUtilityTrack(track))) {
+    return null;
+  }
 
   const popularity = Math.max(0, Math.min(1, (track.popularity ?? 50) / 100));
   const freshness = releaseFreshness(track.album?.release_date);
@@ -425,12 +432,21 @@ function catalogTrackToRecommendation(
   track: CatalogTrack,
   fallbackArtist: CatalogArtist | undefined,
   artistIndex: number,
-  trackIndex: number
+  trackIndex: number,
+  allowUtilityTracks = false
 ) {
   const artist = Array.isArray(track.artists) ? track.artists[0] : track.artists;
   const artistName = artist?.name ?? fallbackArtist?.name;
   const spotifyTrackId = track.spotify_track_id ?? "";
-  if (!track.id || !track.name || !artistName || !spotifyTrackId) return null;
+  if (
+    !track.id ||
+    !track.name ||
+    !artistName ||
+    !spotifyTrackId ||
+    (!allowUtilityTracks && isUtilityTrack(track))
+  ) {
+    return null;
+  }
 
   const popularity = Math.max(0, Math.min(1, (track.popularity ?? 50) / 100));
   const freshness = releaseFreshness(track.release_date);
@@ -694,7 +710,8 @@ async function fetchSpotifyArtistCatalogTracks(
   artist: SpotifyArtist,
   artistIndex: number,
   accessToken: string,
-  failures: SpotifyFailure[]
+  failures: SpotifyFailure[],
+  allowUtilityTracks: boolean
 ) {
   if (!artist.id) return [];
 
@@ -748,7 +765,8 @@ async function fetchSpotifyArtistCatalogTracks(
               reason: "Expands the artist you typed through Spotify album tracks instead of the restricted top-tracks endpoint.",
             },
             artistIndex,
-            albumIndex * ALBUM_TRACK_LIMIT + trackIndex
+            albumIndex * ALBUM_TRACK_LIMIT + trackIndex,
+            allowUtilityTracks
           )
         )
         .filter(Boolean);
@@ -771,6 +789,7 @@ export async function POST(req: NextRequest) {
     ? body.discover_run_id.trim()
     : `${Date.now()}:${Math.random()}`;
   const spotifyFailures: SpotifyFailure[] = [];
+  const allowUtilityTracks = isExplicitUtilityTrackRequest(prompt);
 
   if (!prompt) {
     return NextResponse.json({ results: [] });
@@ -797,7 +816,13 @@ export async function POST(req: NextRequest) {
     .map((track, trackIndex) => {
       const artistIndex = catalogMatches.findIndex((match) => match.catalogArtistId === Number(track.artist_id));
       const artist = artistIndex >= 0 ? catalogMatches[artistIndex] : undefined;
-      return catalogTrackToRecommendation(track, artist, Math.max(0, artistIndex), trackIndex);
+      return catalogTrackToRecommendation(
+        track,
+        artist,
+        Math.max(0, artistIndex),
+        trackIndex,
+        allowUtilityTracks
+      );
     })
     .filter(Boolean);
 
@@ -855,7 +880,13 @@ export async function POST(req: NextRequest) {
 
   const artistTrackBatches = await Promise.all(
     artistMatches.map(async (artist, artistIndex) => {
-      return fetchSpotifyArtistCatalogTracks(artist, artistIndex, token.accessToken, spotifyFailures);
+      return fetchSpotifyArtistCatalogTracks(
+        artist,
+        artistIndex,
+        token.accessToken,
+        spotifyFailures,
+        allowUtilityTracks
+      );
     })
   );
   const artistTrackRecommendations = artistTrackBatches.flat();
@@ -894,7 +925,7 @@ export async function POST(req: NextRequest) {
             spotifyFailures,
             (data) => (data.tracks?.items ?? []).length > 0
           );
-          return chooseFallbackTracks(data?.tracks?.items ?? [])
+          return chooseFallbackTracks(data?.tracks?.items ?? [], allowUtilityTracks)
             .map((track, trackIndex) =>
               trackToRecommendation(
                 track,
@@ -904,7 +935,8 @@ export async function POST(req: NextRequest) {
                   reason: "Searches Spotify directly for your typed artist, song, or scene.",
                 },
                 artistMatches.length + queryIndex,
-                trackIndex
+                trackIndex,
+                allowUtilityTracks
               )
             )
             .filter(Boolean);

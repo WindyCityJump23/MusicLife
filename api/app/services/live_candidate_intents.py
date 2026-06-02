@@ -16,6 +16,7 @@ from anthropic import Anthropic
 
 from app.config import settings
 from app.services.query_intent import interpret_music_prompt
+from app.services.track_quality import prompt_requests_utility_tracks
 
 _client: Anthropic | None = None
 _NON_STYLE_GENRES = {"spotify", "seen live", "favorites", "favorite"}
@@ -191,7 +192,9 @@ def _anthropic_intents(brief: dict[str, Any], limit: int) -> list[dict[str, str]
         "You create Spotify Search queries for a music discovery app. "
         "Return only compact JSON. The queries must describe styles, eras, moods, "
         "instruments, scenes, or energy. Do not recommend or name specific artists. "
-        "Do not produce 'for fans of' language. Avoid overfitting to legacy rock."
+        "Do not produce 'for fans of' language. Avoid overfitting to legacy rock. "
+        "Unless the current prompt explicitly asks for them, do not query instrumentals, "
+        "beats, type beats, karaoke, backing tracks, study music, or meditation audio."
     )
     user = {
         "current_prompt": brief["prompt"],
@@ -221,7 +224,11 @@ def _anthropic_intents(brief: dict[str, Any], limit: int) -> list[dict[str, str]
         )
         text = "".join(block.text for block in resp.content if block.type == "text").strip()
         parsed = _parse_json_array(text)
-        intents = _sanitize_intents(parsed, limit)
+        intents = _sanitize_intents(
+            parsed,
+            limit,
+            allow_utility_tracks=prompt_requests_utility_tracks(brief["prompt"]),
+        )
         if intents:
             brief["_anthropic_used"] = True
         return intents
@@ -243,7 +250,12 @@ def _parse_json_array(text: str) -> Any:
             return []
 
 
-def _sanitize_intents(value: Any, limit: int) -> list[dict[str, str]]:
+def _sanitize_intents(
+    value: Any,
+    limit: int,
+    *,
+    allow_utility_tracks: bool = False,
+) -> list[dict[str, str]]:
     if not isinstance(value, list):
         return []
     intents: list[dict[str, str]] = []
@@ -252,7 +264,11 @@ def _sanitize_intents(value: Any, limit: int) -> list[dict[str, str]]:
         if not isinstance(item, dict):
             continue
         query = _clean_query(item.get("query"))
-        if not query or query in seen:
+        if (
+            not query
+            or query in seen
+            or (not allow_utility_tracks and prompt_requests_utility_tracks(query))
+        ):
             continue
         seen.add(query)
         intents.append(
@@ -299,9 +315,14 @@ def _heuristic_intents(brief: dict[str, Any], limit: int) -> list[dict[str, str]
 
     intents: list[dict[str, str]] = []
     seen: set[str] = set()
+    allow_utility_tracks = prompt_requests_utility_tracks(prompt)
     for query, label, reason in query_parts:
         clean = _clean_query(query)
-        if not clean or clean in seen:
+        if (
+            not clean
+            or clean in seen
+            or (not allow_utility_tracks and prompt_requests_utility_tracks(clean))
+        ):
             continue
         seen.add(clean)
         intents.append({"query": clean, "label": label, "reason": reason})

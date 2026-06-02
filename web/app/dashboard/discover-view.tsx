@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { isExplicitUtilityTrackRequest, isUtilityTrack } from "@/lib/track-quality";
 import { usePlayer, type QueueTrack } from "./player-context";
 import { useAuth } from "./auth-context";
 
@@ -721,6 +722,16 @@ function strategyCacheKey(strategy: TasteStrategy | null): string {
   return strategy ? JSON.stringify(strategy) : "default";
 }
 
+function withoutUtilityTracks(
+  songs: SongRecommendation[],
+  prompt: string
+): SongRecommendation[] {
+  if (isExplicitUtilityTrackRequest(prompt)) return songs;
+  return songs.filter((song) =>
+    !isUtilityTrack({ name: song.track_name, album_name: song.album_name })
+  );
+}
+
 function readDiscoverCache(
   prompt: string,
   weights: Preset["weights"],
@@ -740,7 +751,9 @@ function readDiscoverCache(
     ) {
       return null;
     }
-    return Array.isArray(cached.results) ? cached.results : null;
+    return Array.isArray(cached.results)
+      ? withoutUtilityTracks(cached.results, prompt)
+      : null;
   } catch {
     return null;
   }
@@ -759,7 +772,7 @@ function writeDiscoverCache(
       prompt,
       weights,
       strategyKey,
-      results,
+      results: withoutUtilityTracks(results, prompt),
     };
     window.sessionStorage.setItem(DISCOVER_CACHE_KEY, JSON.stringify(payload));
   } catch {
@@ -784,7 +797,10 @@ async function fetchLastServerStation(
     });
     if (!res.ok) return null;
     const body: StationResponse = await res.json().catch(() => ({}));
-    return Array.isArray(body.results) && body.results.length > 0 ? body : null;
+    const results = Array.isArray(body.results)
+      ? withoutUtilityTracks(body.results, prompt)
+      : [];
+    return results.length > 0 ? { ...body, results } : null;
   } catch {
     return null;
   }
@@ -970,9 +986,10 @@ async function removeSpotifyPlaylistFromBrowser(playlistId: string): Promise<boo
   }
 }
 
-function chooseFallbackTracks(tracks: any[]): any[] { // eslint-disable-line @typescript-eslint/no-explicit-any
+function chooseFallbackTracks(tracks: any[], allowUtilityTracks = false): any[] { // eslint-disable-line @typescript-eslint/no-explicit-any
   const seen = new Set<string>();
   const unique = tracks.filter((track) => {
+    if (!allowUtilityTracks && isUtilityTrack(track)) return false;
     const key = `${track?.name ?? ""}|${track?.artists?.[0]?.name ?? ""}`.toLowerCase();
     if (!key.trim() || seen.has(key)) return false;
     seen.add(key);
@@ -1018,10 +1035,13 @@ function liveTrackToRecommendation(
   intent: LiveSearchIntent,
   intentIndex: number,
   trackIndex: number,
-  hasPrompt: boolean
+  hasPrompt: boolean,
+  allowUtilityTracks = false
 ): SongRecommendation | null {
   const artist = track?.artists?.[0];
-  if (!track?.id || !track?.name || !artist?.name) return null;
+  if (!track?.id || !track?.name || !artist?.name || (!allowUtilityTracks && isUtilityTrack(track))) {
+    return null;
+  }
 
   const popularity = Math.max(0, Math.min(1, (track.popularity ?? 50) / 100));
   const freshness = releaseFreshness(track.album?.release_date);
@@ -1093,6 +1113,7 @@ async function fetchLiveCandidateSongs(
 
   const accessToken = await getBrowserSpotifyToken();
   const spotifyHeaders = { Authorization: `Bearer ${accessToken}` };
+  const allowUtilityTracks = isExplicitUtilityTrackRequest(currentPrompt);
 
   const batches = await Promise.all(
     intents.map(async (intent, intentIndex) => {
@@ -1104,10 +1125,18 @@ async function fetchLiveCandidateSongs(
         );
         if (!searchRes.ok) return [];
         const data = await searchRes.json();
-        const tracks = chooseFallbackTracks(data.tracks?.items ?? []).slice(0, LIVE_EXPANSION_TRACKS_PER_INTENT);
+        const tracks = chooseFallbackTracks(data.tracks?.items ?? [], allowUtilityTracks)
+          .slice(0, LIVE_EXPANSION_TRACKS_PER_INTENT);
         return tracks
           .map((track, trackIndex) =>
-            liveTrackToRecommendation(track, intent, intentIndex, trackIndex, Boolean(currentPrompt.trim()))
+            liveTrackToRecommendation(
+              track,
+              intent,
+              intentIndex,
+              trackIndex,
+              Boolean(currentPrompt.trim()),
+              allowUtilityTracks
+            )
           )
           .filter((song): song is SongRecommendation => Boolean(song));
       } catch {
@@ -1130,6 +1159,7 @@ async function fetchPromptSpotifySongs(
 ): Promise<SongRecommendation[]> {
   const promptText = currentPrompt.trim();
   if (!promptText) return [];
+  const allowUtilityTracks = isExplicitUtilityTrackRequest(promptText);
 
   try {
     const promptRes = await fetchWithTimeout("/api/prompt-spotify-songs", {
@@ -1206,7 +1236,8 @@ async function fetchPromptSpotifySongs(
               },
               artistIndex,
               trackIndex,
-              true
+              true,
+              allowUtilityTracks
             )
           )
           .filter((song): song is SongRecommendation => Boolean(song));
@@ -1226,7 +1257,7 @@ async function fetchPromptSpotifySongs(
         );
         if (!searchRes.ok) return [];
         const data = await searchRes.json();
-        const tracks = chooseFallbackTracks(data.tracks?.items ?? []);
+        const tracks = chooseFallbackTracks(data.tracks?.items ?? [], allowUtilityTracks);
         return tracks
           .map((track, trackIndex) =>
             liveTrackToRecommendation(
@@ -1238,7 +1269,8 @@ async function fetchPromptSpotifySongs(
               },
               queryIndex,
               trackIndex,
-              true
+              true,
+              allowUtilityTracks
             )
           )
           .filter((song): song is SongRecommendation => Boolean(song));
@@ -1720,7 +1752,10 @@ export default function DiscoverView({
                   }
                 }
                 if (!searchData) return [];
-                const tracks = chooseFallbackTracks(searchData.tracks?.items ?? []);
+                const tracks = chooseFallbackTracks(
+                  searchData.tracks?.items ?? [],
+                  isExplicitUtilityTrackRequest(promptForLiveSearch || interpretedPrompt)
+                );
 
                 return tracks.map((track: any): SongRecommendation => { // eslint-disable-line @typescript-eslint/no-explicit-any
                   const trackPop = (track.popularity ?? 50) / 100;
@@ -1798,6 +1833,8 @@ export default function DiscoverView({
       } catch (e) {
         console.warn("live candidate expansion failed:", e);
       }
+
+      deduped = withoutUtilityTracks(deduped, prompt);
 
       if (deduped.length === 0) {
         const failureReason = dbError ?? artistFallbackError ?? promptSpotifyError;

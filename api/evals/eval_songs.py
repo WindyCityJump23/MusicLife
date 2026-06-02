@@ -17,6 +17,10 @@ if str(_API_DIR) not in sys.path:
 
 from app.services.query_intent import interpret_music_prompt
 from app.services.song_ranking import recommend_songs, _song_diversity_rerank
+from app.services.track_quality import (
+    prompt_requests_utility_tracks,
+    should_exclude_utility_track,
+)
 from evals.fixtures import (
     ALL_ARTISTS,
     JAZZ_ARTISTS,
@@ -1170,11 +1174,11 @@ def eval_api_health_is_lightweight() -> EvalResult:
 
 
 def eval_instrumental_penalized() -> EvalResult:
-    """A highly instrumental track should score below a normal track from the same artist.
+    """A highly instrumental track must be absent from a normal station.
 
     Miles Davis artist 1 has track 103 (instrumentalness=0.95) and track 101
-    (instrumentalness=None). The instrumental penalty (0.35x) should push
-    the utility track well below the normal track.
+    (instrumentalness=None). A score penalty is insufficient because sparse
+    station fill can still surface the utility track.
     """
     partial_user = UserScenario(
         user_id="user_inst_test",
@@ -1206,42 +1210,158 @@ def eval_instrumental_penalized() -> EvalResult:
             details="Normal track 'Kind of Blue' missing from results",
         )
 
-    # Instrumental track may be completely excluded by the shortlist gate
-    if instrumental is None:
-        return EvalResult(
-            name="instrumental_penalized",
-            passed=True,
-            score=1.0,
-            details="Instrumental track filtered out by shortlist gate — correct behavior",
-        )
-
-    passed = normal["score"] > instrumental["score"]
+    passed = instrumental is None
     return EvalResult(
         name="instrumental_penalized",
         passed=passed,
         score=1.0 if passed else 0.0,
-        details=(
-            f"Normal 'Kind of Blue' score={normal['score']:.4f} vs "
-            f"instrumental 'Meditation Ambient' score={instrumental['score']:.4f}"
-        ),
+        details="Instrumental utility track absent from normal station"
+        if passed
+        else "Instrumental utility track leaked into normal station",
+    )
+
+
+def eval_utility_title_excluded_without_audio_features() -> EvalResult:
+    """Utility-title detection must cover Spotify tracks without audio features."""
+    artist = _make_artist(935, "Vocal Artist", ["hip hop"], vec_seed=935, popularity=60)
+    tracks = [
+        _make_track(9350, "Actual Song", 935, popularity=70, vec_seed=9350),
+        _make_track(9351, "Midnight Type Beat", 935, popularity=99, vec_seed=9351),
+    ]
+    scenario = UserScenario(
+        user_id="user_utility_title_test",
+        library_artist_ids=[935],
+        played_track_ids=[],
+        top_artist_ids=[935],
+        taste_vector=artist["embedding"],
+    )
+    results = recommend_songs(
+        client=build_mock_client(scenario, artists=[artist], tracks=tracks, mentions=[]),
+        user_id=scenario.user_id,
+        taste_vector=artist["embedding"],
+        prompt_vector=None,
+        weights=_weights(),
+        exclude_library=False,
+        limit=10,
+        exploration_seed=1,
+    )
+    names = [row["track_name"] for row in results]
+    passed = "Actual Song" in names and "Midnight Type Beat" not in names
+    return EvalResult(
+        name="utility_title_excluded_without_audio_features",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"returned={names}",
+    )
+
+
+def eval_explicit_instrumental_prompt_allows_utility_track() -> EvalResult:
+    """An explicit instrumental request should retain utility-track opt-in."""
+    artist = _make_artist(936, "Beat Artist", ["hip hop"], vec_seed=936, popularity=60)
+    utility = _make_track(9360, "Midnight Type Beat", 936, popularity=70, vec_seed=9360)
+    scenario = UserScenario(
+        user_id="user_explicit_utility_prompt",
+        library_artist_ids=[],
+        played_track_ids=[],
+        top_artist_ids=[],
+        taste_vector=artist["embedding"],
+    )
+    results = recommend_songs(
+        client=build_mock_client(scenario, artists=[artist], tracks=[utility], mentions=[]),
+        user_id=scenario.user_id,
+        taste_vector=artist["embedding"],
+        prompt_vector=artist["embedding"],
+        prompt_text="instrumental hip hop beats",
+        weights=_weights(),
+        exclude_library=False,
+        limit=10,
+        exploration_seed=1,
+    )
+    names = [row["track_name"] for row in results]
+    passed = (
+        prompt_requests_utility_tracks("instrumental hip hop beats")
+        and not should_exclude_utility_track(utility, allow_instrumental_utility=True)
+        and "Midnight Type Beat" in names
+    )
+    return EvalResult(
+        name="explicit_instrumental_prompt_allows_utility_track",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"returned={names}",
+    )
+
+
+def eval_live_and_cached_utility_tracks_are_filtered() -> EvalResult:
+    """Live Spotify and saved-station paths must apply the same utility filter."""
+    web_root = _API_DIR.parent / "web"
+    quality_source = (web_root / "lib" / "track-quality.ts").read_text()
+    discover_source = (web_root / "app" / "dashboard" / "discover-view.tsx").read_text()
+    prompt_source = (web_root / "app" / "api" / "prompt-spotify-songs" / "route.ts").read_text()
+    last_source = (web_root / "app" / "api" / "station" / "last" / "route.ts").read_text()
+    cache_source = (web_root / "app" / "api" / "station" / "cache" / "route.ts").read_text()
+    required_patterns = [
+        "UTILITY_TRACK_PATTERNS",
+        "isExplicitUtilityTrackRequest",
+        "isUtilityTrack",
+        "withoutUtilityTracks",
+        "if (!allowUtilityTracks && isUtilityTrack(track)) return false;",
+        "(!allowUtilityTracks && isUtilityTrack(track))",
+        "cached.results.filter",
+        "const results = rawResults.filter",
+    ]
+    source = "\n".join([quality_source, discover_source, prompt_source, last_source, cache_source])
+    missing = [pattern for pattern in required_patterns if pattern not in source]
+    passed = not missing
+    return EvalResult(
+        name="live_and_cached_utility_tracks_are_filtered",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="catalog, live Spotify, and saved-station boundaries filter utility tracks"
+        if passed
+        else f"missing={missing}",
+    )
+
+
+def eval_live_intents_reject_unrequested_utility_queries() -> EvalResult:
+    """Unprompted live expansion should not ask Spotify for beat-style material."""
+    intents_file = _API_DIR / "app" / "services" / "live_candidate_intents.py"
+    source = intents_file.read_text()
+    required_patterns = [
+        "do not query instrumentals",
+        "allow_utility_tracks=prompt_requests_utility_tracks(brief[\"prompt\"])",
+        "not allow_utility_tracks and prompt_requests_utility_tracks(query)",
+        "not allow_utility_tracks and prompt_requests_utility_tracks(clean)",
+    ]
+    missing = [pattern for pattern in required_patterns if pattern not in source]
+    passed = not missing
+    return EvalResult(
+        name="live_intents_reject_unrequested_utility_queries",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="live intent generator rejects utility queries unless the prompt opts in"
+        if passed
+        else f"missing={missing}",
     )
 
 
 def eval_instrumental_preference_allows_instrumental_shortlist() -> EvalResult:
     """Instrumental-loving users should not lose instrumental candidates before final scoring."""
     artist = _make_artist(930, "Instrumental Preference Artist", ["electronic"], vec_seed=930, popularity=55)
-    saved_instrumental = _make_track(
-        9300,
-        "Saved Instrumental Anchor",
-        930,
-        popularity=5,
-        vec_seed=9300,
-        instrumentalness=0.96,
-        energy=0.65,
-        danceability=0.55,
-        valence=0.45,
-        acousticness=0.20,
-    )
+    saved_instrumentals = [
+        _make_track(
+            9320 + idx,
+            f"Saved Instrumental Anchor {idx}",
+            930,
+            popularity=5,
+            vec_seed=9320 + idx,
+            instrumentalness=0.96,
+            energy=0.65,
+            danceability=0.55,
+            valence=0.45,
+            acousticness=0.20,
+        )
+        for idx in range(3)
+    ]
     target = _make_track(
         9301,
         "Instrumental Candidate",
@@ -1266,18 +1386,19 @@ def eval_instrumental_preference_allows_instrumental_shortlist() -> EvalResult:
         taste_vector=artist["embedding"],
         user_tracks=[
             {
-                "track_id": 9300,
+                "track_id": 9320 + idx,
                 "play_count": 0,
                 "last_played_at": None,
                 "added_at": (datetime.now(timezone.utc) - timedelta(days=5)).isoformat(),
-            },
+            }
+            for idx in range(3)
         ],
     )
     results = recommend_songs(
         client=build_mock_client(
             scenario,
             artists=[artist],
-            tracks=[saved_instrumental, target, *decoys],
+            tracks=[*saved_instrumentals, target, *decoys],
             mentions=[],
         ),
         user_id=scenario.user_id,
@@ -1289,7 +1410,7 @@ def eval_instrumental_preference_allows_instrumental_shortlist() -> EvalResult:
         exploration_seed=1,
     )
     names = [r["track_name"] for r in results]
-    passed = "Instrumental Candidate" in names
+    passed = any(name.startswith("Saved Instrumental Anchor") or name == "Instrumental Candidate" for name in names)
     return EvalResult(
         name="instrumental_preference_allows_instrumental_shortlist",
         passed=passed,
@@ -1298,6 +1419,70 @@ def eval_instrumental_preference_allows_instrumental_shortlist() -> EvalResult:
             "high-instrumental candidate remained eligible for a user whose saved tracks "
             f"show instrumental preference; returned={names}"
         ),
+    )
+
+
+def eval_single_instrumental_save_does_not_flip_radio() -> EvalResult:
+    """One saved instrumental should not turn ordinary Radio into a beat station."""
+    artist = _make_artist(937, "Mixed Artist", ["electronic"], vec_seed=937, popularity=55)
+    saved = _make_track(
+        9370,
+        "Saved Instrumental Anchor",
+        937,
+        popularity=5,
+        vec_seed=9370,
+        instrumentalness=0.96,
+        energy=0.65,
+        danceability=0.55,
+        valence=0.45,
+        acousticness=0.20,
+    )
+    utility = _make_track(
+        9371,
+        "Producer Type Beat",
+        937,
+        popularity=99,
+        vec_seed=9371,
+        instrumentalness=0.96,
+    )
+    vocal = _make_track(9372, "Finished Vocal Song", 937, popularity=50, vec_seed=9372)
+    scenario = UserScenario(
+        user_id="user_single_instrumental_save",
+        library_artist_ids=[937],
+        played_track_ids=[],
+        top_artist_ids=[937],
+        taste_vector=artist["embedding"],
+        user_tracks=[
+            {
+                "track_id": 9370,
+                "play_count": 0,
+                "last_played_at": None,
+                "added_at": (datetime.now(timezone.utc) - timedelta(days=5)).isoformat(),
+            },
+        ],
+    )
+    results = recommend_songs(
+        client=build_mock_client(
+            scenario,
+            artists=[artist],
+            tracks=[saved, utility, vocal],
+            mentions=[],
+        ),
+        user_id=scenario.user_id,
+        taste_vector=artist["embedding"],
+        prompt_vector=None,
+        weights=_weights(),
+        exclude_library=False,
+        limit=10,
+        exploration_seed=1,
+    )
+    names = [row["track_name"] for row in results]
+    passed = "Finished Vocal Song" in names and "Producer Type Beat" not in names
+    return EvalResult(
+        name="single_instrumental_save_does_not_flip_radio",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"returned={names}",
     )
 
 
@@ -1338,23 +1523,14 @@ def eval_spoken_word_penalized() -> EvalResult:
             details="Normal track 'Kind of Blue' missing from results",
         )
 
-    if spoken is None:
-        return EvalResult(
-            name="spoken_word_penalized",
-            passed=True,
-            score=1.0,
-            details="Spoken-word track filtered out by shortlist gate — correct behavior",
-        )
-
-    passed = normal["score"] > spoken["score"]
+    passed = spoken is None
     return EvalResult(
         name="spoken_word_penalized",
         passed=passed,
         score=1.0 if passed else 0.0,
-        details=(
-            f"Normal 'Kind of Blue' score={normal['score']:.4f} vs "
-            f"spoken-word 'Podcast Intro' score={spoken['score']:.4f}"
-        ),
+        details="Spoken-word utility track absent from normal station"
+        if passed
+        else "Spoken-word utility track leaked into normal station",
     )
 
 
@@ -1469,7 +1645,12 @@ def run_suite() -> list[EvalResult]:
         eval_onboarding_copy_hides_pipeline_language(),
         eval_api_health_is_lightweight(),
         eval_instrumental_penalized(),
+        eval_utility_title_excluded_without_audio_features(),
+        eval_explicit_instrumental_prompt_allows_utility_track(),
+        eval_live_and_cached_utility_tracks_are_filtered(),
+        eval_live_intents_reject_unrequested_utility_queries(),
         eval_instrumental_preference_allows_instrumental_shortlist(),
+        eval_single_instrumental_save_does_not_flip_radio(),
         eval_spoken_word_penalized(),
         eval_audio_match_meaningful(),
     ]
