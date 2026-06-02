@@ -824,6 +824,8 @@ def eval_station_fallbacks_are_observable() -> EvalResult:
     required_health_patterns = [
         'run.fallback_level === "cache"',
         'run.fallback_level === "starter"',
+        'typeof run.latency_ms === "number" && Number.isFinite(run.latency_ms)',
+        'typeof run.result_count === "number" && Number.isFinite(run.result_count)',
         "cache_hit_rate",
     ]
     missing = [

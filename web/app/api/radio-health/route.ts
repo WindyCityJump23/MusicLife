@@ -45,12 +45,16 @@ export async function GET(req: NextRequest) {
   const timeoutRuns = runs.filter((run) =>
     String(run.error_class ?? "").toLowerCase().includes("timeout")
   );
-  const latencies = runs
-    .map((run) => Number(run.latency_ms))
-    .filter((latency) => Number.isFinite(latency) && latency >= 0);
-  const counts = runs
-    .map((run) => Number(run.result_count))
-    .filter((count) => Number.isFinite(count) && count >= 0);
+  const latencies = runs.flatMap((run) =>
+    typeof run.latency_ms === "number" && Number.isFinite(run.latency_ms) && run.latency_ms >= 0
+      ? [run.latency_ms]
+      : []
+  );
+  const counts = runs.flatMap((run) =>
+    typeof run.result_count === "number" && Number.isFinite(run.result_count) && run.result_count >= 0
+      ? [run.result_count]
+      : []
+  );
 
   return NextResponse.json({
     window: "24h",
