@@ -217,6 +217,7 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
         if status_warning:
             warnings.append(status_warning)
         elapsed_ms = round((_time.monotonic() - route_start) * 1000)
+        print(f"recommend_songs: timings={timings}")
         return {
             "results": results,
             "query_intent": query_intent.as_response() if query_intent else None,
@@ -256,6 +257,7 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             local_excluded_tracks = build_excluded_track_ids(history_rows, older_than_days=3)
 
         rank_start = _time.monotonic()
+        rank_stage_timings: dict[str, int] = {}
         attempt_results = _recommend_songs(
             client=user_client,
             user_id=req.user_id,
@@ -269,8 +271,11 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             excluded_artist_ids=local_excluded_artists,
             exploration_seed=request_base_seed + attempt,
             taste_strategy=req.taste_strategy.model_dump() if req.taste_strategy and not query_intent else None,
+            performance_timings=rank_stage_timings,
         )
         timings[f"rank_attempt_{attempts}_ms"] = round((_time.monotonic() - rank_start) * 1000)
+        for key, value in rank_stage_timings.items():
+            timings[f"rank_attempt_{attempts}_{key}"] = value
 
         if len(attempt_results) > len(best_results):
             best_results = attempt_results
@@ -291,6 +296,7 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
         if not query_intent and req.novelty_mode == "graceful" and overlap > req.max_allowed_overlap:
             continue
 
+        persistence_start = _time.monotonic()
         try:
             persist_discover_run(
                 user_client,
@@ -303,6 +309,8 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             )
         except Exception as e:
             print(f"persist_discover_run failed (non-fatal): {e}")
+        finally:
+            timings["persistence_ms"] = round((_time.monotonic() - persistence_start) * 1000)
         return _response(
             attempt_results,
             signature=signature,
@@ -314,6 +322,7 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
     track_ids = [r.get("spotify_track_id") for r in best_results if r.get("spotify_track_id")]
     result_artist_ids = _numeric_artist_ids(best_results)
     signature = signature_from_ordered(track_ids)
+    persistence_start = _time.monotonic()
     try:
         persist_discover_run(
             user_client,
@@ -326,6 +335,8 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
         )
     except Exception as e:
         print(f"persist_discover_run failed (non-fatal): {e}")
+    finally:
+        timings["persistence_ms"] = round((_time.monotonic() - persistence_start) * 1000)
     return _response(
         best_results,
         signature=signature,

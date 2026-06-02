@@ -878,6 +878,34 @@ def eval_client_composed_stations_record_runs() -> EvalResult:
     )
 
 
+def eval_backend_stage_timings_are_observable() -> EvalResult:
+    """Backend responses should expose stage timings for production recommendation diagnosis."""
+    route_file = _API_DIR / "app" / "routes" / "recommend.py"
+    ranking_file = _API_DIR / "app" / "services" / "song_ranking.py"
+    source = route_file.read_text() + "\n" + ranking_file.read_text()
+    required_patterns = [
+        "performance_timings=rank_stage_timings",
+        'timings["persistence_ms"]',
+        'print(f"recommend_songs: timings={timings}")',
+        '_record_stage("artist_match_rpc_ms"',
+        '_record_stage("mention_fetch_ms"',
+        '_record_stage("mention_context_rpc_ms"',
+        '_record_stage("track_fetch_ms"',
+        '_record_stage("track_match_rpc_ms"',
+        '_record_stage("rerank_ms"',
+    ]
+    missing = [pattern for pattern in required_patterns if pattern not in source]
+    passed = not missing
+    return EvalResult(
+        name="backend_stage_timings_are_observable",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="backend logs and returns stage timings for ranking diagnosis"
+        if passed
+        else f"missing={missing}",
+    )
+
+
 def eval_cache_does_not_poison_prompt() -> EvalResult:
     """Cached unprompted stations must not override a typed prompt station."""
     discover_file = _API_DIR.parent / "web" / "app" / "dashboard" / "discover-view.tsx"
@@ -1406,6 +1434,7 @@ def run_suite() -> list[EvalResult]:
         eval_play_learning_requires_dwell(),
         eval_station_fallbacks_are_observable(),
         eval_client_composed_stations_record_runs(),
+        eval_backend_stage_timings_are_observable(),
         eval_cache_does_not_poison_prompt(),
         eval_taste_snapshots_are_durable(),
         eval_radio_copy_hides_debug_source_language(),

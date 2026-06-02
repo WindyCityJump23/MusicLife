@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import random
+import time as _time
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
@@ -409,6 +410,7 @@ def recommend_songs(
     excluded_artist_ids: set[int] | None = None,
     exploration_seed: int | None = None,
     taste_strategy: dict | None = None,
+    performance_timings: dict[str, int] | None = None,
 ) -> list[dict]:
     """Return a ranked list of song-level recommendations.
 
@@ -419,6 +421,11 @@ def recommend_songs(
     """
 
     strategy = _clean_strategy(taste_strategy)
+    stage_timings = performance_timings if performance_timings is not None else {}
+
+    def _record_stage(key: str, started_at: float) -> None:
+        elapsed_ms = round((_time.monotonic() - started_at) * 1000)
+        stage_timings[key] = stage_timings.get(key, 0) + elapsed_ms
     artist_weights = _get_user_artist_weights(client, user_id)
     library_artist_ids = _get_user_library_artist_ids(client, user_id)
     previously_recommended = _get_previously_recommended_artist_ids(client, user_id)
@@ -496,6 +503,7 @@ def recommend_songs(
     # token as a genre filter made searches feel oddly literal.
     genre_tokens = _genre_tokens_for_prompt(prompt_text)
 
+    artist_match_started = _time.monotonic()
     all_artists = match_artists(
         client,
         query_vector=taste_vector or None,
@@ -518,6 +526,7 @@ def recommend_songs(
             f"song_ranking: genre filter '{prompt_text}' matched "
             f"{len(all_artists)} artists"
         )
+    _record_stage("artist_match_rpc_ms", artist_match_started)
 
     # ── Fetch user's track data for familiarity detection ─────
     # Paginate to handle users with very large libraries (>9999 tracks).
@@ -594,6 +603,7 @@ def recommend_songs(
     # ── Source/mention data for editorial + context signals ────
     candidate_ids = [int(a["id"]) for a in all_artists if a.get("id")]
 
+    mention_fetch_started = _time.monotonic()
     source_resp = (
         client.table("sources")
         .select("id,name,trust_weight,url")
@@ -621,6 +631,7 @@ def recommend_songs(
         aid = m.get("artist_id")
         if aid is not None:
             mentions_by_artist[int(aid)].append(m)
+    _record_stage("mention_fetch_ms", mention_fetch_started)
 
     recent_window_days = 45
 
@@ -646,9 +657,11 @@ def recommend_songs(
     # signal value is still populated when the weight has been redistributed
     # to 0 (mood-fallback path).
     if effective_prompt_vector and candidate_ids:
+        mention_context_started = _time.monotonic()
         context_by_artist = max_mention_similarity_per_artist(
             client, effective_prompt_vector, candidate_ids
         )
+        _record_stage("mention_context_rpc_ms", mention_context_started)
     else:
         context_by_artist = {}
 
@@ -905,7 +918,9 @@ def recommend_songs(
     # Track metadata only — no embedding column. Per-track similarity
     # against prompt and taste vectors is fetched via RPC below so we
     # never pull tracks.embedding (vector(1024)) over HTTPS.
+    track_fetch_started = _time.monotonic()
     all_tracks = _fetch_tracks_for_artist_ids(client, top_artist_ids)
+    _record_stage("track_fetch_ms", track_fetch_started)
 
     # Explicit searches are different from normal Discover: the user may ask
     # for a narrow style whose best matching tracks sit outside their usual
@@ -913,6 +928,7 @@ def recommend_songs(
     # so searched-only songs can compete on track-level context similarity.
     if has_explicit_prompt and prompt_vector:
         try:
+            track_match_started = _time.monotonic()
             search_tracks_resp = match_tracks(
                 client,
                 query_vector=prompt_vector,
@@ -975,6 +991,7 @@ def recommend_songs(
                     f"song_ranking: explicit search added {len(search_tracks)} "
                     f"track-embedding candidates across {len(added_artist_ids)} artists"
                 )
+            _record_stage("track_match_rpc_ms", track_match_started)
         except Exception as _e:
             print(f"song_ranking: explicit search track scan failed (non-fatal): {_e}")
 
@@ -1008,7 +1025,9 @@ def recommend_songs(
                     break
 
             if extra_artist_ids:
+                extra_track_fetch_started = _time.monotonic()
                 extra_tracks = _fetch_tracks_for_artist_ids(client, extra_artist_ids)
+                _record_stage("track_fetch_ms", extra_track_fetch_started)
                 all_tracks.extend(extra_tracks)
 
                 # Score expansion artists so Phase 3 can rank their tracks.
@@ -1070,6 +1089,7 @@ def recommend_songs(
     track_context_sim: dict[int, float] = {}
     track_taste_sim: dict[int, float] = {}
     if top_artist_ids:
+        track_match_started = _time.monotonic()
         if effective_prompt_vector:
             track_context_sim = track_similarity_for_artists(
                 client, effective_prompt_vector, top_artist_ids
@@ -1078,6 +1098,7 @@ def recommend_songs(
             track_taste_sim = track_similarity_for_artists(
                 client, taste_vector, top_artist_ids
             )
+        _record_stage("track_match_rpc_ms", track_match_started)
 
     def _local_track_similarity(t: dict, vector: list[float] | None) -> float | None:
         if not vector:
@@ -1465,6 +1486,7 @@ def recommend_songs(
         )
         # First pass: try to supplement with more genre-matching artists
         # (wider pool, popularity-ordered instead of taste-ordered).
+        artist_match_started = _time.monotonic()
         supp_artists = match_artists(
             client,
             query_vector=None,
@@ -1500,8 +1522,11 @@ def recommend_songs(
                     new_artist_ids.append(aid_int)
                     supplement_artist_ids_set.add(aid_int)
             supp_artists = full_artists
+        _record_stage("artist_match_rpc_ms", artist_match_started)
         if new_artist_ids:
+            supplement_track_fetch_started = _time.monotonic()
             supp_tracks = _fetch_tracks_for_artist_ids(client, new_artist_ids[:200])
+            _record_stage("track_fetch_ms", supplement_track_fetch_started)
             supp_by_artist: dict[int, list[dict]] = {}
             for t in supp_tracks:
                 aid = t.get("artist_id")
@@ -1570,7 +1595,9 @@ def recommend_songs(
     # The old path sorted one blended list and let hits crowd out discovery.
     # This enforces a Pandora-like station mix: some recognizable anchors,
     # plenty of solid popular cuts, and a real deep-cut lane.
+    rerank_started = _time.monotonic()
     diverse = _lane_aware_rerank(song_results, max(limit, 0), strategy)
+    _record_stage("rerank_ms", rerank_started)
 
     return diverse
 
