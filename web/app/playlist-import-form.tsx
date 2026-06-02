@@ -71,7 +71,7 @@ export default function PlaylistImportForm() {
           disabled={!url.trim() || loading}
           className="w-full rounded-full bg-emerald-500 text-white px-7 py-3 text-sm font-medium hover:bg-emerald-400 active:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed transition"
         >
-          {loading ? "Importing..." : "Get Recommendations"}
+          {loading ? "Importing..." : "Start with this playlist"}
         </button>
       </form>
 
@@ -89,7 +89,7 @@ export default function PlaylistImportForm() {
 
       <p className="text-xs text-white/45 leading-relaxed max-w-xs mx-auto">
         No Spotify login needed. Paste any public playlist to get personalized
-        recommendations.
+        Radio picks.
       </p>
     </div>
   );

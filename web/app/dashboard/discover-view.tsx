@@ -523,7 +523,7 @@ function stationMixSummary(
       ? "Expanded this prompt with fresh Spotify matches while keeping your strongest matches in place."
       : "Added fresh Spotify matches to keep the station moving.";
   } else if (liveCount > 0) {
-    sourceInsight = "Built from live Spotify because those were the strongest playable matches for this run.";
+    sourceInsight = "Built from fresh Spotify discovery because those were the strongest playable matches for this run.";
   } else if (songs.length === 0) {
     sourceInsight = "Tune the station to see how MusicLife balances known anchors and fresh finds.";
   } else {

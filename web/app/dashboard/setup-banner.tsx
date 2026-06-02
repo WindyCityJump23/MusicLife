@@ -14,7 +14,7 @@ type ReadinessStats = {
 
 const STEP_LABELS_SPOTIFY = [
   { title: "Import Spotify library", body: "Saved songs, artists, and recent plays" },
-  { title: "Learn artist taste", body: "Genres and artist metadata" },
+  { title: "Learn artist taste", body: "Genres and artist context" },
   { title: "Connect your taste", body: "Prepare stronger station matches" },
   { title: "Add music context", body: "Editorial and source signals" },
   { title: "Prepare playable songs", body: "Spotify tracks for your artists" },
@@ -23,7 +23,7 @@ const STEP_LABELS_SPOTIFY = [
 
 const STEP_LABELS_GUEST = [
   { title: "Import playlist", body: "Artists and tracks from your playlist" },
-  { title: "Learn artist taste", body: "Genres and artist metadata" },
+  { title: "Learn artist taste", body: "Genres and artist context" },
   { title: "Connect your taste", body: "Prepare stronger station matches" },
   { title: "Add music context", body: "Editorial and source signals" },
   { title: "Prepare playable songs", body: "Tracks for recommendations" },

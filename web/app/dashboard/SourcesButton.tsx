@@ -49,8 +49,8 @@ const SOURCE_COUNT = PUBLISHERS.length;
 const STAGES = [
   { id: "queued", label: "Queued" },
   { id: "feeds", label: "Feeds" },
-  { id: "mentions", label: "Mentions" },
-  { id: "embedding", label: "Embedding" },
+  { id: "mentions", label: "Finding picks" },
+  { id: "embedding", label: "Matching" },
   { id: "done", label: "Done" },
 ] as const;
 
@@ -103,6 +103,21 @@ function progressPercent(state: JobState, message: string): number {
   }
   if (state === "running") return 12;
   return 0;
+}
+
+function userFacingSourceMessage(state: JobState, message: string): string {
+  const lower = message.toLowerCase();
+  const progress = parseSourceProgress(message);
+
+  if (state === "success") return "Discovery context refreshed.";
+  if (state === "error") return "Could not refresh discovery context. Please try again.";
+  if (lower.includes("embedding") || lower.includes("finalizing")) {
+    return "Connecting fresh picks to your taste…";
+  }
+  if (progress) return `Reading music sources (${progress.current}/${progress.total})…`;
+  if (lower.includes("queued") || lower.includes("starting")) return "Queuing source refresh…";
+  if (state === "running") return "Refreshing discovery context…";
+  return "";
 }
 
 function formatElapsed(ms: number): string {
@@ -199,6 +214,7 @@ export default function SourcesButton({
   const [now, setNow] = useState(Date.now());
   const progress = progressPercent(state, message);
   const sourceProgress = parseSourceProgress(message);
+  const displayMessage = userFacingSourceMessage(state, message);
   const pressCount = useMemo(() => PUBLISHERS.filter((p) => p.kind === "rss").length, []);
   const communityCount = useMemo(() => PUBLISHERS.filter((p) => p.kind === "reddit").length, []);
   const visiblePublishers = PUBLISHERS.slice(0, 14);
@@ -274,7 +290,7 @@ export default function SourcesButton({
 
         {disabled ? (
           <p className="text-[10px] text-neutral-500 leading-snug">
-            Sync your listening history first so source mentions can match your catalog.
+            Sync your listening history first so MusicLife can connect fresh picks to your taste.
           </p>
         ) : (
           <div className="space-y-2">
@@ -298,7 +314,7 @@ export default function SourcesButton({
           </div>
         )}
 
-        {message && state !== "idle" && (
+        {displayMessage && state !== "idle" && (
           <p
             className={[
               "text-[10px] leading-snug rounded-md px-2 py-1.5",
@@ -309,7 +325,7 @@ export default function SourcesButton({
                   : "bg-neutral-50 text-neutral-600",
             ].join(" ")}
           >
-            {message}
+            {displayMessage}
           </p>
         )}
       </div>

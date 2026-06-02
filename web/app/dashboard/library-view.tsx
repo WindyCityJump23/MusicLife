@@ -923,7 +923,7 @@ export default function LibraryView({
               {strategy.live_expansion === "catalog"
                 ? "Close-to-core mode still allows careful surprises, but your strongest matches remain the station's center."
                 : strategy.live_expansion === "live"
-                  ? "Wide-open mode gives the next station a larger live Spotify window."
+                  ? "Wide-open mode gives the next station a larger fresh Spotify discovery window."
                   : "Balanced-reach mode starts from strong matches and reserves room for fresh Spotify finds."}
             </div>
           </section>

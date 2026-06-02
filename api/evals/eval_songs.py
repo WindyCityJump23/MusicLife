@@ -1036,12 +1036,18 @@ def eval_onboarding_copy_hides_pipeline_language() -> EvalResult:
     """Default onboarding surfaces should explain the product without exposing pipeline vocabulary."""
     dashboard_dir = _API_DIR.parent / "web" / "app" / "dashboard"
     files = [
+        _API_DIR.parent / "web" / "app" / "page.tsx",
+        _API_DIR.parent / "web" / "app" / "playlist-import-form.tsx",
         dashboard_dir / "SetupAllButton.tsx",
+        dashboard_dir / "SourcesButton.tsx",
         dashboard_dir / "sidebar.tsx",
         dashboard_dir / "setup-banner.tsx",
         dashboard_dir / "radio-view.tsx",
         dashboard_dir / "library-view.tsx",
         dashboard_dir / "discover-view.tsx",
+        dashboard_dir / "onboarding-wizard.tsx",
+        dashboard_dir / "EmbedButton.tsx",
+        dashboard_dir / "PopulateTracksButton.tsx",
     ]
     source = "\n".join(file.read_text() for file in files)
     forbidden = [
@@ -1060,6 +1066,18 @@ def eval_onboarding_copy_hides_pipeline_language() -> EvalResult:
         "outside the catalog",
         "local catalog",
         "live Spotify search",
+        'label: "Embedding"',
+        "source mentions can match your catalog",
+        "AI taste matching",
+        "Get AI-powered recommendations",
+        "Spotify status:",
+        "authorization code",
+        "redirect URI",
+        "403 Forbidden",
+        "live Spotify window",
+        "Built from live Spotify",
+        'title: "Generate Embeddings"',
+        '"Embed artists"',
     ]
     hits = [pattern for pattern in forbidden if pattern in source]
     passed = not hits

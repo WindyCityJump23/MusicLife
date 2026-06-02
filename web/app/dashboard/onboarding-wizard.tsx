@@ -17,14 +17,14 @@ const STEPS = [
   },
   {
     id: 2,
-    title: "Enrich Artists",
-    desc: "Fetch genres & metadata.",
+    title: "Learn Your Artists",
+    desc: "Add genres and artist context.",
     icon: "⚡",
   },
   {
     id: 3,
-    title: "Generate Embeddings",
-    desc: "Build AI taste vectors.",
+    title: "Connect Your Taste",
+    desc: "Prepare stronger station matches.",
     icon: "🧠",
   },
   {

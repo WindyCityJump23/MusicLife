@@ -3,13 +3,13 @@ import { redirect } from "next/navigation";
 import PlaylistImportForm from "./playlist-import-form";
 
 const ERROR_MESSAGES: Record<string, string> = {
-  no_code: "Spotify did not return an authorization code. Please try again.",
-  state_mismatch: "Login session expired or request was tampered with. Please try again.",
-  token_exchange: "Could not exchange the authorization code with Spotify. Check that your Spotify app credentials and redirect URI are correct.",
-  token_missing: "Spotify returned a successful response but no access token. Please try again.",
+  no_code: "Spotify sign-in did not finish. Please try again.",
+  state_mismatch: "Sign-in session expired. Please try again.",
+  token_exchange: "Spotify sign-in could not be completed. Please try again.",
+  token_missing: "Spotify sign-in could not be completed. Please try again.",
   profile_fetch: "Could not fetch your Spotify profile. This may be a temporary Spotify issue — please try again in a moment.",
-  forbidden: "Spotify returned 403 Forbidden. Your app may need re-authorization — try clearing your browser cookies for this site and signing in again.",
-  token_invalid: "Spotify access token was rejected. Please clear cookies and try again.",
+  forbidden: "Spotify needs you to reconnect. Please try again.",
+  token_invalid: "Spotify needs you to reconnect. Please try again.",
   rate_limited: "Spotify is rate-limiting login requests right now. Please wait a moment and try again.",
   user_upsert: "Your account could not be created or updated. Please try again.",
 };
@@ -30,12 +30,11 @@ export default function Home({
   }
 
   const errorKey = typeof searchParams.error === "string" ? searchParams.error : null;
-  const spotifyStatus = typeof searchParams.spotify_status === "string" ? searchParams.spotify_status : null;
   const retryAfter = typeof searchParams.retry_after === "string" ? searchParams.retry_after : null;
   const baseMessage = errorKey ? (ERROR_MESSAGES[errorKey] ?? "An unexpected error occurred. Please try again.") : null;
-  const retrySuffix = retryAfter ? ` Retry after ~${retryAfter}s.` : "";
+  const retrySuffix = retryAfter ? ` Please try again in about ${retryAfter} seconds.` : "";
   const errorMessage = baseMessage
-    ? `${baseMessage}${retrySuffix}${spotifyStatus ? ` (Spotify status: ${spotifyStatus})` : ""}`
+    ? `${baseMessage}${retrySuffix}`
     : null;
 
   return (
@@ -51,8 +50,7 @@ export default function Home({
             MusicLife
           </h1>
           <p className="text-sm sm:text-base text-white/70 leading-relaxed">
-            Discover music you&apos;ll actually like. Powered by your Spotify
-            listening history, editorial sources, and AI taste matching.
+            Personal radio that learns your taste and finds songs worth playing next.
           </p>
         </div>
 
@@ -109,7 +107,7 @@ export default function Home({
               emoji="✨"
               step="3"
               title="Discover"
-              desc="Get AI-powered recommendations"
+              desc="Get a station shaped by your taste"
             />
           </div>
         </div>
