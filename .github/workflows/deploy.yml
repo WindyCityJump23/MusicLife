@@ -193,13 +193,9 @@ jobs:
           }
           NODE
 
-          diagnostics_report=$(curl --fail --silent --show-error --max-time 30 -X POST "$PRODUCTION_API_URL/diagnostics/ranking/static")
-          echo "static_diagnostics=$diagnostics_report"
-          DIAGNOSTICS_REPORT="$diagnostics_report" node - <<'NODE'
-          const report = JSON.parse(process.env.DIAGNOSTICS_REPORT || "{}");
-          const summary = report.summary || {};
-          if ((summary.errors || 0) > 0 || (summary.warnings || 0) > 0) {
-            console.error("Static diagnostics failed", summary);
-            process.exit(1);
-          }
-          NODE
+          # Static ranking diagnostics are validated as a hard gate in the
+          # pre-deploy "Build, Evals, and Diagnostics" job (same commit, via the
+          # in-process run_diagnostics import). The HTTP endpoint
+          # POST /diagnostics/ranking/static now requires a bearer token, so it
+          # is intentionally NOT re-checked anonymously here.
+          echo "Static diagnostics covered by the pre-deploy quality-gates job."
