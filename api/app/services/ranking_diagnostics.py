@@ -225,7 +225,9 @@ def _check_genre_synonym_coverage(report: DiagnosticReport) -> None:
     """Ensure every genre phrase that could be ambiguous has synonyms."""
     report.checks_run += 1
     try:
-        from app.services.song_ranking import _GENRE_PHRASES, _GENRE_SYNONYMS
+        # These constants moved to song_scoring when the pure helpers were
+        # extracted; importing from song_ranking silently no-op'd this check.
+        from app.services.song_scoring import _GENRE_PHRASES, _GENRE_SYNONYMS
     except ImportError:
         return
 

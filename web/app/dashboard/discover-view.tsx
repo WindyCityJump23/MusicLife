@@ -78,7 +78,11 @@ const LIVE_EXPANSION_POOL_TARGET = 40;
 const FRESH_AIR_TARGET_RATIO = 0.25;
 const PROMPT_LIVE_TARGET_RATIO = 0.4;
 const MIN_PLAYABLE_STATION_TRACKS = 12;
-const DISCOVERY_API_TIMEOUT_MS = 22_000;
+// Must stay above the BFF's UPSTREAM_TIMEOUT_MS (28s) so the server-side
+// timeout fires first and returns a structured empty response the client can
+// fall back from; the backend itself self-bounds at 12–16s, and with the
+// keep-current-station behavior the queue stays playable during the wait.
+const DISCOVERY_API_TIMEOUT_MS = 34_000;
 const SPOTIFY_BROWSER_TIMEOUT_MS = 8_000;
 const DISCOVER_CACHE_KEY = "musiclife:discover:last-results:v7";
 const DISCOVER_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -1265,7 +1269,12 @@ export default function DiscoverView({
     setPlaylistUrl(null);
     setPlaylistError(null);
     setPlaylistStats(null);
-    if (!preserveResults) {
+    // Manual retunes keep the current station visible (and playing) while
+    // fresh picks tune. Clearing it up front meant a backend timeout left the
+    // user staring at an empty queue; now the previous station is only
+    // replaced when fresh results actually arrive, and restored otherwise.
+    const hasStationToKeep = Boolean(fallbackResults && fallbackResults.length > 0);
+    if (!preserveResults && !hasStationToKeep) {
       setResults([]);
       setQueue([]);
     }
@@ -1633,13 +1642,20 @@ export default function DiscoverView({
 
       if (deduped.length === 0) {
         const failureReason = dbError ?? artistFallbackError ?? promptSpotifyError;
-        if (preserveResults && fallbackResults && fallbackResults.length > 0) {
+        if (fallbackResults && fallbackResults.length > 0) {
           setError(null);
-          setStationNotice(
-            failureReason
-              ? "Still tuning fresh picks. Playing your saved station."
-              : "Still tuning fresh picks."
-          );
+          if (!preserveResults) {
+            setResults(fallbackResults);
+            setStationNotice(
+              "Couldn't tune fresh picks just now — kept your current station. Retune to try again."
+            );
+          } else {
+            setStationNotice(
+              failureReason
+                ? "Still tuning fresh picks. Playing your saved station."
+                : "Still tuning fresh picks."
+            );
+          }
           return;
         }
         setError(recommendationFailureMessage(failureReason));
@@ -1651,9 +1667,14 @@ export default function DiscoverView({
         promptMode: Boolean(prompt.trim()),
       });
 
-      if (preserveResults && fallbackResults && fallbackResults.length > 0 && finalResults.length < MIN_PLAYABLE_STATION_TRACKS) {
+      if (fallbackResults && fallbackResults.length > 0 && finalResults.length < MIN_PLAYABLE_STATION_TRACKS) {
         setError(null);
-        setStationNotice("Still tuning fresh picks. Playing your saved station.");
+        if (!preserveResults) {
+          setResults(fallbackResults);
+          setStationNotice("Fresh picks came back thin — kept your current station. Retune to try again.");
+        } else {
+          setStationNotice("Still tuning fresh picks. Playing your saved station.");
+        }
         return;
       }
 
@@ -1691,9 +1712,14 @@ export default function DiscoverView({
       // Fetch initial favorite and feedback state
       await refreshTrackState(finalResults);
     } catch (err) {
-      if (preserveResults && fallbackResults && fallbackResults.length > 0) {
+      if (fallbackResults && fallbackResults.length > 0) {
         setError(null);
-        setStationNotice("Still tuning fresh picks. Playing your saved station.");
+        if (!preserveResults) {
+          setResults(fallbackResults);
+          setStationNotice("Couldn't tune fresh picks just now — kept your current station. Retune to try again.");
+        } else {
+          setStationNotice("Still tuning fresh picks. Playing your saved station.");
+        }
       } else {
         setError(recommendationFailureMessage(err instanceof Error ? err.message : "Network error"));
         setResults([]);

@@ -1042,7 +1042,16 @@ def eval_frontend_excludes_saved_spotify_tracks() -> EvalResult:
 
 
 def eval_background_tuning_retains_loaded_station() -> EvalResult:
-    """Background tuning must preserve the station loaded before React commits state."""
+    """Failed tuning must never strand an empty queue when a station exists.
+
+    Originally this asserted the background-only guard
+    (`preserveResults && fallbackResults...`). The guard was intentionally
+    widened so *manual retunes* also keep the current station on failure —
+    a backend timeout used to clear the queue and leave it empty. The eval now
+    asserts the wider invariant: every failure path checks the fallback
+    station, manual retunes restore it, and the queue is not cleared up front
+    when a station can be kept.
+    """
     web_file = _API_DIR.parent / "web" / "app" / "dashboard" / "discover-view.tsx"
     source = web_file.read_text()
     required_patterns = [
@@ -1050,7 +1059,13 @@ def eval_background_tuning_retains_loaded_station() -> EvalResult:
         "fallbackResults: cached",
         "fallbackResults: station.results",
         "const fallbackResults = options.fallbackResults ?? results;",
-        "preserveResults && fallbackResults && fallbackResults.length > 0",
+        # Failure paths guard on the fallback station for BOTH background and
+        # manual tunes (the old background-only guard was a subset of this).
+        "fallbackResults && fallbackResults.length > 0",
+        # Manual retunes restore the previous station instead of stranding [].
+        "setResults(fallbackResults)",
+        # The queue is only cleared up front when there is nothing to keep.
+        "if (!preserveResults && !hasStationToKeep)",
     ]
     missing = [pattern for pattern in required_patterns if pattern not in source]
     passed = not missing
@@ -1058,7 +1073,7 @@ def eval_background_tuning_retains_loaded_station() -> EvalResult:
         name="background_tuning_retains_loaded_station",
         passed=passed,
         score=1.0 if passed else 0.0,
-        details="background refresh receives the rendered fallback station explicitly"
+        details="failure paths keep or restore the fallback station for background and manual tunes"
         if passed
         else f"missing={missing}",
     )

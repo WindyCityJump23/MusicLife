@@ -4,7 +4,11 @@ import { supabaseServer } from "@/lib/supabase-server";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 55;
-const UPSTREAM_TIMEOUT_MS = 18_000;
+// The FastAPI ranker self-bounds at 12–16s, but Render's slower moments (cold
+// starts, novelty retries) pushed real runs to ~13s+ and the old 18s budget
+// produced upstream_timeout -> empty stations (visible in radio-health
+// telemetry). 28s leaves real headroom while staying well under maxDuration.
+const UPSTREAM_TIMEOUT_MS = 28_000;
 
 function statusForFallback(fallbackLevel: string | undefined, resultCount: number): string {
   if (fallbackLevel === "empty" || resultCount === 0) return "empty";
