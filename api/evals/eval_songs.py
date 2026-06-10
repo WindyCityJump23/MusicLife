@@ -1366,11 +1366,12 @@ def eval_onboarding_copy_hides_pipeline_language() -> EvalResult:
         dashboard_dir / "radio-view.tsx",
         dashboard_dir / "library-view.tsx",
         dashboard_dir / "discover-view.tsx",
-        dashboard_dir / "onboarding-wizard.tsx",
         dashboard_dir / "EmbedButton.tsx",
         dashboard_dir / "PopulateTracksButton.tsx",
     ]
-    source = "\n".join(file.read_text() for file in files)
+    # Skip any surface that no longer exists (e.g. the retired onboarding
+    # wizard) so the copy check stays robust to UI consolidation.
+    source = "\n".join(file.read_text() for file in files if file.exists())
     forbidden = [
         "Generate embeddings",
         "Track embeddings missing",

@@ -1,8 +1,11 @@
 # deps
 node_modules/
 .venv/
+.venv-test/
 __pycache__/
 *.pyc
+.pytest_cache/
+.vitest/
 
 # env
 .env
