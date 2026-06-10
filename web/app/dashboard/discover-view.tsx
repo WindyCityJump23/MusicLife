@@ -12,6 +12,10 @@ type SignalBreakdown = {
   track_popularity?: number;
   novelty?: number;
   familiarity?: number;
+  saved_anchor?: number;
+  listen_boost?: number;
+  audio_match?: number | null;
+  live_source?: boolean;
 };
 type TopMention = {
   source: string;
@@ -496,6 +500,7 @@ function activePresetLabel(weights: Preset["weights"]): string {
 function isLiveSourced(song: SongRecommendation): boolean {
   const reasons = song.reasons.join(" ").toLowerCase();
   return (
+    song.signals.live_source === true ||
     song.track_id === null ||
     String(song.artist_id).startsWith("live:") ||
     reasons.includes("live spotify") ||
@@ -1067,6 +1072,10 @@ function liveTrackToRecommendation(
       track_popularity: popularity,
       novelty,
       familiarity: 0,
+      saved_anchor: 0,
+      listen_boost: 0,
+      audio_match: null,
+      live_source: true,
     },
     genres: [],
     reasons: ["Fresh Spotify search", intent.label ?? "Fresh discovery"],
@@ -1082,11 +1091,16 @@ function shouldRunLiveExpansion(
   currentPrompt: string,
   strategy: TasteStrategy | null
 ): boolean {
-  if (strategy?.live_expansion === "live" && !currentPrompt.trim()) return true;
-  if (!currentPrompt.trim()) return true;
+  const hasPrompt = Boolean(currentPrompt.trim());
+  if (!hasPrompt) {
+    if (strategy?.live_expansion === "catalog") return false;
+    if (strategy?.live_expansion === "live") return true;
+    const catalogCount = songs.filter((song) => !isLiveSourced(song)).length;
+    return catalogCount < MIN_PLAYABLE_STATION_TRACKS;
+  }
   if (songs.length < TARGET_SONGS) return true;
   if (songs.length < LIVE_EXPANSION_POOL_TARGET) return true;
-  if (currentPrompt.trim()) return true;
+  if (hasPrompt) return true;
   return new Set(songs.map((song) => artistIdentity(song))).size < Math.min(20, TARGET_SONGS);
 }
 
@@ -1145,7 +1159,10 @@ async function fetchLiveCandidateSongs(
     })
   );
 
-  return batches.flat().sort((a, b) => b.score - a.score);
+  const liveLimit = currentPrompt.trim()
+    ? LIVE_EXPANSION_POOL_TARGET
+    : freshAirTarget(TARGET_SONGS);
+  return batches.flat().sort((a, b) => b.score - a.score).slice(0, liveLimit);
 }
 
 async function fetchPromptSpotifySongs(
@@ -1466,6 +1483,29 @@ export default function DiscoverView({
     } catch {}
   }
 
+  async function savedSpotifyTrackIds(trackIds: string[]): Promise<Set<string>> {
+    const uniqueIds = Array.from(new Set(trackIds.filter(Boolean))).slice(0, 200);
+    if (uniqueIds.length === 0) return new Set();
+    try {
+      const stateRes = await fetch(`/api/track-state?ids=${uniqueIds.join(",")}`);
+      if (!stateRes.ok) return new Set();
+      const stateData = await stateRes.json().catch(() => ({}));
+      return new Set(Array.isArray(stateData.saved) ? stateData.saved : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  async function filterSavedSpotifyTracks(
+    songs: SongRecommendation[]
+  ): Promise<SongRecommendation[]> {
+    const savedIds = await savedSpotifyTrackIds(
+      songs.map((song) => song.spotify_track_id).filter(Boolean)
+    );
+    if (savedIds.size === 0) return songs;
+    return songs.filter((song) => !savedIds.has(song.spotify_track_id));
+  }
+
   async function handleSubmit(options: SubmitOptions = {}) {
     const preserveResults = Boolean(options.preserveResults);
     const background = Boolean(options.background);
@@ -1534,12 +1574,14 @@ export default function DiscoverView({
 
       if (promptForLiveSearch) {
         setLoadingStage("Searching Spotify for your prompt\u2026");
-        const promptSongs = await promptSongsPromise;
+        const promptSongs = await filterSavedSpotifyTracks(await promptSongsPromise);
         if (promptSongs.length > 0) {
           let promptStationSongs = promptSongs;
           try {
             setLoadingStage("Finding nearby artists and fresh discoveries\u2026");
-            const liveSongs = await fetchLiveCandidateSongs(promptForLiveSearch, promptSongs, tasteStrategy);
+            const liveSongs = await filterSavedSpotifyTracks(
+              await fetchLiveCandidateSongs(promptForLiveSearch, promptSongs, tasteStrategy)
+            );
             if (liveSongs.length > 0) {
               promptStationSongs = mergeCandidateSongs(promptSongs, liveSongs, {
                 protectLiveCount: Math.min(16, liveSongs.length),
@@ -1587,6 +1629,7 @@ export default function DiscoverView({
             weights: normalized,
             limit: 30,
             exclude_library: true,
+            exclude_saved_tracks: true,
             discover_run_id: discoverRunId,
             exclude_previously_shown: true,
             history_window_runs: 15,
@@ -1625,6 +1668,10 @@ export default function DiscoverView({
               track_popularity: r.signals?.track_popularity,
               novelty: r.signals?.novelty,
               familiarity: r.signals?.familiarity,
+              saved_anchor: r.signals?.saved_anchor,
+              listen_boost: r.signals?.listen_boost,
+              audio_match: r.signals?.audio_match,
+              live_source: r.signals?.live_source,
             },
             genres: r.genres ?? [],
             reasons: r.reasons ?? [],
@@ -1653,7 +1700,7 @@ export default function DiscoverView({
       // bury the artist or scene the user actually requested.
       if (promptForLiveSearch) {
         setLoadingStage("Searching Spotify for your prompt\u2026");
-        const promptSongs = await promptSongsPromise;
+        const promptSongs = await filterSavedSpotifyTracks(await promptSongsPromise);
         if (promptSongs.length > 0) {
           deduped = mergeCandidateSongs(deduped, promptSongs);
         }
@@ -1780,6 +1827,10 @@ export default function DiscoverView({
                       editorial: artist.signals.editorial,
                       track_popularity: trackPop,
                       novelty: Math.max(0, Math.min(1, 1 - trackPop + (artist.signals.editorial ?? 0) * 0.2)),
+                      saved_anchor: artist.signals.affinity,
+                      listen_boost: 0,
+                      audio_match: null,
+                      live_source: true,
                     },
                     genres: artist.genres ?? [],
                     reasons: [...(artist.reasons ?? [])],
@@ -1795,7 +1846,7 @@ export default function DiscoverView({
             })
           );
 
-          const allSongs = songArrays.flat();
+          const allSongs = await filterSavedSpotifyTracks(songArrays.flat());
           allSongs.sort((a, b) => b.score - a.score);
 
           // Build dedup sets from existing DB results so we don't duplicate
@@ -1825,7 +1876,9 @@ export default function DiscoverView({
         const livePrompt = prompt.trim() || interpretedPrompt;
         if (!isGuest && shouldRunLiveExpansion(deduped, livePrompt, tasteStrategy)) {
           setLoadingStage("Checking fresh Spotify discoveries\u2026");
-          const liveSongs = await fetchLiveCandidateSongs(livePrompt, deduped, tasteStrategy);
+          const liveSongs = await filterSavedSpotifyTracks(
+            await fetchLiveCandidateSongs(livePrompt, deduped, tasteStrategy)
+          );
           if (liveSongs.length > 0) {
             deduped = mergeCandidateSongs(deduped, liveSongs);
           }
@@ -1835,6 +1888,7 @@ export default function DiscoverView({
       }
 
       deduped = withoutUtilityTracks(deduped, prompt);
+      deduped = await filterSavedSpotifyTracks(deduped);
 
       if (deduped.length === 0) {
         const failureReason = dbError ?? artistFallbackError ?? promptSpotifyError;

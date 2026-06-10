@@ -88,6 +88,7 @@ class RecommendSongsRequest(BaseModel):
     prompt: str | None = None
     weights: dict[str, float] = Field(default_factory=lambda: DEFAULT_TASTE_MATCH_WEIGHTS.copy())
     exclude_library: bool = False
+    exclude_saved_tracks: bool = True
     limit: int = Field(default=30, ge=1, le=100)
     exclude_previously_shown: bool = True
     history_window_runs: int = Field(default=15, ge=1, le=500)
@@ -266,6 +267,7 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             weights=req.weights,
             exclude_library=req.exclude_library,
             limit=req.limit,
+            exclude_saved_tracks=req.exclude_saved_tracks,
             prompt_text=prompt_for_ranking,
             excluded_track_ids=local_excluded_tracks,
             excluded_artist_ids=local_excluded_artists,

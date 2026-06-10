@@ -105,6 +105,39 @@ def _int_or_none(value: object) -> int | None:
         return None
 
 
+def _chunk_ids(values: list[int], size: int = 200) -> list[list[int]]:
+    return [values[i : i + size] for i in range(0, len(values), size)]
+
+
+def _get_listen_counts_for_tracks(
+    client: Client,
+    user_id: str,
+    track_ids: list[int],
+) -> dict[int, int]:
+    """Return MusicLife listen-event counts for explicit saved tracks only."""
+    if not track_ids:
+        return {}
+
+    counts: dict[int, int] = defaultdict(int)
+    try:
+        for chunk in _chunk_ids(track_ids):
+            resp = (
+                client.table("listen_events")
+                .select("track_id")
+                .eq("user_id", user_id)
+                .in_("track_id", chunk)
+                .range(0, 9999)
+                .execute()
+            )
+            for row in resp.data or []:
+                tid = _int_or_none(row.get("track_id"))
+                if tid is not None:
+                    counts[tid] += 1
+    except Exception:
+        return {}
+    return dict(counts)
+
+
 def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
     tracks_resp = (
         client.table("user_tracks")
@@ -115,7 +148,8 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
     )
     user_tracks = tracks_resp.data or []
 
-    artist_weights: dict[int, float] = defaultdict(float)
+    saved_artist_weights: dict[int, float] = defaultdict(float)
+    secondary_artist_weights: dict[int, float] = defaultdict(float)
 
     track_ids = [row.get("track_id") for row in user_tracks if row.get("track_id") is not None]
     if track_ids:
@@ -133,20 +167,29 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
             if row.get("id") is not None
         }
 
+        saved_track_ids = [
+            tid
+            for tid in (_int_or_none(row.get("track_id")) for row in user_tracks if row.get("added_at"))
+            if tid is not None
+        ]
+        listen_counts = _get_listen_counts_for_tracks(client, user_id, saved_track_ids)
         now = datetime.now(timezone.utc)
         for row in user_tracks:
             track_id = _int_or_none(row.get("track_id"))
+            if track_id is None or not row.get("added_at"):
+                continue
             artist_id = track_to_artist.get(track_id)
             if artist_id is None:
                 continue
 
-            artist_weights[int(artist_id)] += track_preference_weight(row, now)
+            weighted_row = dict(row)
+            weighted_row["listen_count"] = listen_counts.get(track_id, 0)
+            saved_artist_weights[int(artist_id)] += track_preference_weight(weighted_row, now)
 
     # ── Top-artist signal ────────────────────────────────────────
     # Spotify /me/top/artists rankings populate user_top_artists during
-    # ingest. They contribute to the centroid even when the user has no
-    # saved tracks for the artist. Calibration: short_term rank 1 ≈ 50,
-    # long_term rank 1 ≈ 20, decaying linearly with rank within each term.
+    # ingest. They contribute as a bounded hint, never as stronger truth than
+    # the user's explicitly saved tracks.
     try:
         top_resp = (
             client.table("user_top_artists")
@@ -160,17 +203,17 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
         # Table may not exist yet (migration 010 not applied).
         top_rows = []
 
-    term_max = {"short_term": 50.0, "medium_term": 35.0, "long_term": 20.0}
+    term_max = {"short_term": 6.0, "medium_term": 4.0, "long_term": 2.5}
     for row in top_rows:
         artist_id = row.get("artist_id")
         if artist_id is None:
             continue
         term = row.get("term") or ""
         rank = int(row.get("rank") or 1)
-        max_w = term_max.get(term, 20.0)
-        # Rank 1 → max_w, falling to ~0.2*max_w by rank 50.
+        max_w = term_max.get(term, 2.5)
+        # Rank 1 -> max_w, falling to ~0.2*max_w by rank 50.
         weight = max(max_w * 0.2, max_w * (1.0 - (rank - 1) / 50.0))
-        artist_weights[int(artist_id)] += weight
+        secondary_artist_weights[int(artist_id)] += weight
 
     # ── Feedback signal ──────────────────────────────────────────
     # Explicit thumbs up/down adjusts the taste centroid directly.
@@ -190,7 +233,7 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
             if aid is None:
                 continue
             fb = int(row.get("feedback") or 0)
-            artist_weights[int(aid)] = artist_weights.get(int(aid), 0) + (fb * 15.0)
+            secondary_artist_weights[int(aid)] = secondary_artist_weights.get(int(aid), 0) + (fb * 8.0)
     except Exception:
         pass  # table may not exist yet
 
@@ -291,18 +334,37 @@ def _get_user_artist_weights(client: Client, user_id: str) -> dict[int, float]:
             if aid is None and row.get("artist_name"):
                 aid = name_to_artist.get(str(row["artist_name"]).strip().casefold())
             if aid is not None:
-                artist_weights[aid] = (
-                    artist_weights.get(aid, 0.0)
+                secondary_artist_weights[aid] = (
+                    secondary_artist_weights.get(aid, 0.0)
                     + favorite_preference_weight(row.get("created_at"), now)
                 )
     except Exception:
         pass  # table may not exist yet
 
-    return dict(artist_weights)
+    combined: dict[int, float] = dict(saved_artist_weights)
+    saved_total = sum(max(0.0, weight) for weight in saved_artist_weights.values())
+    secondary_positive_total = sum(
+        max(0.0, weight) for weight in secondary_artist_weights.values()
+    )
+    secondary_scale = 1.0
+    if saved_total > 0 and secondary_positive_total > 0:
+        # Keep explicit saved Spotify library as at least 75% of the positive
+        # taste-vector mass. Secondary signals can refine, not redefine.
+        secondary_scale = min(1.0, (saved_total / 3.0) / secondary_positive_total)
+
+    for artist_id, weight in secondary_artist_weights.items():
+        combined[artist_id] = combined.get(artist_id, 0.0) + (weight * secondary_scale)
+
+    return combined
 
 
-def _get_user_library_artist_ids(client: Client, user_id: str) -> set[int]:
-    """Return artist IDs represented by tracks in the user's library.
+def _get_user_library_artist_ids(
+    client: Client,
+    user_id: str,
+    *,
+    saved_only: bool = True,
+) -> set[int]:
+    """Return artist IDs represented by the user's explicit saved library.
 
     Taste weights also include top artists and explicit feedback, but those
     are preference signals, not proof that an artist is in the saved/listened
@@ -310,13 +372,15 @@ def _get_user_library_artist_ids(client: Client, user_id: str) -> set[int]:
     accidentally penalized or labeled as "From your library."
     """
     try:
-        tracks_resp = (
+        query = (
             client.table("user_tracks")
-            .select("track_id")
+            .select("track_id,added_at")
             .eq("user_id", user_id)
             .range(0, 9999)
-            .execute()
         )
+        if saved_only:
+            query = query.not_.is_("added_at", "null")
+        tracks_resp = query.execute()
         track_ids = [
             row.get("track_id")
             for row in (tracks_resp.data or [])

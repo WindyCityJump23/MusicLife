@@ -16,6 +16,12 @@ if str(_API_DIR) not in sys.path:
     sys.path.insert(0, str(_API_DIR))
 
 from app.services.query_intent import interpret_music_prompt
+from app.services.ranking import (
+    _cosine_similarity,
+    _get_user_artist_weights,
+    _get_user_library_artist_ids,
+    build_taste_vector,
+)
 from app.services.song_ranking import recommend_songs, _song_diversity_rerank
 from app.services.track_quality import (
     prompt_requests_utility_tracks,
@@ -80,6 +86,7 @@ def eval_heard_song_penalized() -> EvalResult:
         prompt_vector=None,
         weights=_weights(),
         exclude_library=False,
+        exclude_saved_tracks=False,
         limit=10,
     )
     by_track = {r["track_name"]: r for r in results}
@@ -757,6 +764,235 @@ def eval_audio_profile_prefers_recent_saves_without_play_counts() -> EvalResult:
     )
 
 
+def eval_saved_spotify_tracks_never_recommended() -> EvalResult:
+    """Spotify-liked songs should train taste but never appear as recommendations."""
+    now = datetime.now(timezone.utc)
+    scenario = UserScenario(
+        user_id="saved_track_exclusion_test",
+        library_artist_ids=[1],
+        played_track_ids=[],
+        top_artist_ids=[1],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        user_tracks=[
+            {
+                "track_id": 101,
+                "play_count": 0,
+                "last_played_at": None,
+                "added_at": (now - timedelta(days=20)).isoformat(),
+            },
+        ],
+    )
+    results = recommend_songs(
+        client=build_mock_client(scenario, artists=JAZZ_ARTISTS[:1], tracks=TRACKS[:2]),
+        user_id=scenario.user_id,
+        taste_vector=JAZZ_TASTE_VECTOR,
+        prompt_vector=None,
+        weights=_weights(),
+        exclude_library=False,
+        exclude_saved_tracks=True,
+        limit=10,
+        exploration_seed=7,
+    )
+    names = [row["track_name"] for row in results]
+    passed = "Kind of Blue" not in names and "Bitches Brew" in names
+    return EvalResult(
+        name="saved_spotify_tracks_never_recommended",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"returned={names}",
+    )
+
+
+def eval_recent_only_tracks_do_not_become_library_truth() -> EvalResult:
+    """Recent-only Spotify plays should not count as saved library anchors."""
+    now = datetime.now(timezone.utc)
+    scenario = UserScenario(
+        user_id="recent_only_truth_test",
+        library_artist_ids=[1, 11],
+        played_track_ids=[],
+        top_artist_ids=[],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        user_tracks=[
+            {
+                "track_id": 101,
+                "play_count": 0,
+                "last_played_at": None,
+                "added_at": (now - timedelta(days=40)).isoformat(),
+            },
+            {
+                "track_id": 131,
+                "play_count": 10,
+                "last_played_at": (now - timedelta(days=1)).isoformat(),
+                "added_at": None,
+            },
+        ],
+    )
+    client = build_mock_client(
+        scenario,
+        artists=[JAZZ_ARTISTS[0], ROCK_ARTISTS[0]],
+        tracks=[TRACKS[0], TRACKS[6]],
+    )
+    library_ids = _get_user_library_artist_ids(client, scenario.user_id)
+    weights = _get_user_artist_weights(client, scenario.user_id)
+    passed = library_ids == {1} and weights.get(1, 0) > 0 and weights.get(11, 0) == 0
+    return EvalResult(
+        name="recent_only_tracks_do_not_become_library_truth",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"library_ids={sorted(library_ids)}, weights={weights}",
+    )
+
+
+def eval_listen_counts_boost_only_saved_tracks() -> EvalResult:
+    """Listen events amplify saved-track anchors but not unsaved recent plays."""
+    now = datetime.now(timezone.utc)
+    scenario = UserScenario(
+        user_id="listen_count_saved_only_test",
+        library_artist_ids=[1, 11],
+        played_track_ids=[],
+        top_artist_ids=[],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        user_tracks=[
+            {
+                "track_id": 101,
+                "play_count": 0,
+                "last_played_at": None,
+                "added_at": (now - timedelta(days=5)).isoformat(),
+            },
+            {
+                "track_id": 131,
+                "play_count": 10,
+                "last_played_at": (now - timedelta(days=1)).isoformat(),
+                "added_at": None,
+            },
+        ],
+        listen_events=[
+            *[
+                {
+                    "track_id": 101,
+                    "listened_at": (now - timedelta(hours=i)).isoformat(),
+                    "source": "spotify_recent",
+                }
+                for i in range(5)
+            ],
+            *[
+                {
+                    "track_id": 131,
+                    "listened_at": (now - timedelta(hours=i)).isoformat(),
+                    "source": "spotify_recent",
+                }
+                for i in range(25)
+            ],
+        ],
+    )
+    client = build_mock_client(
+        scenario,
+        artists=[JAZZ_ARTISTS[0], ROCK_ARTISTS[0]],
+        tracks=[TRACKS[0], TRACKS[6]],
+    )
+    weights = _get_user_artist_weights(client, scenario.user_id)
+    passed = weights.get(1, 0) > 1.0 and weights.get(11, 0) == 0
+    return EvalResult(
+        name="listen_counts_boost_only_saved_tracks",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"weights={weights}",
+    )
+
+
+def eval_top_artists_cannot_dominate_saved_library() -> EvalResult:
+    """Top artists should refine, not overpower, a strong saved library."""
+    now = datetime.now(timezone.utc)
+    scenario = UserScenario(
+        user_id="top_artist_cap_test",
+        library_artist_ids=[1, 2, 3],
+        played_track_ids=[],
+        top_artist_ids=[11, 12, 13],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        user_tracks=[
+            {
+                "track_id": tid,
+                "play_count": 0,
+                "last_played_at": None,
+                "added_at": (now - timedelta(days=day)).isoformat(),
+            }
+            for tid, day in ((101, 10), (111, 20), (121, 30))
+        ],
+    )
+    client = build_mock_client(
+        scenario,
+        artists=[*JAZZ_ARTISTS[:3], *ROCK_ARTISTS[:3]],
+        tracks=[TRACKS[0], TRACKS[2], TRACKS[4], TRACKS[6], TRACKS[8]],
+    )
+    taste_vector = build_taste_vector(client, scenario.user_id)
+    jazz_fit = _cosine_similarity(taste_vector, JAZZ_TASTE_VECTOR)
+    rock_fit = _cosine_similarity(taste_vector, ROCK_TASTE_VECTOR)
+    passed = jazz_fit > rock_fit
+    return EvalResult(
+        name="top_artists_cannot_dominate_saved_library",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"jazz_fit={jazz_fit:.4f}, rock_fit={rock_fit:.4f}",
+    )
+
+
+def eval_station_distance_changes_saved_anchor_signal() -> EvalResult:
+    """Closer mode should show stronger saved-anchor diagnostics than further."""
+    now = datetime.now(timezone.utc)
+    artist = _make_artist(760, "Anchor Artist", ["jazz"], vec_seed=760, popularity=70, embedding=JAZZ_ARTISTS[0]["embedding"])
+    saved = _make_track(1760, "Saved Anchor", 760, popularity=60, vec_seed=1760)
+    candidate = _make_track(1761, "Anchor Deep Cut", 760, popularity=58, vec_seed=1761)
+    scenario = UserScenario(
+        user_id="station_distance_anchor_test",
+        library_artist_ids=[760],
+        played_track_ids=[],
+        top_artist_ids=[760],
+        taste_vector=JAZZ_TASTE_VECTOR,
+        user_tracks=[
+            {
+                "track_id": 1760,
+                "play_count": 0,
+                "last_played_at": None,
+                "added_at": (now - timedelta(days=15)).isoformat(),
+            }
+        ],
+    )
+    client = build_mock_client(scenario, artists=[artist], tracks=[saved, candidate], mentions=[])
+    closer = recommend_songs(
+        client=client,
+        user_id=scenario.user_id,
+        taste_vector=JAZZ_TASTE_VECTOR,
+        prompt_vector=None,
+        weights=_weights(),
+        exclude_library=False,
+        exclude_saved_tracks=True,
+        limit=5,
+        exploration_seed=3,
+        taste_strategy={"station_distance": "closer", "familiarity": "anchors"},
+    )
+    further = recommend_songs(
+        client=client,
+        user_id=scenario.user_id,
+        taste_vector=JAZZ_TASTE_VECTOR,
+        prompt_vector=None,
+        weights=_weights(),
+        exclude_library=False,
+        exclude_saved_tracks=True,
+        limit=5,
+        exploration_seed=3,
+        taste_strategy={"station_distance": "further", "familiarity": "surprises"},
+    )
+    closer_anchor = closer[0]["signals"].get("saved_anchor", 0.0) if closer else 0.0
+    further_anchor = further[0]["signals"].get("saved_anchor", 0.0) if further else 0.0
+    passed = closer_anchor > further_anchor
+    return EvalResult(
+        name="station_distance_changes_saved_anchor_signal",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=f"closer={closer_anchor:.4f}, further={further_anchor:.4f}",
+    )
+
+
 def eval_no_raw_abort_copy() -> EvalResult:
     """Radio UI should not expose browser abort or exception text to users."""
     web_file = _API_DIR.parent / "web" / "app" / "dashboard" / "discover-view.tsx"
@@ -774,6 +1010,34 @@ def eval_no_raw_abort_copy() -> EvalResult:
         passed=passed,
         score=1.0 if passed else 0.0,
         details="no raw abort or exception copy found" if passed else f"found={hits}",
+    )
+
+
+def eval_frontend_excludes_saved_spotify_tracks() -> EvalResult:
+    """Frontend should send the backend flag and filter live Spotify candidates."""
+    discover_file = _API_DIR.parent / "web" / "app" / "dashboard" / "discover-view.tsx"
+    proxy_file = _API_DIR.parent / "web" / "app" / "api" / "recommend-songs" / "route.ts"
+    track_state_file = _API_DIR.parent / "web" / "app" / "api" / "track-state" / "route.ts"
+    discover_source = discover_file.read_text()
+    proxy_source = proxy_file.read_text()
+    track_state_source = track_state_file.read_text()
+    required = [
+        "exclude_saved_tracks: true" in discover_source,
+        "exclude_saved_tracks: body.exclude_saved_tracks ?? true" in proxy_source,
+        "function shouldRunLiveExpansion(" in discover_source
+        and "catalogCount < MIN_PLAYABLE_STATION_TRACKS" in discover_source,
+        "async function filterSavedSpotifyTracks" in discover_source,
+        "await filterSavedSpotifyTracks(" in discover_source,
+        ".not(\"added_at\", \"is\", null)" in track_state_source,
+        "saved," in track_state_source,
+    ]
+    passed = all(required)
+    missing = [str(index) for index, ok in enumerate(required, start=1) if not ok]
+    return EvalResult(
+        name="frontend_excludes_saved_spotify_tracks",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details="frontend saved-track filters present" if passed else f"missing_checks={missing}",
     )
 
 
@@ -1631,7 +1895,13 @@ def run_suite() -> list[EvalResult]:
         eval_prompt_exactness(),
         eval_zero_play_added_at_tracks_do_not_crash(),
         eval_audio_profile_prefers_recent_saves_without_play_counts(),
+        eval_saved_spotify_tracks_never_recommended(),
+        eval_recent_only_tracks_do_not_become_library_truth(),
+        eval_listen_counts_boost_only_saved_tracks(),
+        eval_top_artists_cannot_dominate_saved_library(),
+        eval_station_distance_changes_saved_anchor_signal(),
         eval_no_raw_abort_copy(),
+        eval_frontend_excludes_saved_spotify_tracks(),
         eval_background_tuning_retains_loaded_station(),
         eval_play_learning_requires_dwell(),
         eval_station_fallbacks_are_observable(),

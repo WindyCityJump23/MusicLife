@@ -27,6 +27,7 @@ from supabase import Client
 
 from app.services.ranking import (
     _cosine_similarity,
+    _get_listen_counts_for_tracks,
     _get_user_library_artist_ids,
     _get_previously_recommended_artist_ids,
     _get_user_artist_weights,
@@ -409,6 +410,7 @@ def recommend_songs(
     weights: dict[str, float],
     exclude_library: bool,
     limit: int,
+    exclude_saved_tracks: bool = True,
     prompt_text: str | None = None,
     excluded_track_ids: set[str] | None = None,
     excluded_artist_ids: set[int] | None = None,
@@ -431,7 +433,7 @@ def recommend_songs(
         elapsed_ms = round((_time.monotonic() - started_at) * 1000)
         stage_timings[key] = stage_timings.get(key, 0) + elapsed_ms
     artist_weights = _get_user_artist_weights(client, user_id)
-    library_artist_ids = _get_user_library_artist_ids(client, user_id)
+    library_artist_ids = _get_user_library_artist_ids(client, user_id, saved_only=True)
     previously_recommended = _get_previously_recommended_artist_ids(client, user_id)
     feedback_scores = _get_user_feedback(client, user_id)
 
@@ -568,10 +570,47 @@ def recommend_songs(
         for tid, row in user_track_map.items()
         if row.get("added_at") and track_preference_weight(row, now) > 0
     }
+    saved_track_ids = set(saved_track_map.keys())
+    saved_listen_counts = _get_listen_counts_for_tracks(
+        client,
+        user_id,
+        list(saved_track_ids),
+    )
+    artist_saved_listen_counts: dict[int, int] = defaultdict(int)
+    if saved_listen_counts:
+        try:
+            track_artist_rows: list[dict] = []
+            for chunk in _chunked(list(saved_listen_counts.keys()), 200):
+                track_artist_rows.extend(
+                    client.table("tracks")
+                    .select("id,artist_id")
+                    .in_("id", chunk)
+                    .range(0, 9999)
+                    .execute()
+                    .data
+                    or []
+                )
+            for track_row in track_artist_rows:
+                tid = track_row.get("id")
+                aid = track_row.get("artist_id")
+                if tid is None or aid is None:
+                    continue
+                artist_saved_listen_counts[int(aid)] += saved_listen_counts.get(int(tid), 0)
+        except Exception:
+            artist_saved_listen_counts = defaultdict(int)
+    max_saved_listens = max(artist_saved_listen_counts.values(), default=0)
+    artist_listen_boost = {
+        artist_id: min(1.0, math.log1p(count) / math.log1p(max(max_saved_listens, 1)))
+        for artist_id, count in artist_saved_listen_counts.items()
+    }
     if saved_track_map:
         def _effective_weight(tid: int) -> float:
             _entry = saved_track_map.get(tid)
-            return track_preference_weight(_entry, now) if _entry else 1.0
+            if not _entry:
+                return 1.0
+            weighted_entry = dict(_entry)
+            weighted_entry["listen_count"] = saved_listen_counts.get(tid, 0)
+            return track_preference_weight(weighted_entry, now)
 
         _audio_ids = sorted(
             saved_track_map.keys(),
@@ -673,6 +712,25 @@ def recommend_songs(
             "context": 0.0,
             "editorial": weights["editorial"] + redistributed * 0.65,
         }
+
+    station_distance = strategy.get("station_distance", "balanced")
+    familiarity_pref = strategy.get("familiarity", "balanced")
+    if not has_explicit_prompt:
+        if station_distance == "closer":
+            weights = {
+                "affinity": weights["affinity"] * 1.14,
+                "context": weights["context"],
+                "editorial": weights["editorial"] * 0.78,
+            }
+        elif station_distance == "further":
+            weights = {
+                "affinity": weights["affinity"] * 0.88,
+                "context": weights["context"],
+                "editorial": weights["editorial"] * 1.18,
+            }
+        total_weight = sum(weights.values())
+        if total_weight > 0:
+            weights = {key: value / total_weight for key, value in weights.items()}
 
     # Per-artist max(cosine(prompt|taste, mention.embedding)) computed in
     # SQL — replaces the in-process pass that needed every mention vector.
@@ -781,7 +839,20 @@ def recommend_songs(
     # Use stronger exploration for non-prompted queries so browsing feels
     # fresh and different between users.  With a prompt the user has a
     # specific intent and results should be more deterministic.
-    EXPLORATION_STRENGTH = 0.04 if has_explicit_prompt else 0.12
+    if has_explicit_prompt:
+        EXPLORATION_STRENGTH = 0.03
+        ARTIST_JITTER = 0.0
+    else:
+        EXPLORATION_STRENGTH = {
+            "closer": 0.018,
+            "balanced": 0.012,
+            "further": 0.045,
+        }.get(station_distance, 0.012)
+        ARTIST_JITTER = {
+            "closer": 0.015,
+            "balanced": 0.015,
+            "further": 0.045,
+        }.get(station_distance, 0.015)
     rng = random.Random(exploration_seed) if exploration_seed is not None else random
     excluded_track_ids = excluded_track_ids or set()
     excluded_artist_ids = excluded_artist_ids or set()
@@ -789,7 +860,6 @@ def recommend_songs(
     # base score so that artists near the score boundary rotate in/out each
     # request. Without this, the same N artists always win Phase 1 and results
     # feel identical even when individual tracks are excluded.
-    ARTIST_JITTER = 0.0 if has_explicit_prompt else 0.08
 
     artist_scores: dict[int, dict] = {}
     for idx, (artist, affinity_raw) in enumerate(raw_affinities):
@@ -1102,6 +1172,9 @@ def recommend_songs(
         aid = t.get("artist_id")
         if aid is None:
             continue
+        track_id = t.get("id")
+        if exclude_saved_tracks and track_id in saved_track_ids:
+            continue
         if excluded_track_ids and (t.get("spotify_track_id") or "") in excluded_track_ids:
             continue
         if should_exclude_utility_track(
@@ -1300,7 +1373,10 @@ def recommend_songs(
             # but welcome NEW songs from familiar artists (deep cuts are
             # valuable discoveries even from artists you already know).
             in_library = track_id in user_track_map if track_id else False
+            is_saved_track = track_id in saved_track_ids if track_id else False
             is_library_artist = aid in library_artist_ids
+            if exclude_saved_tracks and is_saved_track:
+                continue
             if exclude_library and in_library:
                 continue
             if in_library:
@@ -1312,7 +1388,22 @@ def recommend_songs(
                 _freshness = recency_multiplier(_recency_ts, now, floor=0.0, half_life_days=90.0)
                 track_boost *= 0.45 + 0.35 * (1.0 - _freshness)
             elif is_library_artist:
-                track_boost *= 0.90  # Very mild — new song from a known artist = great find
+                if familiarity_pref == "anchors":
+                    track_boost *= 1.03
+                elif familiarity_pref == "surprises":
+                    track_boost *= 0.82
+                else:
+                    track_boost *= 0.92
+                track_boost *= 1.0 + 0.10 * artist_listen_boost.get(aid, 0.0)
+            elif familiarity_pref == "surprises":
+                track_boost *= 1.04
+            elif familiarity_pref == "anchors":
+                track_boost *= 0.94
+
+            if station_distance == "closer":
+                track_boost *= 1.04 if is_library_artist else 0.96
+            elif station_distance == "further":
+                track_boost *= 0.96 if is_library_artist else 1.04
 
             # Obscurity bonus: reward genuinely unknown tracks that aren't
             # already in the user's library — defined after in_library is set.
@@ -1322,12 +1413,12 @@ def recommend_songs(
                 track_boost *= 1.10
 
             # Audio feature alignment: prefer tracks that sound like the user's library.
+            audio_match_value = _track_audio_match(track) if user_audio_pref else None
             if user_audio_pref:
-                _audio_match = _track_audio_match(track)
-                if _audio_match is None:
+                if audio_match_value is None:
                     track_boost *= 0.96
                 else:
-                    track_boost *= 0.78 + 0.30 * _audio_match
+                    track_boost *= 0.55 + 0.65 * audio_match_value
 
             # Instrumental / spoken-word penalty: filter utility tracks
             # (meditation, interludes, podcasts). NULL = unknown, no penalty.
@@ -1335,7 +1426,7 @@ def recommend_songs(
             _speechiness = track.get("speechiness")
             if _instrumentalness is not None and _instrumentalness > 0.8:
                 if user_prefers_instrumental:
-                    track_boost *= 0.85
+                    track_boost *= 1.35
                 else:
                     track_boost *= 0.35
             elif _instrumentalness is not None and _instrumentalness > 0.5:
@@ -1403,6 +1494,12 @@ def recommend_songs(
                 is_library_artist,
                 release_age,
             )
+            saved_anchor_signal = track_affinity
+            if is_library_artist:
+                if station_distance == "closer":
+                    saved_anchor_signal = min(1.0, saved_anchor_signal * 1.10)
+                elif station_distance == "further":
+                    saved_anchor_signal *= 0.90
 
             # ── Build reasons (needed by _lane_for_track below) ───────────────
             reasons = []
@@ -1445,6 +1542,14 @@ def recommend_songs(
                 a_info["editorial"],
                 release_age,
             )
+            if (
+                user_prefers_instrumental
+                and _instrumentalness is not None
+                and _instrumentalness > 0.65
+                and (audio_match_value or 0.0) >= 0.75
+            ):
+                lane = "deep_cuts"
+                reasons.append("Matches your instrumental saves")
 
             dcq = 0.0
             if lane == "deep_cuts":
@@ -1493,6 +1598,10 @@ def recommend_songs(
                     "familiarity": round(1.0 - novelty, 4),
                     "track_embedding": used_track_embedding,
                     "deep_cut_quality": round(dcq, 4),
+                    "saved_anchor": round(saved_anchor_signal, 4),
+                    "listen_boost": round(artist_listen_boost.get(aid, 0.0), 4),
+                    "audio_match": round(audio_match_value, 4) if audio_match_value is not None else None,
+                    "live_source": False,
                 },
                 "lane": lane,
                 "genres": a_info["genres"],
@@ -1611,6 +1720,10 @@ def recommend_songs(
                             "track_popularity": round(track_pop, 4),
                             "novelty": 0.8, "familiarity": 0.2,
                             "track_embedding": False,
+                            "saved_anchor": 0.0,
+                            "listen_boost": 0.0,
+                            "audio_match": None,
+                            "live_source": False,
                         },
                         "genres": a_info["genres"],
                         "reasons": ["Curated pick"],

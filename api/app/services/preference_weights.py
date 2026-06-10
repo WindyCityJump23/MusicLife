@@ -59,7 +59,17 @@ def track_preference_weight(row: Mapping[str, object], now: datetime) -> float:
     saved_at = row.get("added_at")
     if not saved_at:
         return 0.0
-    return recency_multiplier(saved_at, now)
+    weight = recency_multiplier(saved_at, now)
+    try:
+        listen_count = max(0, int(row.get("listen_count") or 0))
+    except (TypeError, ValueError):
+        listen_count = 0
+    if listen_count > 0:
+        # Spotify does not expose lifetime per-song play counts here. This is
+        # MusicLife's own recent listen-event count, so keep it as a bounded
+        # amplifier for tracks the user explicitly saved.
+        weight *= 1.0 + min(0.65, math.log1p(listen_count) / math.log1p(20) * 0.65)
+    return weight
 
 
 def favorite_preference_weight(created_at: object, now: datetime) -> float:

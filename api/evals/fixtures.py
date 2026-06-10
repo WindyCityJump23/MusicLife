@@ -458,6 +458,7 @@ class UserScenario:
     feedback: list[dict] = field(default_factory=list)  # [{"artist_id": int, "spotify_track_id": str, "feedback": 1|-1}]
     favorites: list[dict] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
+    listen_events: list[dict] = field(default_factory=list)
     user_tracks: list[dict] = field(default_factory=list)
     description: str = ""
 
@@ -517,6 +518,7 @@ def build_mock_client(
                 "track_id": tid,
                 "play_count": 5,
                 "last_played_at": datetime.now(timezone.utc).isoformat(),
+                "added_at": (datetime.now(timezone.utc) - timedelta(days=90)).isoformat(),
             }
             for tid in scenario.played_track_ids
         ]
@@ -575,6 +577,10 @@ def build_mock_client(
             "recommendation_events": [
                 {"user_id": scenario.user_id, **row}
                 for row in scenario.events
+            ],
+            "listen_events": [
+                {"user_id": scenario.user_id, **row}
+                for row in scenario.listen_events
             ],
         }
     )
