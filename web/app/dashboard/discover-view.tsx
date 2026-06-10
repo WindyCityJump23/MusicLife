@@ -2,87 +2,38 @@
 
 import { useEffect, useRef, useState } from "react";
 import { isExplicitUtilityTrackRequest, isUtilityTrack } from "@/lib/track-quality";
+import {
+  buildWhyExplanation,
+  pct,
+  readableReason,
+  topSignal,
+} from "@/lib/station/explanation";
+import {
+  emptyDiscoveryGroups,
+  groupSongsByLane,
+  interleaveForPlayback,
+  laneBadge,
+  laneForSong,
+  targetLaneCounts,
+} from "@/lib/station/lanes";
+import type {
+  DiscoveryLane,
+  DiscoveryLaneId,
+  LaneFilterId,
+  Preset,
+  SignalBreakdown,
+  SongRecommendation,
+  TasteStrategy,
+  TopMention,
+} from "@/lib/station/types";
 import { usePlayer, type QueueTrack } from "./player-context";
 import { useAuth } from "./auth-context";
-
-type SignalBreakdown = {
-  affinity: number;
-  context: number;
-  editorial: number;
-  track_popularity?: number;
-  novelty?: number;
-  familiarity?: number;
-  saved_anchor?: number;
-  listen_boost?: number;
-  audio_match?: number | null;
-  live_source?: boolean;
-};
-type TopMention = {
-  source: string;
-  source_url?: string;
-  article_url?: string;
-  excerpt: string;
-  published_at: string;
-};
-
-type SongRecommendation = {
-  track_id: string | null;
-  track_name: string;
-  artist_id: string;
-  artist_name: string;
-  album_name: string;
-  release_date: string | null;
-  duration_ms: number;
-  explicit: boolean;
-  spotify_track_id: string;
-  score: number;
-  lane?: DiscoveryLaneId | "radio_hit" | "deep_cut" | "familiar";
-  novelty_score?: number;
-  familiarity_score?: number;
-  signals: SignalBreakdown;
-  reasons: string[];
-  genres: string[];
-  mention_count: number;
-  top_mention: TopMention | null;
-};
-
-type Preset = { label: string; desc: string; weights: { affinity: number; context: number; editorial: number } };
-
-type DiscoveryLaneId = "radio_hits" | "popular" | "deep_cuts";
-
-type DiscoveryLane = {
-  id: DiscoveryLaneId;
-  title: string;
-  subtitle: string;
-};
-
-type LaneFilterId = "all" | DiscoveryLaneId;
 
 type RadioReadinessSummary = {
   artistCount: number;
   embeddedCount: number;
   playableTrackCount: number;
 };
-
-type TasteStrategy = {
-  genre_boosts: string[];
-  genre_avoids: string[];
-  discovery_mix: {
-    deep_cuts: number;
-    popular: number;
-    radio_hits: number;
-  };
-  live_expansion: "auto" | "catalog" | "live";
-  freshness: "newer" | "balanced" | "timeless";
-};
-
-function emptyDiscoveryGroups(): Record<DiscoveryLaneId, SongRecommendation[]> {
-  return {
-    radio_hits: [],
-    popular: [],
-    deep_cuts: [],
-  };
-}
 
 
 const PRESETS: Preset[] = [
@@ -281,252 +232,6 @@ function recommendationFailureMessage(reason: string | null): string {
   }
 
   return "Fresh picks hit a temporary issue.";
-}
-
-function laneForSong(song: SongRecommendation): DiscoveryLaneId {
-  // Prefer backend-assigned lane when available
-  if (song.lane) {
-    if (song.lane === "deep_cuts" || song.lane === "deep_cut") return "deep_cuts";
-    if (song.lane === "radio_hits" || song.lane === "radio_hit" || song.lane === "familiar") return "radio_hits";
-    if (song.lane === "popular") return "popular";
-  }
-
-  const popularity = song.signals.track_popularity ?? 0.5;
-  const reasons = song.reasons.join(" ").toLowerCase();
-  const genres = song.genres.join(" ").toLowerCase();
-  const hasDeepSignal =
-    reasons.includes("deep cut") ||
-    reasons.includes("obscure") ||
-    genres.includes("indie") ||
-    genres.includes("underground");
-
-  if (hasDeepSignal || popularity < 0.46) return "deep_cuts";
-  if (popularity >= 0.74) return "radio_hits";
-  return "popular";
-}
-
-function laneBadge(song: SongRecommendation): { label: string; className: string } | null {
-  if (!song.lane) return null;
-  const lane = laneForSong(song);
-  if (lane === "deep_cuts") {
-    return { label: "Deep cut", className: "bg-violet-50 text-violet-600" };
-  }
-  if (lane === "popular") {
-    return { label: "Popular", className: "bg-amber-50 text-amber-600" };
-  }
-  return { label: "Radio hit", className: "bg-emerald-50 text-emerald-600" };
-}
-
-function pct(value: number | undefined): number {
-  return Math.round(Math.max(0, Math.min(1, value ?? 0)) * 100);
-}
-
-function topSignal(song: SongRecommendation): { label: string; value: number } {
-  const signals = [
-    { label: "Taste", value: song.signals.affinity ?? 0 },
-    { label: "Search", value: song.signals.context ?? 0 },
-    { label: "Buzz", value: song.signals.editorial ?? 0 },
-  ];
-  return signals.sort((a, b) => b.value - a.value)[0] ?? signals[0];
-}
-
-function readableReason(reason: string): string {
-  const normalized = reason.trim();
-  const lower = normalized.toLowerCase();
-  if (lower === "matches your taste") return "matches your taste profile";
-  if (lower === "matches your search") return "matches your prompt";
-  if (lower === "fits your vibe") return "fits the current blend";
-  if (lower === "popular track") return "has strong Spotify traction";
-  if (lower === "new release") return "recent release";
-  if (lower === "already in your library") return "familiar from your library";
-  if (lower === "recently surfaced") return "recently surfaced in MusicLife";
-  if (lower === "live spotify search") return "came from a fresh Spotify discovery";
-  if (lower === "outside catalog") return "was found through fresh Spotify discovery";
-  if (lower === "prompt expansion") return "matches a live expansion of your prompt";
-  if (lower === "mood expansion") return "matches a live mood expansion";
-  if (lower === "fresh genre search") return "came from a fresh live genre search";
-  if (lower === "deep search") return "came from a deeper live search";
-  if (lower === "recent search") return "came from a recent-year live search";
-  if (lower === "curated pick") return "balanced discovery pick";
-  return normalized.charAt(0).toLowerCase() + normalized.slice(1);
-}
-
-function buildWhyExplanation(
-  song: SongRecommendation,
-  currentPrompt: string
-): { summary: string; details: string[] } {
-  const leader = topSignal(song);
-  const details: string[] = [];
-  const seen = new Set<string>();
-
-  function add(detail: string | null | undefined) {
-    const clean = detail?.trim();
-    if (!clean) return;
-    const key = clean.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    details.push(clean);
-  }
-
-  add(`${leader.label} is the strongest signal at ${pct(leader.value)}%.`);
-  song.reasons.slice(0, 3).forEach((reason) => {
-    add(`It ${readableReason(reason)}.`);
-  });
-  if (currentPrompt.trim() && (song.signals.context ?? 0) > 0.15) {
-    add(`It lines up with "${currentPrompt.trim()}".`);
-  }
-  if (song.top_mention?.source) {
-    add(`It has recent context from ${song.top_mention.source}.`);
-  }
-  if ((song.signals.novelty ?? 0) >= 0.65) {
-    add("It should feel more discovery than repeat listen.");
-  } else if ((song.signals.familiarity ?? 0) >= 0.45) {
-    add("It stays close to music you already know.");
-  }
-  if (song.genres.length > 0) {
-    add(`Genre fit: ${song.genres.slice(0, 3).join(", ")}.`);
-  }
-
-  return { summary: summarizeWhy(song, currentPrompt, leader), details };
-}
-
-// Lead each card's "Why" with the single most *distinguishing* fact about the
-// song rather than the same generic "matches your taste; taste 8x%" template,
-// which made every row read identically. Falls back to the reason + leading
-// signal only when nothing more specific stands out.
-function summarizeWhy(
-  song: SongRecommendation,
-  currentPrompt: string,
-  leader: { label: string; value: number }
-): string {
-  const editorial = song.signals.editorial ?? 0;
-  const context = song.signals.context ?? 0;
-  const novelty = song.signals.novelty ?? 0;
-  const familiarity = song.signals.familiarity ?? 0;
-  const listenBoost = song.signals.listen_boost ?? 0;
-  const savedAnchor = song.signals.saved_anchor ?? 0;
-  const tail = ` · ${leader.label.toLowerCase()} ${pct(leader.value)}%`;
-
-  if (song.top_mention?.source && editorial > 0.12) {
-    return `In the press at ${song.top_mention.source}${tail}`;
-  }
-  if (currentPrompt.trim() && context >= 0.5) {
-    return `Close match to "${currentPrompt.trim()}"${tail}`;
-  }
-  if (novelty >= 0.65 && familiarity < 0.45) {
-    return `A deeper cut, more discovery than repeat${tail}`;
-  }
-  if (listenBoost >= 0.5 || savedAnchor >= 0.7) {
-    return `From an artist you keep coming back to${tail}`;
-  }
-  const distinctGenre = song.genres.find((g) => g && g.length > 2);
-  if (distinctGenre && (song.signals.affinity ?? 0) >= 0.6) {
-    return `Strong ${distinctGenre} match${tail}`;
-  }
-  if (familiarity >= 0.45) {
-    return `Stays close to music you already know${tail}`;
-  }
-  if (song.reasons.length > 0) {
-    return `${readableReason(song.reasons[0])}${tail}`;
-  }
-  return `${leader.label} ${pct(leader.value)}%`;
-}
-
-function targetLaneCounts(total: number): { radio_hits: number; deep_cuts: number } {
-  if (total <= 1) return { radio_hits: total, deep_cuts: 0 };
-  if (total === 2) return { radio_hits: 1, deep_cuts: 1 };
-
-  const radio_hits = Math.max(1, Math.round(total * 0.24));
-  const deep_cuts = Math.max(1, Math.round(total * 0.32));
-  const overflow = Math.max(0, radio_hits + deep_cuts - (total - 1));
-
-  return {
-    radio_hits,
-    deep_cuts: Math.max(1, deep_cuts - overflow),
-  };
-}
-
-function groupSongsByLane(songs: SongRecommendation[]): Record<DiscoveryLaneId, SongRecommendation[]> {
-  if (songs.length === 0) {
-    return emptyDiscoveryGroups();
-  }
-
-  const assigned = songs.map((song, originalIndex) => ({
-    song,
-    originalIndex,
-    lane: null as DiscoveryLaneId | null,
-    preferredLane: song.lane ?? laneForSong(song),
-    popularity: song.signals.track_popularity ?? 0.5,
-  }));
-  const targets = targetLaneCounts(songs.length);
-  const byRecognition = [...assigned].sort(
-    (a, b) => b.popularity - a.popularity || a.originalIndex - b.originalIndex
-  );
-
-  assigned
-    .filter(({ preferredLane }) => preferredLane === "deep_cuts")
-    .forEach((item) => {
-      item.lane = "deep_cuts";
-              });
-
-  assigned
-    .filter(({ preferredLane, lane }) => preferredLane === "radio_hits" && lane === null)
-    .forEach((item) => {
-      item.lane = "radio_hits";
-    });
-
-  byRecognition
-    .filter(({ lane }) => lane === null)
-    .slice(0, Math.max(0, targets.radio_hits - assigned.filter(({ lane }) => lane === "radio_hits").length))
-    .forEach((item) => {
-      item.lane = "radio_hits";
-    });
-
-  [...byRecognition]
-    .reverse()
-    .filter(({ lane }) => lane === null)
-    .slice(0, Math.max(0, targets.deep_cuts - assigned.filter(({ lane }) => lane === "deep_cuts").length))
-    .forEach((item) => {
-      item.lane = "deep_cuts";
-    });
-
-  assigned
-    .filter(({ lane }) => lane === null)
-    .forEach((item) => {
-      item.lane = "popular";
-    });
-
-  return assigned
-    .sort((a, b) => a.originalIndex - b.originalIndex)
-    .reduce<Record<DiscoveryLaneId, SongRecommendation[]>>(
-      (groups, item) => {
-        groups[item.lane ?? "popular"].push(item.song);
-        return groups;
-      },
-      emptyDiscoveryGroups()
-    );
-}
-
-function interleaveForPlayback(songs: SongRecommendation[]): SongRecommendation[] {
-  const groups = groupSongsByLane(songs);
-  const order: DiscoveryLaneId[] = ["deep_cuts", "popular", "radio_hits"];
-  const mixed: SongRecommendation[] = [];
-  let index = 0;
-
-  while (mixed.length < songs.length) {
-    let added = false;
-    for (const lane of order) {
-      const song = groups[lane][index];
-      if (song) {
-        mixed.push(song);
-        added = true;
-      }
-    }
-    if (!added) break;
-    index += 1;
-  }
-
-  return mixed;
 }
 
 function activePresetLabel(weights: Preset["weights"]): string {
