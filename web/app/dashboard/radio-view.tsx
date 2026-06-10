@@ -1,84 +1,24 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import DiscoverView from "./discover-view";
 import SetupAllButton from "./SetupAllButton";
-
-type RadioReadiness = {
-  loading: boolean;
-  ready: boolean;
-  artistCount: number;
-  enrichedCount: number;
-  embeddedCount: number;
-  playableTrackCount: number;
-  requiredArtistCount: number;
-  requiredPlayableTrackCount: number;
-};
-
-const EMPTY_READINESS: RadioReadiness = {
-  loading: true,
-  ready: false,
-  artistCount: 0,
-  enrichedCount: 0,
-  embeddedCount: 0,
-  playableTrackCount: 0,
-  requiredArtistCount: 0,
-  requiredPlayableTrackCount: 0,
-};
+import { useReadiness } from "./readiness-context";
+import {
+  EMPTY_RADIO_READINESS,
+  toRadioReadiness,
+  type RadioReadiness,
+} from "@/lib/readiness";
 
 export default function RadioView({
   onNavigate,
 }: {
   onNavigate?: (view: string) => void;
 }) {
-  const [readiness, setReadiness] = useState<RadioReadiness>(EMPTY_READINESS);
+  const { data, loading, refresh } = useReadiness();
 
-  async function refreshReadiness(): Promise<RadioReadiness> {
-    try {
-      const res = await fetch("/api/readiness", { cache: "no-store" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error ?? "Could not check radio setup");
-
-      const serverReadiness = data.readiness ?? {};
-      const artistCount = data.stats?.artistCount ?? 0;
-      const requiredArtistCount =
-        serverReadiness.requiredArtistCount ??
-        Math.min(artistCount, Math.max(5, Math.ceil(artistCount * 0.25)));
-      const playableTrackCount =
-        serverReadiness.playableTrackCount ?? data.stats?.playableTrackCount ?? 0;
-      const requiredPlayableTrackCount =
-        serverReadiness.requiredPlayableTrackCount ??
-        Math.min(50, Math.max(10, requiredArtistCount * 3));
-      const ready =
-        typeof serverReadiness.radioReady === "boolean"
-          ? serverReadiness.radioReady
-          : artistCount > 0 &&
-            (serverReadiness.enrichedCount ?? 0) >= requiredArtistCount &&
-            (serverReadiness.embeddedCount ?? 0) >= requiredArtistCount &&
-            playableTrackCount >= requiredPlayableTrackCount;
-
-      const next = {
-        loading: false,
-        ready,
-        artistCount,
-        enrichedCount: serverReadiness.enrichedCount ?? 0,
-        embeddedCount: serverReadiness.embeddedCount ?? 0,
-        playableTrackCount,
-        requiredArtistCount,
-        requiredPlayableTrackCount,
-      };
-      setReadiness(next);
-      return next;
-    } catch {
-      const next = { ...EMPTY_READINESS, loading: false };
-      setReadiness(next);
-      return next;
-    }
-  }
-
-  useEffect(() => {
-    void refreshReadiness();
-  }, []);
+  const readiness: RadioReadiness = data
+    ? toRadioReadiness(data)
+    : { ...EMPTY_RADIO_READINESS, loading };
 
   if (readiness.loading) return <RadioLoading />;
 
@@ -86,8 +26,8 @@ export default function RadioView({
     return (
       <RadioSetupGate
         readiness={readiness}
-        onProgress={() => void refreshReadiness()}
-        onComplete={() => void refreshReadiness()}
+        onProgress={() => void refresh()}
+        onComplete={() => void refresh()}
       />
     );
   }

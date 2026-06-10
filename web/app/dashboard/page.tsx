@@ -6,6 +6,7 @@ import Sidebar, { type View } from "./sidebar";
 import Player from "./Player";
 import { PlayerProvider, usePlayer } from "./player-context";
 import { AuthProvider, useAuth } from "./auth-context";
+import { ReadinessProvider } from "./readiness-context";
 import SetupBanner from "./setup-banner";
 
 const RadioView = dynamic(() => import("./radio-view"), {
@@ -310,9 +311,11 @@ function DashboardInner() {
 export default function Dashboard() {
   return (
     <AuthProvider>
-      <PlayerProvider>
-        <DashboardInner />
-      </PlayerProvider>
+      <ReadinessProvider>
+        <PlayerProvider>
+          <DashboardInner />
+        </PlayerProvider>
+      </ReadinessProvider>
     </AuthProvider>
   );
 }

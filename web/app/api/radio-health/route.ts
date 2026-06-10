@@ -11,6 +11,7 @@ type StationRun = {
   latency_ms: number | null;
   error_class: string | null;
   created_at: string | null;
+  source_mix: { catalogCount?: number; liveCount?: number } | null;
 };
 
 function average(values: number[]): number | null {
@@ -26,7 +27,7 @@ export async function GET(req: NextRequest) {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const { data, error } = await sb
     .from("station_runs")
-    .select("status,fallback_level,result_count,latency_ms,error_class,created_at")
+    .select("status,fallback_level,result_count,latency_ms,error_class,created_at,source_mix")
     .eq("user_id", user.userId)
     .gte("created_at", since)
     .order("created_at", { ascending: false })
@@ -56,6 +57,20 @@ export async function GET(req: NextRequest) {
       : []
   );
 
+  // Live-vs-catalog source mix. When most picks come from live Spotify search
+  // rather than the scored catalog, the lane quotas and novelty model are
+  // largely bypassed at runtime — this ratio makes that visible so we can alert
+  // on it (see docs/PRODUCTION_AUDIT.md, "lane-balance gap").
+  let catalogTotal = 0;
+  let liveTotal = 0;
+  for (const run of runs) {
+    const mix = run.source_mix ?? {};
+    catalogTotal += Number(mix.catalogCount ?? 0) || 0;
+    liveTotal += Number(mix.liveCount ?? 0) || 0;
+  }
+  const mixTotal = catalogTotal + liveTotal;
+  const liveSourceRatio = mixTotal > 0 ? liveTotal / mixTotal : null;
+
   return NextResponse.json({
     window: "24h",
     attempts,
@@ -65,6 +80,12 @@ export async function GET(req: NextRequest) {
     average_result_count: average(counts),
     average_latency_ms: average(latencies),
     cache_hit_rate: attempts > 0 ? fallbackRuns.length / attempts : 0,
+    // Share of recommended tracks sourced from live Spotify search rather than
+    // the scored catalog. High values indicate the designed lane mix is being
+    // bypassed; alert when this stays above ~0.6 across attempts.
+    live_source_ratio: liveSourceRatio,
+    catalog_track_total: catalogTotal,
+    live_track_total: liveTotal,
     recent_error_classes: runs
       .map((run) => run.error_class)
       .filter((errorClass): errorClass is string => Boolean(errorClass))

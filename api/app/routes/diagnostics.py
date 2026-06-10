@@ -50,8 +50,19 @@ def ranking_diagnostics(
 
 
 @router.post("/ranking/static")
-def ranking_static_diagnostics():
-    """Run only the static (no-DB) checks. No auth required."""
+def ranking_static_diagnostics(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Run only the static (no-DB) checks.
+
+    Requires a valid bearer token. These checks reveal ranking internals, so
+    the endpoint is no longer anonymous. CI runs the same checks by importing
+    ``run_diagnostics`` directly (see .github/workflows/deploy.yml), so gating
+    the HTTP surface does not affect the pipeline.
+    """
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+
     from app.services.ranking_diagnostics import run_diagnostics
 
     report = run_diagnostics(

@@ -387,13 +387,49 @@ function buildWhyExplanation(
     add(`Genre fit: ${song.genres.slice(0, 3).join(", ")}.`);
   }
 
-  const source = song.top_mention?.source ? `, with ${song.top_mention.source} context` : "";
-  const summary =
-    song.reasons.length > 0
-      ? `${readableReason(song.reasons[0])}; ${leader.label.toLowerCase()} ${pct(leader.value)}%${source}`
-      : `${leader.label} ${pct(leader.value)}%${source}`;
+  return { summary: summarizeWhy(song, currentPrompt, leader), details };
+}
 
-  return { summary, details };
+// Lead each card's "Why" with the single most *distinguishing* fact about the
+// song rather than the same generic "matches your taste; taste 8x%" template,
+// which made every row read identically. Falls back to the reason + leading
+// signal only when nothing more specific stands out.
+function summarizeWhy(
+  song: SongRecommendation,
+  currentPrompt: string,
+  leader: { label: string; value: number }
+): string {
+  const editorial = song.signals.editorial ?? 0;
+  const context = song.signals.context ?? 0;
+  const novelty = song.signals.novelty ?? 0;
+  const familiarity = song.signals.familiarity ?? 0;
+  const listenBoost = song.signals.listen_boost ?? 0;
+  const savedAnchor = song.signals.saved_anchor ?? 0;
+  const tail = ` · ${leader.label.toLowerCase()} ${pct(leader.value)}%`;
+
+  if (song.top_mention?.source && editorial > 0.12) {
+    return `In the press at ${song.top_mention.source}${tail}`;
+  }
+  if (currentPrompt.trim() && context >= 0.5) {
+    return `Close match to "${currentPrompt.trim()}"${tail}`;
+  }
+  if (novelty >= 0.65 && familiarity < 0.45) {
+    return `A deeper cut, more discovery than repeat${tail}`;
+  }
+  if (listenBoost >= 0.5 || savedAnchor >= 0.7) {
+    return `From an artist you keep coming back to${tail}`;
+  }
+  const distinctGenre = song.genres.find((g) => g && g.length > 2);
+  if (distinctGenre && (song.signals.affinity ?? 0) >= 0.6) {
+    return `Strong ${distinctGenre} match${tail}`;
+  }
+  if (familiarity >= 0.45) {
+    return `Stays close to music you already know${tail}`;
+  }
+  if (song.reasons.length > 0) {
+    return `${readableReason(song.reasons[0])}${tail}`;
+  }
+  return `${leader.label} ${pct(leader.value)}%`;
 }
 
 function targetLaneCounts(total: number): { radio_hits: number; deep_cuts: number } {

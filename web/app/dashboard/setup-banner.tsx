@@ -1,16 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import SetupAllButton, { type SetupStatusSnapshot } from "./SetupAllButton";
 import { useAuth } from "./auth-context";
-
-type ReadinessStats = {
-  artistCount?: number;
-  trackCount?: number;
-  playableTrackCount?: number;
-  modeledTrackCount?: number;
-  mentionCount?: number;
-};
+import { useReadiness } from "./readiness-context";
+import { completedStepNumbers, type ReadinessStats } from "@/lib/readiness";
 
 const STEP_LABELS_SPOTIFY = [
   { title: "Import Spotify library", body: "Saved songs, artists, and recent plays" },
@@ -36,41 +30,19 @@ export default function SetupBanner({
   onSetupComplete?: () => void;
 }) {
   const { isGuest } = useAuth();
+  const { data: readinessData, refresh } = useReadiness();
   const STEP_LABELS = isGuest ? STEP_LABELS_GUEST : STEP_LABELS_SPOTIFY;
-  const [completedSteps, setCompletedSteps] = useState<Set<number>>(new Set());
-  const [stats, setStats] = useState<ReadinessStats | null>(null);
   const [setupStatus, setSetupStatus] = useState<SetupStatusSnapshot | null>(null);
   const [dismissed, setDismissed] = useState(false);
-  const checkedRef = useRef(false);
 
+  const completedSteps = completedStepNumbers(readinessData?.readiness?.steps);
+  const stats: ReadinessStats | null = readinessData?.stats ?? null;
+
+  // Force an immediate readiness re-check when a setup step reports progress,
+  // rather than waiting for the shared 30s poll tick.
   function checkReadiness() {
-    fetch("/api/readiness")
-      .then((r) => r.json())
-      .then((data) => {
-        const done = new Set<number>();
-        const steps = data.readiness?.steps;
-        if (steps?.imported) done.add(1);
-        if (steps?.enriched) done.add(2);
-        if (steps?.embedded) done.add(3);
-        if (steps?.context) done.add(4);
-        if (steps?.tracks) done.add(5);
-        if (steps?.modeledTracks) done.add(6);
-        setCompletedSteps(done);
-        setStats(data.stats ?? null);
-      })
-      .catch(() => {});
+    void refresh();
   }
-
-  useEffect(() => {
-    if (checkedRef.current) return;
-    checkedRef.current = true;
-    checkReadiness();
-  }, []);
-
-  useEffect(() => {
-    const id = setInterval(checkReadiness, 30_000);
-    return () => clearInterval(id);
-  }, []);
 
   const allDone = completedSteps.size >= 6;
   const noneStarted = completedSteps.size === 0;

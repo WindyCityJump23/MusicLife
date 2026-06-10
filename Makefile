@@ -21,10 +21,24 @@ web: install-web
 # ── Install dependencies ────────────────────────────────────────────────────
 install: install-api install-web
 
+# The API uses 3.10+ syntax (PEP 604 `X | None` unions in function signatures),
+# so a 3.9 interpreter fails at import time. Resolve a 3.11+ interpreter and
+# fail loudly with guidance rather than silently building a broken venv.
+PYTHON ?= $(shell for p in python3.13 python3.12 python3.11 python3; do \
+	if command -v $$p >/dev/null 2>&1 && $$p -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then \
+		echo $$p; break; \
+	fi; \
+done)
+
 install-api:
+	@if [ -z "$(PYTHON)" ]; then \
+		echo "ERROR: Python 3.11+ is required but was not found."; \
+		echo "Install it (e.g. 'brew install python@3.11') or pass PYTHON=/path/to/python3.11."; \
+		exit 1; \
+	fi
 	@if [ ! -d api/.venv ]; then \
-		echo "→ Creating Python venv…"; \
-		python3 -m venv api/.venv; \
+		echo "→ Creating Python venv with $(PYTHON) ($$($(PYTHON) --version 2>&1))…"; \
+		$(PYTHON) -m venv api/.venv; \
 	fi
 	@echo "→ Installing Python deps…"
 	api/.venv/bin/pip install -q -r api/requirements.txt

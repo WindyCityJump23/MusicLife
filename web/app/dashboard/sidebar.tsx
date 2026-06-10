@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import SetupAllButton from "./SetupAllButton";
 import SourcesButton from "./SourcesButton";
 import { useAuth } from "./auth-context";
+import { useReadiness } from "./readiness-context";
+import { completedStepNumbers } from "@/lib/readiness";
 
 export type View = "discover" | "playlists" | "library" | "activity";
 
@@ -50,13 +52,17 @@ export default function Sidebar({
   const stepMeta = isGuest ? STEP_META_GUEST : STEP_META_SPOTIFY;
   const navItems = isGuest ? NAV.filter((n) => GUEST_NAV_IDS.has(n.id)) : NAV;
 
+  const { data: readinessData, refresh } = useReadiness();
   const [displayName,    setDisplayName]    = useState<string | null>(null);
-  const [completedSteps, setCompletedSteps] = useState<Set<number>>(new Set());
-  const [catalogStats,   setCatalogStats]   = useState<{
-    library: number;
-    discovered: number;
-    embedded: number;
-  } | null>(null);
+
+  const completedSteps = completedStepNumbers(readinessData?.readiness?.steps);
+  const catalogStats =
+    readinessData?.catalogStats &&
+    typeof readinessData.catalogStats.library === "number" &&
+    typeof readinessData.catalogStats.discovered === "number" &&
+    typeof readinessData.catalogStats.embedded === "number"
+      ? readinessData.catalogStats
+      : null;
   const allDone = completedSteps.size >= stepMeta.length;
   const [setupOpen,      setSetupOpen]      = useState(!allDone);
   const setupStatusLabel = allDone ? "Ready" : completedSteps.size > 0 ? "In progress" : "Needs setup";
@@ -78,44 +84,11 @@ export default function Sidebar({
       .catch(() => {});
   }, []);
 
-  // ── Derive completed steps from library state ────────────────
+  // Completed steps + catalog stats now come from the shared ReadinessProvider
+  // (single poller). Force an immediate re-check after a setup step completes.
   function checkLibraryStatus() {
-    fetch("/api/readiness")
-      .then((r) => r.json())
-      .then((data) => {
-        const done = new Set<number>();
-        const steps = data.readiness?.steps;
-        if (steps?.imported) done.add(1);
-        if (steps?.enriched) done.add(2);
-        if (steps?.embedded) done.add(3);
-        if (steps?.context) done.add(4);
-        if (steps?.tracks) done.add(5);
-        if (steps?.modeledTracks) done.add(6);
-        setCompletedSteps(done);
-
-        const catalog = data.catalogStats;
-        if (
-          typeof catalog?.library === "number" &&
-          typeof catalog?.discovered === "number" &&
-          typeof catalog?.embedded === "number"
-        ) {
-          setCatalogStats({
-            library: catalog.library,
-            discovered: catalog.discovered,
-            embedded: catalog.embedded,
-          });
-        }
-      })
-      .catch(() => {});
+    void refresh();
   }
-
-  // Check on mount then poll every 30 s so steps tick off automatically
-  // as background jobs complete — no page reload required.
-  useEffect(() => {
-    checkLibraryStatus();
-    const id = setInterval(checkLibraryStatus, 30_000);
-    return () => clearInterval(id);
-  }, []);
 
   async function handleLogout() {
     await fetch("/api/auth/logout", { method: "POST" });
