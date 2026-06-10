@@ -1,6 +1,16 @@
 # Production Audit — MusicLife
 
-_Last updated: April 28, 2026_
+_Last updated: June 9, 2026_
+
+> **Review follow-up (June 2026):** Phases 1–2 of the engineering review and the
+> verifiable parts of Phase 3 have landed on `claude/hardcore-noether-d3ada0`.
+> See [`PRODUCTION_ROADMAP.md`](PRODUCTION_ROADMAP.md) for the status of every
+> item, [`RLS_JWT_MIGRATION.md`](RLS_JWT_MIGRATION.md) for the security cutover,
+> and [`EMBEDDING_DIMENSIONS.md`](EMBEDDING_DIMENSIONS.md) for provider changes.
+> Notable changes since this audit was written: per-user rate limiting on
+> `/recommend*`, a keep-alive ping for Render cold starts, a pytest + vitest test
+> layer with a cross-tenant isolation contract test, and removal of the
+> `/api/auth/debug` endpoint mentioned below.
 
 ## What's done
 

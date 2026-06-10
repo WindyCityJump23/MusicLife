@@ -1,0 +1,35 @@
+name: Keep-alive
+
+# Free-tier Render spins the API down after ~15 minutes of inactivity, so the
+# first request after idle takes 30–60s (a cold start the user feels on their
+# first Discover click). This pings the lightweight /health probe on a schedule
+# to keep the instance warm during active hours.
+#
+# Note: GitHub cron is best-effort and can be delayed several minutes under
+# load; treat this as a mitigation, not a guarantee. The durable fix is a paid
+# Render instance (see docs/PRODUCTION_ROADMAP.md).
+
+on:
+  schedule:
+    # Every 10 minutes. Adjust/remove the window to taste.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping API health
+        env:
+          API_URL: ${{ vars.API_URL || 'https://musiclife-api.onrender.com' }}
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 "$API_URL/health" || echo "000")
+          echo "GET $API_URL/health -> $code"
+          # Don't fail the workflow on a single cold-start timeout; this is a
+          # warmer, not a monitor.
+          if [ "$code" = "000" ]; then
+            echo "::warning::health ping timed out (likely a cold start); next tick will retry"
+          fi

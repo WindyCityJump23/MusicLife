@@ -5,11 +5,12 @@ import random as _std_random
 import time as _time
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, field_validator
 
 from app.deps.auth import bearer_scheme, ensure_valid_bearer_token, require_bearer_token
+from app.services.rate_limit import recommend_limiter
 from app.services.discover_novelty import (
     artist_overlap_ratio,
     build_excluded_artist_ids,
@@ -28,6 +29,18 @@ router = APIRouter()
 
 
 DEFAULT_TASTE_MATCH_WEIGHTS = {"affinity": 0.75, "context": 0.15, "editorial": 0.1}
+
+
+def _enforce_rate_limit(user_id: str) -> None:
+    """Raise 429 (with Retry-After) when a user exceeds the recommend budget."""
+    key = user_id or "anonymous"
+    if not recommend_limiter.allow(key):
+        retry_after = recommend_limiter.retry_after_seconds(key)
+        raise HTTPException(
+            status_code=429,
+            detail="Too many recommendation requests. Please slow down.",
+            headers={"Retry-After": str(retry_after)},
+        )
 
 
 class RecommendRequest(BaseModel):
@@ -122,6 +135,7 @@ class LiveCandidateIntentsRequest(BaseModel):
 def recommend(req: RecommendRequest, credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme)):
     token = require_bearer_token(credentials)
     ensure_valid_bearer_token(token)
+    _enforce_rate_limit(req.user_id)
     user_client = get_user_scoped_supabase(token)
     taste_vector = _build_taste_vector(user_client, req.user_id)
     query_intent = interpret_music_prompt(req.prompt)
@@ -143,6 +157,7 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
     timings: dict[str, int] = {}
     token = require_bearer_token(credentials)
     ensure_valid_bearer_token(token)
+    _enforce_rate_limit(req.user_id)
     user_client = get_user_scoped_supabase(token)
     taste_start = _time.monotonic()
     taste_vector = _build_taste_vector(user_client, req.user_id)
