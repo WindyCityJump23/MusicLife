@@ -18,6 +18,12 @@ dist/
 build/
 *.tsbuildinfo
 
+# test artifacts
+test-results/
+playwright-report/
+playwright/.cache/
+coverage/
+
 # misc
 .DS_Store
 *.log
