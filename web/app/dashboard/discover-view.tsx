@@ -461,6 +461,7 @@ function toQueueTracks(
       stationRunId: meta.stationRunId ?? null,
       position: index + 1,
       prompt: meta.prompt || undefined,
+      score: s.score,
     }));
 }
 
@@ -1421,6 +1422,7 @@ export default function DiscoverView({
               saved_anchor: r.signals?.saved_anchor,
               listen_boost: r.signals?.listen_boost,
               audio_match: r.signals?.audio_match,
+              favorites_match: r.signals?.favorites_match,
               live_source: r.signals?.live_source,
             },
             genres: r.genres ?? [],
@@ -2553,6 +2555,9 @@ function SongRow({
       station_run_id: stationRunId,
       position: rank,
       prompt: currentPrompt || undefined,
+      // Score + lane at impression time feed the calibration report
+      // (/api/radio-health/calibration): favorite/skip rates per score bucket.
+      metadata: { score: song.score, lane: song.lane ?? null },
     });
   }, [currentPrompt, rank, song, stationRunId]);
 

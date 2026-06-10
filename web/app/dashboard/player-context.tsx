@@ -19,6 +19,9 @@ export type QueueTrack = {
   stationRunId?: string | null;
   position?: number;
   prompt?: string;
+  // Recommendation score at queue time; carried through play/skip events for
+  // score-bucket calibration.
+  score?: number;
 };
 
 export type ConnectDevice = {
@@ -122,7 +125,8 @@ function logQueuePlaybackEvent(
     prompt: track.prompt,
     source: "radio-player",
     dwell_ms: Math.max(0, Math.round(dwellMs)),
-    metadata,
+    metadata:
+      typeof track.score === "number" ? { score: track.score, ...metadata } : metadata,
   };
   void fetch("/api/recommendation-event", {
     method: "POST",

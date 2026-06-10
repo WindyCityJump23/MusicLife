@@ -160,7 +160,8 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
     _enforce_rate_limit(req.user_id)
     user_client = get_user_scoped_supabase(token)
     taste_start = _time.monotonic()
-    taste_vector = _build_taste_vector(user_client, req.user_id)
+    from app.services.ranking import build_taste_profile
+    taste_vector, taste_clusters = build_taste_profile(user_client, req.user_id)
     timings["taste_vector_ms"] = round((_time.monotonic() - taste_start) * 1000)
     query_intent = interpret_music_prompt(req.prompt)
     prompt_for_ranking = query_intent.search_phrase if query_intent else req.prompt
@@ -288,6 +289,7 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             excluded_artist_ids=local_excluded_artists,
             exploration_seed=request_base_seed + attempt,
             taste_strategy=req.taste_strategy.model_dump() if req.taste_strategy and not query_intent else None,
+            taste_clusters=taste_clusters,
             performance_timings=rank_stage_timings,
         )
         timings[f"rank_attempt_{attempts}_ms"] = round((_time.monotonic() - rank_start) * 1000)

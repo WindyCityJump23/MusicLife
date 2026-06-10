@@ -15,6 +15,7 @@ export type SignalBreakdown = {
   saved_anchor?: number;
   listen_boost?: number;
   audio_match?: number | null;
+  favorites_match?: number | null;
   live_source?: boolean;
 };
 

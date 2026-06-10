@@ -109,6 +109,43 @@ def track_similarity_for_artists(
     }
 
 
+def user_favorites_centroid(client: Client, user_id: str) -> list[float]:
+    """Average embedding of the user's recent favorited tracks (SQL-side).
+
+    Returns [] when the user has no favorites with embedded tracks or the RPC
+    is unavailable (e.g. migration 027 not applied yet) — callers treat an
+    empty list as "no favorites signal".
+    """
+    try:
+        resp = retry_on_disconnect(
+            lambda: client.rpc("user_favorites_centroid", {"p_user_id": user_id}).execute()
+        )
+    except Exception as exc:
+        print(f"vector_rpc.user_favorites_centroid failed: {exc}")
+        return []
+    data = resp.data
+    if data is None:
+        return []
+    # PostgREST returns a scalar vector as a string like "[0.1,0.2,...]".
+    if isinstance(data, str):
+        text = data.strip()
+        if text.startswith("[") and text.endswith("]"):
+            body = text[1:-1].strip()
+            if not body:
+                return []
+            try:
+                return [float(part) for part in body.split(",")]
+            except ValueError:
+                return []
+        return []
+    if isinstance(data, list):
+        try:
+            return [float(x) for x in data]
+        except (TypeError, ValueError):
+            return []
+    return []
+
+
 def match_tracks(
     client: Client,
     query_vector: list[float] | None,

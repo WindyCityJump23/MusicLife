@@ -33,6 +33,7 @@ export function readableReason(reason: string): string {
   if (lower === "new release") return "recent release";
   if (lower === "already in your library") return "familiar from your library";
   if (lower === "recently surfaced") return "recently surfaced in MusicLife";
+  if (lower === "close to your favorites") return "sits close to songs you've favorited";
   if (lower === "live spotify search") return "came from a fresh Spotify discovery";
   if (lower === "outside catalog") return "was found through fresh Spotify discovery";
   if (lower === "prompt expansion") return "matches a live expansion of your prompt";
@@ -60,8 +61,14 @@ export function summarizeWhy(
   const familiarity = song.signals.familiarity ?? 0;
   const listenBoost = song.signals.listen_boost ?? 0;
   const savedAnchor = song.signals.saved_anchor ?? 0;
+  const favoritesMatch = song.signals.favorites_match ?? 0;
   const tail = ` · ${leader.label.toLowerCase()} ${pct(leader.value)}%`;
 
+  // Favorites proximity is the most direct "you'll love this" signal — lead
+  // with it when it's strong.
+  if (favoritesMatch >= 0.62) {
+    return `Close to songs you've favorited${tail}`;
+  }
   if (song.top_mention?.source && editorial > 0.12) {
     return `In the press at ${song.top_mention.source}${tail}`;
   }
@@ -114,6 +121,9 @@ export function buildWhyExplanation(
   }
   if (song.top_mention?.source) {
     add(`It has recent context from ${song.top_mention.source}.`);
+  }
+  if ((song.signals.favorites_match ?? 0) >= 0.62) {
+    add("It sits close to songs you've favorited.");
   }
   if ((song.signals.novelty ?? 0) >= 0.65) {
     add("It should feel more discovery than repeat listen.");

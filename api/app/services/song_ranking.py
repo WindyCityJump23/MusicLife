@@ -46,6 +46,7 @@ from app.services.vector_rpc import (
     match_tracks,
     max_mention_similarity_per_artist,
     track_similarity_for_artists,
+    user_favorites_centroid,
 )
 
 # Pure scoring / lane / strategy helpers live in song_scoring so they can be
@@ -54,12 +55,14 @@ from app.services.vector_rpc import (
 from app.services.song_scoring import (
     DEFAULT_DISCOVERY_MIX,
     DISCOVERY_LANES,
+    FAVORITES_REASON_THRESHOLD,
     _AUDIO_DIM_WEIGHT_TOTAL,
     _AUDIO_DIMENSION_WEIGHTS,
     _assign_lane,
     _candidate_key,
     _clean_strategy,
     _deep_cut_quality,
+    _favorites_boost,
     _freshness_strategy_multiplier,
     _genre_strategy_multiplier,
     _genre_tokens_for_prompt,
@@ -117,6 +120,7 @@ def recommend_songs(
     excluded_artist_ids: set[int] | None = None,
     exploration_seed: int | None = None,
     taste_strategy: dict | None = None,
+    taste_clusters: list[list[float]] | None = None,
     performance_timings: dict[str, int] | None = None,
 ) -> list[dict]:
     """Return a ranked list of song-level recommendations.
@@ -232,6 +236,38 @@ def recommend_songs(
         print(
             f"song_ranking: genre filter '{prompt_text}' matched "
             f"{len(all_artists)} artists"
+        )
+
+    # ── Multi-centroid retrieval ──────────────────────────────────
+    # A single centroid averages multi-genre listeners into the middle of
+    # embedding space. When the taste profile has distinct clusters, pull a
+    # secondary pool near each additional cluster and merge by max similarity,
+    # so every taste mode gets candidates that are *strong* matches to it.
+    secondary_clusters = (taste_clusters or [])[1:]
+    if secondary_clusters and not genre_filtered:
+        by_id: dict[int, dict] = {
+            int(a["id"]): a for a in all_artists if a.get("id") is not None
+        }
+        for cluster_vector in secondary_clusters[:2]:
+            cluster_artists = match_artists(
+                client,
+                query_vector=cluster_vector,
+                match_count=POOL_SIZE // 2,
+            )
+            for row in cluster_artists:
+                if row.get("id") is None:
+                    continue
+                rid = int(row["id"])
+                existing = by_id.get(rid)
+                if existing is None:
+                    by_id[rid] = row
+                elif float(row.get("similarity") or 0.0) > float(existing.get("similarity") or 0.0):
+                    existing["similarity"] = row.get("similarity")
+        all_artists = list(by_id.values())
+        print(
+            f"song_ranking: multi-centroid retrieval merged "
+            f"{len(secondary_clusters[:2])} extra cluster pool(s) -> "
+            f"{len(all_artists)} candidate artists"
         )
     _record_stage("artist_match_rpc_ms", artist_match_started)
 
@@ -896,10 +932,12 @@ def recommend_songs(
         tracks_by_artist[int(aid)].append(t)
 
     # ── Per-track cosine similarity via RPC (no embedding pulled) ─
-    # Two SQL calls (one for prompt context, one for taste affinity) replace
+    # SQL calls (prompt context, taste affinity, favorites proximity) replace
     # what used to be a streaming pull of every tracks.embedding row.
     track_context_sim: dict[int, float] = {}
     track_taste_sim: dict[int, float] = {}
+    track_favorites_sim: dict[int, float] = {}
+    favorites_vector: list[float] = []
     if top_artist_ids:
         track_match_started = _time.monotonic()
         if effective_prompt_vector:
@@ -909,6 +947,14 @@ def recommend_songs(
         if taste_vector:
             track_taste_sim = track_similarity_for_artists(
                 client, taste_vector, top_artist_ids
+            )
+        # Hearts as a positive signal: tracks near the centroid of the user's
+        # favorited songs get a bounded boost (previously favorites were only
+        # an exclusion). Empty when the user has no favorites yet.
+        favorites_vector = user_favorites_centroid(client, user_id)
+        if favorites_vector:
+            track_favorites_sim = track_similarity_for_artists(
+                client, favorites_vector, top_artist_ids
             )
         _record_stage("track_match_rpc_ms", track_match_started)
 
@@ -1131,6 +1177,13 @@ def recommend_songs(
                 else:
                     track_boost *= 0.55 + 0.65 * audio_match_value
 
+            # Favorites proximity: bounded multiplicative boost for tracks
+            # whose embedding sits near the centroid of the user's hearts.
+            favorites_match_value = (
+                track_favorites_sim.get(track_id) if track_id is not None else None
+            )
+            track_boost *= _favorites_boost(favorites_match_value)
+
             # Instrumental / spoken-word penalty: filter utility tracks
             # (meditation, interludes, podcasts). NULL = unknown, no penalty.
             _instrumentalness = track.get("instrumentalness")
@@ -1262,6 +1315,12 @@ def recommend_songs(
                 lane = "deep_cuts"
                 reasons.append("Matches your instrumental saves")
 
+            if (
+                favorites_match_value is not None
+                and favorites_match_value >= FAVORITES_REASON_THRESHOLD
+            ):
+                reasons.append("Close to your favorites")
+
             dcq = 0.0
             if lane == "deep_cuts":
                 dcq = _deep_cut_quality(
@@ -1312,6 +1371,7 @@ def recommend_songs(
                     "saved_anchor": round(saved_anchor_signal, 4),
                     "listen_boost": round(artist_listen_boost.get(aid, 0.0), 4),
                     "audio_match": round(audio_match_value, 4) if audio_match_value is not None else None,
+                    "favorites_match": round(favorites_match_value, 4) if favorites_match_value is not None else None,
                     "live_source": False,
                 },
                 "lane": lane,

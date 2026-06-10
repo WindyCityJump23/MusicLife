@@ -366,3 +366,27 @@ def _lane_targets(limit: int, strategy: dict | None = None) -> dict[str, int]:
 
 def _candidate_key(candidate: dict) -> str:
     return f"{(candidate.get('track_name') or '')}|{(candidate.get('artist_name') or '')}".lower()
+
+
+# Favorites boost: only similarity above this floor counts as "near the
+# user's favorites" — below it the boost is neutral so unrelated tracks are
+# not lifted en masse.
+_FAVORITES_SIM_FLOOR = 0.45
+_FAVORITES_BOOST_MAX = 0.25
+# Threshold for surfacing "close to your favorites" as a user-facing reason.
+FAVORITES_REASON_THRESHOLD = 0.62
+
+
+def _favorites_boost(similarity: float | None) -> float:
+    """Multiplicative boost for tracks near the user's favorites centroid.
+
+    Maps cosine similarity in [_FAVORITES_SIM_FLOOR, 1.0] linearly onto
+    [1.0, 1.0 + _FAVORITES_BOOST_MAX]; anything at or below the floor (or an
+    absent signal) is neutral 1.0. Monotonic and bounded so it can never
+    dominate the affinity/editorial blend.
+    """
+    if similarity is None:
+        return 1.0
+    span = 1.0 - _FAVORITES_SIM_FLOOR
+    above = max(0.0, min(1.0, similarity) - _FAVORITES_SIM_FLOOR)
+    return 1.0 + _FAVORITES_BOOST_MAX * (above / span)

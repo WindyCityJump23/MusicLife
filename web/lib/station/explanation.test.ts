@@ -38,6 +38,14 @@ describe("readableReason", () => {
 describe("summarizeWhy — distinguishing leads", () => {
   const leader = { label: "Taste", value: 0.86 };
 
+  it("leads with favorites proximity above everything else", () => {
+    const song = makeSong({
+      top_mention: { source: "Stereogum", excerpt: "x", published_at: "" },
+      signals: { affinity: 0.8, context: 0, editorial: 0.5, favorites_match: 0.7 },
+    });
+    expect(summarizeWhy(song, "", leader)).toMatch(/^Close to songs you've favorited/);
+  });
+
   it("leads with press context when an editorial mention exists", () => {
     const song = makeSong({
       top_mention: { source: "Stereogum", excerpt: "x", published_at: "" },

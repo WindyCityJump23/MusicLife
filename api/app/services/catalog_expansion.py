@@ -30,8 +30,13 @@ SIMILAR_PER_ARTIST = 8  # How many similar artists to fetch per seed
 MAX_SEED_ARTISTS = 500  # Cap on how many seed artists to process
 
 
-def run_catalog_expansion() -> dict:
-    """Expand the catalog via Last.fm similar artists. Returns summary."""
+def run_catalog_expansion(max_seeds: int | None = None) -> dict:
+    """Expand the catalog via Last.fm similar artists. Returns summary.
+
+    ``max_seeds`` bounds how many seed artists are queried — the dedicated
+    /ingest/expand-catalog endpoint uses the full MAX_SEED_ARTISTS cap, while
+    the daily sources refresh passes a small cap so expansion stays cheap.
+    """
 
     # 1. Load existing artists (by name for dedup)
     existing_names = _load_existing_artist_names()
@@ -39,6 +44,8 @@ def run_catalog_expansion() -> dict:
 
     # 2. Load seed artists (prioritize library artists, then discovered ones)
     seeds = _load_seed_artists()
+    if max_seeds is not None:
+        seeds = seeds[: max(0, max_seeds)]
     print(f"catalog_expansion: {len(seeds)} seed artists to expand from")
 
     # 3. Fetch similar artists for each seed

@@ -237,6 +237,7 @@ def _run_source_ingest(
 ):
     from app.services.artist_embeddings import run_artist_embeddings
     from app.services.artist_enrichment import run_artist_enrichment
+    from app.services.catalog_expansion import run_catalog_expansion
     from app.services.source_ingest import run_source_ingest
     from app.services.track_embeddings import run_track_embeddings
 
@@ -302,11 +303,29 @@ def _run_source_ingest(
                 followup_notes.append(f"track finalization skipped: {exc}")
                 print(f"source_ingest: track finalization failed: {exc}")
 
+        # Bounded similar-artist expansion. This avenue (Last.fm similar
+        # artists) was previously only reachable via the standalone
+        # /ingest/expand-catalog endpoint, which nothing called — so the
+        # catalog only grew from the user's own library and blog mentions.
+        # A small capped pass per refresh widens the discovery pool without
+        # turning the daily refresh into a crawl. New artists are enriched
+        # and embedded by the next refresh's finalization pass.
+        expanded_artists = 0
+        try:
+            progress("Expanding catalog from similar artists...")
+            expansion = run_catalog_expansion(max_seeds=20)
+            expanded_artists = expansion.get("inserted", 0) if isinstance(expansion, dict) else 0
+        except Exception as exc:
+            followup_notes.append(f"catalog expansion skipped: {exc}")
+            print(f"source_ingest: catalog expansion failed (non-fatal): {exc}")
+
         msg = f"Scanned {sources} sources, found {mentions} mentions"
         if tracks:
             msg += f", added {tracks} tracks"
         if artists:
             msg += f", discovered {artists} artists"
+        if expanded_artists:
+            msg += f", expanded {expanded_artists} similar artists"
         if embedded_artists:
             msg += f", modeled {embedded_artists} artists"
         if embedded_tracks:

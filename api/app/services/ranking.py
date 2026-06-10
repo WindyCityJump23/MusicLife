@@ -458,10 +458,13 @@ def _get_previously_recommended_artist_ids(client: Client, user_id: str) -> set[
         return set()
 
 
-def build_taste_vector(client: Client, user_id: str) -> list[float]:
+def _weighted_library_embeddings(
+    client: Client, user_id: str
+) -> tuple[list[list[float]], list[float]]:
+    """Fetch (embedding, weight) pairs for the user's weighted library artists."""
     artist_weights = _get_user_artist_weights(client, user_id)
     if not artist_weights:
-        return []
+        return [], []
 
     artist_ids = list(artist_weights.keys())
     artists_resp = (
@@ -470,30 +473,33 @@ def build_taste_vector(client: Client, user_id: str) -> list[float]:
         .in_("id", artist_ids)
         .execute()
     )
-    artists = artists_resp.data or []
-
-    weighted_sum: list[float] | None = None
-    total_weight = 0.0
-
-    for artist in artists:
+    vectors: list[list[float]] = []
+    weights: list[float] = []
+    for artist in artists_resp.data or []:
         artist_id = artist.get("id")
         if artist_id is None:
             continue
-
         vector = _parse_vector(artist.get("embedding"))
         if not vector:
             continue
-
         weight = artist_weights.get(int(artist_id), 0.0)
         if weight <= 0:
             continue
+        vectors.append(vector)
+        weights.append(weight)
+    return vectors, weights
 
+
+def build_taste_vector(client: Client, user_id: str) -> list[float]:
+    vectors, weights = _weighted_library_embeddings(client, user_id)
+
+    weighted_sum: list[float] | None = None
+    total_weight = 0.0
+    for vector, weight in zip(vectors, weights):
         if weighted_sum is None:
             weighted_sum = [0.0 for _ in vector]
-
         if len(weighted_sum) != len(vector):
             continue
-
         for i, val in enumerate(vector):
             weighted_sum[i] += val * weight
         total_weight += weight
@@ -502,6 +508,39 @@ def build_taste_vector(client: Client, user_id: str) -> list[float]:
         return []
 
     return [val / total_weight for val in weighted_sum]
+
+
+def build_taste_profile(
+    client: Client, user_id: str, *, max_clusters: int = 3
+) -> tuple[list[float], list[list[float]]]:
+    """Return (primary taste centroid, taste cluster centroids).
+
+    The primary centroid is identical to build_taste_vector's output and keeps
+    every existing consumer working. The clusters capture distinct taste modes
+    for multi-centroid candidate retrieval; a single-mode library yields one
+    cluster. One embeddings fetch serves both.
+    """
+    from app.services.taste_model import cluster_taste_vectors
+
+    vectors, weights = _weighted_library_embeddings(client, user_id)
+
+    weighted_sum: list[float] | None = None
+    total_weight = 0.0
+    for vector, weight in zip(vectors, weights):
+        if weighted_sum is None:
+            weighted_sum = [0.0 for _ in vector]
+        if len(weighted_sum) != len(vector):
+            continue
+        for i, val in enumerate(vector):
+            weighted_sum[i] += val * weight
+        total_weight += weight
+
+    if not weighted_sum or total_weight == 0:
+        return [], []
+
+    primary = [val / total_weight for val in weighted_sum]
+    clusters = cluster_taste_vectors(vectors, weights, k=max_clusters)
+    return primary, clusters
 
 
 # ── Diversity re-ranking ─────────────────────────────────────────
