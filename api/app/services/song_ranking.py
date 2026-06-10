@@ -350,6 +350,16 @@ def recommend_songs(
                       f"energy={user_audio_pref.get('energy', 0):.2f} "
                       f"dance={user_audio_pref.get('danceability', 0):.2f} "
                       f"valence={user_audio_pref.get('valence', 0):.2f}")
+            else:
+                # Spotify deprecated /audio-features (Nov 2024), so these
+                # columns are unpopulated for catalogs built after that. Make
+                # the inactive audio path observable instead of silently
+                # disabling the audio_match signal for every track.
+                print(
+                    "song_ranking: audio profile inactive — no usable audio "
+                    f"features across {len(_audio_ids)} saved tracks; "
+                    "audio_match scoring disabled for this request"
+                )
         except Exception as _e:
             print(f"song_ranking: audio profile failed (non-fatal): {_e}")
 

@@ -2465,6 +2465,49 @@ function SongRow({
   const [expanded, setExpanded] = useState(false);
   const impressionLoggedRef = useRef(false);
 
+  // Lazy Claude "Why this?" synthesis. Only catalog songs (numeric artist_id
+  // with an embedding) can be synthesized; live Spotify-sourced songs fall back
+  // to the templated bullets. Fetched once, on first expand.
+  const catalogArtistId = /^\d+$/.test(song.artist_id) ? Number(song.artist_id) : null;
+  const [aiWhy, setAiWhy] = useState<string | null>(null);
+  const [aiWhyState, setAiWhyState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const aiWhyRequestedRef = useRef(false);
+
+  useEffect(() => {
+    if (!expanded || catalogArtistId === null) return;
+    if (aiWhyRequestedRef.current) return;
+    aiWhyRequestedRef.current = true;
+    setAiWhyState("loading");
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/synthesize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            artist_id: catalogArtistId,
+            prompt: currentPrompt || undefined,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (res.ok && typeof data.paragraph === "string" && data.paragraph.trim()) {
+          setAiWhy(data.paragraph.trim());
+          setAiWhyState("done");
+        } else {
+          // 503 (no Anthropic key), 404 (no embedding), etc. — silently fall
+          // back to the templated detail bullets already shown below.
+          setAiWhyState("error");
+        }
+      } catch {
+        if (!cancelled) setAiWhyState("error");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, catalogArtistId, currentPrompt]);
+
   const matchPct = Math.round(song.score * 100);
   const lane = laneBadge(song);
   const explanation = buildWhyExplanation(song, currentPrompt);
@@ -2813,7 +2856,17 @@ function SongRow({
             <p className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
               Why this song
             </p>
-            <ul className="mt-1.5 space-y-1">
+            {aiWhyState === "loading" && (
+              <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-400 animate-pulse">
+                Writing a grounded explanation…
+              </p>
+            )}
+            {aiWhyState === "done" && aiWhy && (
+              <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-700">{aiWhy}</p>
+            )}
+            {/* Templated bullets: shown as the primary explanation when there's
+                no AI synthesis, or as supporting detail beneath it. */}
+            <ul className={[aiWhyState === "done" && aiWhy ? "mt-2 border-t border-neutral-100 pt-2" : "mt-1.5", "space-y-1"].join(" ")}>
               {explanation.details.slice(0, 5).map((detail) => (
                 <li key={detail} className="text-[11px] leading-relaxed text-neutral-600">
                   {detail}
