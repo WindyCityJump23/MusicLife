@@ -3,6 +3,17 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+/**
+ * Spotify removed app-token (client-credentials) access to playlist contents
+ * (observed June 2026: /items returns 401, /tracks returns 403 for app
+ * tokens, while user tokens still work). That hard-breaks the no-login
+ * import for EVERY playlist, so the form is disabled with honest messaging
+ * instead of a CTA that always fails. Flip this flag if access is restored
+ * (e.g. via Spotify extended quota approval) — the whole flow underneath
+ * still works and is kept tested.
+ */
+const PLAYLIST_IMPORT_ENABLED = false;
+
 export default function PlaylistImportForm() {
   const router = useRouter();
   const [url, setUrl] = useState("");
@@ -50,6 +61,21 @@ export default function PlaylistImportForm() {
       setLoading(false);
       setProgress(null);
     }
+  }
+
+  if (!PLAYLIST_IMPORT_ENABLED) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-left">
+        <p className="text-xs font-medium text-white/70">
+          Playlist import is temporarily unavailable
+        </p>
+        <p className="mt-1 text-xs text-white/45 leading-relaxed">
+          Spotify now requires a signed-in account to read playlists, so the
+          no-login option is paused. Connect with Spotify above to build your
+          station — it takes one click.
+        </p>
+      </div>
+    );
   }
 
   return (
