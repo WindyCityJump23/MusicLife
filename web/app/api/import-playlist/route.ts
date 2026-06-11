@@ -191,39 +191,72 @@ export async function POST(req: NextRequest) {
   const playlistMeta = await metaRes.json();
   const playlistName: string = playlistMeta.name ?? "Imported Playlist";
 
-  // ── Paginate tracks via /items ───────────────────────────────
-  // The classic /playlists/{id}/tracks endpoint now returns 403, and `fields`
-  // projections on /items come back empty — so fetch full pages from /items
-  // and read the authoritative track total from the first page.
+  // ── Paginate tracks ──────────────────────────────────────────
+  // Spotify's playlist content endpoints changed mid-2026 and behave
+  // differently per token type. Try the newer /items endpoint first, then
+  // fall back to the classic /tracks endpoint; both with an explicit
+  // market (app tokens have no user country, and track relinking without a
+  // market can return empty/blocked content).
   const allItems: SpotifyPlaylistTrackItem[] = [];
   let offset = 0;
   let totalTracks = 0;
+  const upstreamStatuses: string[] = [];
+  const endpoints = ["items", "tracks"] as const;
 
-  while (offset < MAX_TRACKS) {
-    const batchSize = Math.min(PAGE_SIZE, MAX_TRACKS - offset);
-    const tracksRes = await fetch(
-      `https://api.spotify.com/v1/playlists/${playlistId}/items?offset=${offset}&limit=${batchSize}`,
-      {
-        headers: { Authorization: `Bearer ${ccToken}` },
-        cache: "no-store",
-      }
-    );
-    if (!tracksRes.ok) {
-      console.error(
-        `[import-playlist] items page fetch failed at offset=${offset}: ${tracksRes.status}`
+  for (const endpoint of endpoints) {
+    offset = 0;
+    totalTracks = 0;
+    allItems.length = 0;
+    let endpointFailed = false;
+
+    while (offset < MAX_TRACKS) {
+      const batchSize = Math.min(PAGE_SIZE, MAX_TRACKS - offset);
+      const tracksRes = await fetch(
+        `https://api.spotify.com/v1/playlists/${playlistId}/${endpoint}?offset=${offset}&limit=${batchSize}&market=US`,
+        {
+          headers: { Authorization: `Bearer ${ccToken}` },
+          cache: "no-store",
+        }
       );
-      break; // Keep what we have so far
+      if (!tracksRes.ok) {
+        upstreamStatuses.push(`${endpoint}:${tracksRes.status}`);
+        console.error(
+          `[import-playlist] ${endpoint} page fetch failed at offset=${offset}: ${tracksRes.status}`
+        );
+        endpointFailed = offset === 0;
+        break; // Keep what we have so far for partial pages
+      }
+      const page = await tracksRes.json();
+      if (typeof page.total === "number") totalTracks = page.total;
+      const items: SpotifyPlaylistTrackItem[] = (page.items ?? []).map(normalizeEntry);
+      if (items.length === 0) break;
+      allItems.push(...items);
+      offset += items.length;
+      if (totalTracks > 0 && offset >= totalTracks) break;
     }
-    const page = await tracksRes.json();
-    if (typeof page.total === "number") totalTracks = page.total;
-    const items: SpotifyPlaylistTrackItem[] = (page.items ?? []).map(normalizeEntry);
-    if (items.length === 0) break;
-    allItems.push(...items);
-    offset += items.length;
-    if (offset >= totalTracks) break;
+
+    if (!endpointFailed && allItems.length > 0) break; // success on this endpoint
   }
 
-  if (totalTracks === 0 && allItems.length === 0) {
+  if (allItems.length === 0) {
+    // Distinguish "Spotify refused to share the songs" from a genuinely
+    // empty playlist so users (and we) aren't told a full playlist is empty.
+    if (upstreamStatuses.length > 0) {
+      console.error(
+        `[import-playlist] could not read playlist contents | playlist=${playlistId} | upstream=${upstreamStatuses.join(",")}`
+      );
+      return NextResponse.json(
+        {
+          error: "playlist_unreadable",
+          message:
+            "Spotify wouldn't share this playlist's songs with MusicLife " +
+            `(${upstreamStatuses.join(", ")}). This can happen with playlists from ` +
+            "Spotify itself or certain large curator accounts. Try a playlist made " +
+            "by a person — or one of your own.",
+        },
+        { status: 502 }
+      );
+    }
     return NextResponse.json(
       {
         error: "empty_playlist",
