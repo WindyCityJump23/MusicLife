@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePlayer } from "./player-context";
 import { useAuth } from "./auth-context";
-import SetupAllButton from "./SetupAllButton";
 
 type Artist = {
   id: number;
@@ -610,37 +609,25 @@ export default function LibraryView({
   }
 
   if (!data || data.artists.length === 0) {
+    // Setup lives on the Radio tab (the single setup surface) — this empty
+    // state just points there instead of duplicating the button and steps.
     return (
-      <div className="mx-auto max-w-sm space-y-6 py-8">
-        <div className="space-y-2 text-center">
-          <h2 className="text-lg font-semibold text-neutral-900">Welcome to MusicLife</h2>
+      <div className="mx-auto max-w-sm space-y-5 py-8 text-center">
+        <div className="space-y-2">
+          <h2 className="text-lg font-semibold text-neutral-900">No taste profile yet</h2>
           <p className="text-sm leading-relaxed text-neutral-500">
-            {isGuest
-              ? "Import a playlist to build the taste profile that powers recommendations."
-              : "Connect your Spotify library to build the taste profile that powers Radio."}
+            Once your station setup finishes, this page shows the artists and
+            genres MusicLife has learned from your music.
           </p>
         </div>
-        <SetupAllButton onProgress={fetchLibrary} onComplete={onSetupComplete} />
-        <div className="space-y-2.5 pt-1">
-          {[
-            { n: 1, title: "Sync library", desc: "Import artists and listening history" },
-            { n: 2, title: "Learn your artists", desc: "Add genres and artist context" },
-            { n: 3, title: "Connect your taste", desc: "Prepare stronger station matches" },
-            { n: 4, title: "Add music context", desc: "Include editorial context and reviews" },
-            { n: 5, title: "Prepare playable songs", desc: "Load songs for Radio" },
-            { n: 6, title: "Refine discovery", desc: "Improve song-level matching over time" },
-          ].map(({ n, title, desc }) => (
-            <div key={n} className="flex items-start gap-2.5">
-              <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-neutral-200 text-[10px] font-bold text-neutral-500">
-                {n}
-              </div>
-              <div>
-                <p className="text-xs font-medium leading-tight text-neutral-800">{title}</p>
-                <p className="mt-0.5 text-[10px] leading-snug text-neutral-400">{desc}</p>
-              </div>
-            </div>
-          ))}
-        </div>
+        {onSetupComplete && (
+          <button
+            onClick={onSetupComplete}
+            className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 transition-colors"
+          >
+            Go to Radio →
+          </button>
+        )}
       </div>
     );
   }

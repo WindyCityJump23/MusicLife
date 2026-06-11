@@ -242,6 +242,10 @@ function activePresetLabel(weights: Preset["weights"]): string {
   return PRESETS.find((preset) => sameWeights(preset.weights, weights))?.label ?? "Custom";
 }
 
+function activePresetDesc(weights: Preset["weights"]): string {
+  return PRESETS.find((preset) => sameWeights(preset.weights, weights))?.desc ?? "";
+}
+
 function isLiveSourced(song: SongRecommendation): boolean {
   const reasons = song.reasons.join(" ").toLowerCase();
   return (
@@ -1126,6 +1130,21 @@ export default function DiscoverView({
   const [stationFallbackLevel, setStationFallbackLevel] = useState<StationFallbackLevel>("fresh");
   const [laneFilter, setLaneFilter] = useState<LaneFilterId>("all");
   const [genreFilter, setGenreFilter] = useState<string>("");
+  const [showQueueFilters, setShowQueueFilters] = useState(false);
+  // Heart nudge dismissal lives in localStorage; read after mount so the
+  // server-rendered HTML stays deterministic.
+  const [heartNudgeDismissed, setHeartNudgeDismissed] = useState(true);
+  useEffect(() => {
+    try {
+      setHeartNudgeDismissed(localStorage.getItem("musiclife.heartNudge.dismissed") === "1");
+    } catch {
+      setHeartNudgeDismissed(false);
+    }
+  }, []);
+  function dismissHeartNudge() {
+    setHeartNudgeDismissed(true);
+    try { localStorage.setItem("musiclife.heartNudge.dismissed", "1"); } catch {}
+  }
   const [favoritedIds, setFavoritedIds] = useState<Set<string>>(new Set());
   const [feedbackMap, setFeedbackMap] = useState<Record<string, 1 | -1>>({});
   const [playlistState, setPlaylistState] = useState<
@@ -1931,6 +1950,36 @@ export default function DiscoverView({
         </div>
 
         <div className="space-y-3 p-4 sm:p-5">
+          {/* ── Primary action: one big play button ─────────────────
+              First-time users were greeted by ~15 controls and no obvious
+              next step. The station plays with one press; everything else
+              is secondary or tucked behind "Tune station". */}
+          {!isGuest && results && results.length > 0 && (
+            <button
+              onClick={() => void handlePlayAll(displayed)}
+              disabled={playAllState === "loading" || playableCount === 0}
+              className="flex w-full items-center justify-center gap-3 rounded-xl bg-emerald-600 px-6 py-4 text-base font-semibold text-white shadow-sm transition-all hover:bg-emerald-700 active:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
+              title={
+                playableCount > 0
+                  ? `Play ${playableCount} songs from this station view`
+                  : "No playable Spotify tracks in this view"
+              }
+            >
+              {playAllState === "loading" ? (
+                <svg className="animate-spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
+                  <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
+                </svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              )}
+              {playAllState === "loading" ? "Starting…" : "Play my station"}
+            </button>
+          )}
+
+          {/* ── Search + retune (secondary) ───────────────────────── */}
           <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto]">
             <input
               type="text"
@@ -1946,7 +1995,7 @@ export default function DiscoverView({
               <button
                 onClick={() => void handleSubmit()}
                 disabled={loading}
-                className="inline-flex min-h-[42px] items-center justify-center gap-2 rounded-lg bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex min-h-[42px] items-center justify-center gap-2 rounded-lg border border-neutral-200 bg-white px-4 py-2.5 text-sm font-medium text-neutral-800 transition-all hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {loading ? (
                   <>
@@ -1963,31 +2012,7 @@ export default function DiscoverView({
                 )}
               </button>
               {!isGuest && (
-                <button
-                  onClick={() => void handlePlayAll(displayed)}
-                  disabled={playAllState === "loading" || playableCount === 0}
-                  className="inline-flex min-h-[42px] items-center justify-center gap-2 rounded-lg border border-neutral-200 bg-white px-4 py-2.5 text-sm font-medium text-neutral-800 transition-all hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-40"
-                  title={
-                    playableCount > 0
-                      ? `Play ${playableCount} songs from this station view`
-                      : "No playable Spotify tracks in this view"
-                  }
-                >
-                  {playAllState === "loading" ? (
-                    <svg className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                      <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
-                      <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
-                    </svg>
-                  ) : (
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M8 5v14l11-7z" />
-                    </svg>
-                  )}
-                  {playAllState === "loading" ? "Starting" : "Play station"}
-                </button>
-              )}
-              {!isGuest && (
-                <div className="col-span-2 sm:col-span-1">
+                <div className="col-span-1">
                   <SavePlaylistButton
                     state={playlistState}
                     count={results?.length ?? 0}
@@ -1998,66 +2023,79 @@ export default function DiscoverView({
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5">
-            {PRESETS.map((p) => {
-              const isSearchMode = p.label === "Prompt Match";
-              const unavailable = isSearchMode && !prompt;
-              const active = sameWeights(weights, p.weights);
-              return (
-                <button
-                  key={p.label}
-                  onClick={() => { if (!unavailable) setWeights(p.weights); }}
-                  disabled={unavailable}
-                  title={unavailable ? "Enter a search prompt above to use this mode" : p.desc}
-                  className={[
-                    "rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
-                    active
-                      ? "border-neutral-900 bg-neutral-900 text-white"
-                      : unavailable
-                      ? "cursor-not-allowed border-neutral-200 bg-white text-neutral-300"
-                      : "border-neutral-200 bg-white text-neutral-600 hover:border-emerald-300 hover:text-emerald-700",
-                  ].join(" ")}
-                >
-                  {p.label}
-                </button>
-              );
-            })}
+          {/* ── Tune station (all power controls, collapsed by default) ── */}
+          <div>
             <button
               onClick={() => setShowAdvanced(!showAdvanced)}
-              className="ml-auto text-[11px] text-neutral-400 hover:text-neutral-600"
+              aria-expanded={showAdvanced}
+              className="flex w-full items-center justify-between gap-2 text-left"
             >
-              {showAdvanced ? "Hide sliders" : "Fine-tune"}
+              <span className="text-[11px] text-neutral-500">
+                <span className="font-medium text-neutral-700">Tune station</span>
+                {" · "}
+                {activePresetLabel(weights)}
+                {activePresetDesc(weights) ? ` — ${activePresetDesc(weights)}` : ""}
+              </span>
+              <span className="text-[11px] text-neutral-400">{showAdvanced ? "▴" : "▾"}</span>
             </button>
-          </div>
 
-          {showAdvanced && (
-            <div className="space-y-3 rounded-lg border border-neutral-100 bg-neutral-50/60 px-3 pb-3 pt-2">
-              <div className="grid gap-4 sm:grid-cols-3">
-                <WeightSlider
-                  label="Taste"
-                  hint="Similarity to your saved listening history"
-                  value={weights.affinity}
-                  onChange={(v) => setWeights({ ...weights, affinity: v })}
-                />
-                <WeightSlider
-                  label="Search Match"
-                  hint={prompt ? "How closely songs match your typed prompt" : "Enter a prompt above; this signal is inactive without one"}
-                  value={weights.context}
-                  dimmed={!prompt}
-                  onChange={(v) => setWeights({ ...weights, context: v })}
-                />
-                <WeightSlider
-                  label="Buzz"
-                  hint="Artists with recent press coverage"
-                  value={weights.editorial}
-                  onChange={(v) => setWeights({ ...weights, editorial: v })}
-                />
+            {showAdvanced && (
+              <div className="mt-2 space-y-3 rounded-lg border border-neutral-100 bg-neutral-50/60 px-3 pb-3 pt-3">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {PRESETS.map((p) => {
+                    const isSearchMode = p.label === "Prompt Match";
+                    const unavailable = isSearchMode && !prompt;
+                    const active = sameWeights(weights, p.weights);
+                    return (
+                      <button
+                        key={p.label}
+                        onClick={() => { if (!unavailable) setWeights(p.weights); }}
+                        disabled={unavailable}
+                        title={unavailable ? "Enter a search prompt above to use this mode" : p.desc}
+                        className={[
+                          "rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                          active
+                            ? "border-neutral-900 bg-neutral-900 text-white"
+                            : unavailable
+                            ? "cursor-not-allowed border-neutral-200 bg-white text-neutral-300"
+                            : "border-neutral-200 bg-white text-neutral-600 hover:border-emerald-300 hover:text-emerald-700",
+                        ].join(" ")}
+                      >
+                        {p.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <WeightSlider
+                    label="Taste"
+                    hint="Similarity to your saved listening history"
+                    value={weights.affinity}
+                    onChange={(v) => setWeights({ ...weights, affinity: v })}
+                  />
+                  <WeightSlider
+                    label="Search Match"
+                    hint={prompt ? "How closely songs match your typed prompt" : "Enter a prompt above; this signal is inactive without one"}
+                    value={weights.context}
+                    dimmed={!prompt}
+                    onChange={(v) => setWeights({ ...weights, context: v })}
+                  />
+                  <WeightSlider
+                    label="Buzz"
+                    hint="Artists with recent press coverage"
+                    value={weights.editorial}
+                    onChange={(v) => setWeights({ ...weights, editorial: v })}
+                  />
+                </div>
+                <p className="text-[10px] leading-relaxed text-neutral-400">
+                  Taste Match is the default spine. Retuning widens the station when you want more freshness, buzz, or prompt-specific context.
+                </p>
+
+                {mix && <StationMixStrip mix={mix} />}
               </div>
-              <p className="text-[10px] leading-relaxed text-neutral-400">
-                Taste Match is the default spine. Retuning widens the station when you want more freshness, buzz, or prompt-specific context.
-              </p>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </section>
 
@@ -2105,7 +2143,23 @@ export default function DiscoverView({
         <EmptyNoResults />
       ) : results !== null && results.length > 0 ? (
         <div className="space-y-3">
-          {mix && <StationMixStrip mix={mix} />}
+          {/* Heart nudge: hearts are the strongest taste signal the radio
+              has, shown until the user favorites something or dismisses. */}
+          {!isGuest && favoritedIds.size === 0 && !heartNudgeDismissed && (
+            <div className="flex items-center gap-2 rounded-lg border border-rose-100 bg-rose-50/70 px-3 py-2">
+              <span aria-hidden="true" className="text-rose-500">♥</span>
+              <p className="flex-1 text-xs text-rose-800">
+                Favorite songs you love — hearts teach your radio what to find next.
+              </p>
+              <button
+                onClick={dismissHeartNudge}
+                aria-label="Dismiss"
+                className="text-xs text-rose-300 hover:text-rose-500 transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+          )}
 
           {/* Playlist success banner (Spotify users only) */}
           {!isGuest && playlistState === "done" && playlistUrl && (
@@ -2194,34 +2248,52 @@ export default function DiscoverView({
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5">
-                  {LANE_FILTERS.map((filter) => (
-                    <button
-                      key={filter.id}
-                      onClick={() => setLaneFilter(filter.id)}
-                      className={[
-                        "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
-                        laneFilter === filter.id
-                          ? "bg-neutral-900 text-white"
-                          : "text-neutral-500 hover:bg-neutral-50 hover:text-neutral-800",
-                      ].join(" ")}
-                    >
-                      {filter.label}
-                    </button>
-                  ))}
-                </div>
-                {allGenres.length > 1 && (
-                  <select
-                    value={genreFilter}
-                    onChange={(e) => setGenreFilter(e.target.value)}
-                    className="min-h-[32px] rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs text-neutral-600 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                    aria-label="Filter by genre"
-                  >
-                    <option value="">All genres</option>
-                    {allGenres.map((g) => (
-                      <option key={g} value={g}>{g}</option>
-                    ))}
-                  </select>
+                {/* Filters hidden by default — most listeners just play the
+                    queue; the toggle keeps the header to one control. */}
+                <button
+                  onClick={() => setShowQueueFilters(!showQueueFilters)}
+                  aria-expanded={showQueueFilters}
+                  className={[
+                    "rounded-lg border px-3 py-1.5 text-[11px] font-medium transition-colors",
+                    showQueueFilters || laneFilter !== "all" || genreFilter
+                      ? "border-neutral-900 bg-neutral-900 text-white"
+                      : "border-neutral-200 bg-white text-neutral-500 hover:text-neutral-800",
+                  ].join(" ")}
+                >
+                  Filter{laneFilter !== "all" || genreFilter ? " · on" : ""}
+                </button>
+                {showQueueFilters && (
+                  <>
+                    <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5">
+                      {LANE_FILTERS.map((filter) => (
+                        <button
+                          key={filter.id}
+                          onClick={() => setLaneFilter(filter.id)}
+                          className={[
+                            "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+                            laneFilter === filter.id
+                              ? "bg-neutral-900 text-white"
+                              : "text-neutral-500 hover:bg-neutral-50 hover:text-neutral-800",
+                          ].join(" ")}
+                        >
+                          {filter.label}
+                        </button>
+                      ))}
+                    </div>
+                    {allGenres.length > 1 && (
+                      <select
+                        value={genreFilter}
+                        onChange={(e) => setGenreFilter(e.target.value)}
+                        className="min-h-[32px] rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs text-neutral-600 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                        aria-label="Filter by genre"
+                      >
+                        <option value="">All genres</option>
+                        {allGenres.map((g) => (
+                          <option key={g} value={g}>{g}</option>
+                        ))}
+                      </select>
+                    )}
+                  </>
                 )}
               </div>
             </div>

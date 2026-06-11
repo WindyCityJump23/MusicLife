@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import SetupAllButton from "./SetupAllButton";
 import SourcesButton from "./SourcesButton";
 import { useAuth } from "./auth-context";
 import { useReadiness } from "./readiness-context";
@@ -16,65 +15,32 @@ const NAV: { id: View; label: string; icon: string }[] = [
   { id: "activity",   label: "History",       icon: "◷" },
 ];
 
-const STEP_META_SPOTIFY = [
-  { step: 1, title: "Import listening history", desc: "Bring in your Spotify artists and recent plays" },
-  { step: 2, title: "Learn your taste",         desc: "Add genre and artist context" },
-  { step: 3, title: "Connect your taste",        desc: "Prepare matching signals for better stations" },
-  { step: 4, title: "Add music context",        desc: "Blend in editorial sources and buzz" },
-  { step: 5, title: "Prepare playable songs",   desc: "Load songs for radio and playlists" },
-  { step: 6, title: "Refine discovery",         desc: "Improve song-level matching for fresher stations" },
-];
-
-const STEP_META_GUEST = [
-  { step: 1, title: "Import playlist",          desc: "Tracks imported from your playlist" },
-  { step: 2, title: "Learn your taste",         desc: "Add genre and artist context" },
-  { step: 3, title: "Connect your taste",        desc: "Prepare matching signals for better stations" },
-  { step: 4, title: "Add music context",        desc: "Blend in editorial sources and buzz" },
-  { step: 5, title: "Prepare playable songs",   desc: "Load songs for recommendations" },
-  { step: 6, title: "Refine discovery",         desc: "Improve song-level matching for fresher stations" },
-];
-
 // Guest users only see Radio and Taste Profile
 const GUEST_NAV_IDS = new Set<View>(["discover", "library"]);
+
+const TOTAL_SETUP_STEPS = 6;
 
 export default function Sidebar({
   active,
   onChange,
   onClose,
-  onSetupComplete,
 }: {
   active: View;
   onChange: (v: View) => void;
   onClose?: () => void;
-  onSetupComplete?: () => void;
 }) {
   const { isGuest } = useAuth();
-  const stepMeta = isGuest ? STEP_META_GUEST : STEP_META_SPOTIFY;
   const navItems = isGuest ? NAV.filter((n) => GUEST_NAV_IDS.has(n.id)) : NAV;
 
   const { data: readinessData, refresh } = useReadiness();
   const [displayName,    setDisplayName]    = useState<string | null>(null);
 
   const completedSteps = completedStepNumbers(readinessData?.readiness?.steps);
-  const catalogStats =
-    readinessData?.catalogStats &&
-    typeof readinessData.catalogStats.library === "number" &&
-    typeof readinessData.catalogStats.discovered === "number" &&
-    typeof readinessData.catalogStats.embedded === "number"
-      ? readinessData.catalogStats
-      : null;
-  const allDone = completedSteps.size >= stepMeta.length;
-  const [setupOpen,      setSetupOpen]      = useState(!allDone);
-  const setupStatusLabel = allDone ? "Ready" : completedSteps.size > 0 ? "In progress" : "Needs setup";
+  const allDone = completedSteps.size >= TOTAL_SETUP_STEPS;
+  const setupStatusLabel = allDone ? "Ready" : completedSteps.size > 0 ? "In progress" : "Setting up";
   const setupStatusClass = allDone
     ? "bg-emerald-50 text-emerald-700 border-emerald-100"
-    : completedSteps.size > 0
-      ? "bg-amber-50 text-amber-700 border-amber-100"
-      : "bg-neutral-100 text-neutral-600 border-neutral-200";
-
-  // Auto-collapse when all steps complete
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (allDone) setSetupOpen(false); }, [allDone]);
+    : "bg-amber-50 text-amber-700 border-amber-100";
 
   // ── Fetch user display name ──────────────────────────────────
   useEffect(() => {
@@ -84,8 +50,6 @@ export default function Sidebar({
       .catch(() => {});
   }, []);
 
-  // Completed steps + catalog stats now come from the shared ReadinessProvider
-  // (single poller). Force an immediate re-check after a setup step completes.
   function checkLibraryStatus() {
     void refresh();
   }
@@ -143,86 +107,37 @@ export default function Sidebar({
       {/* ── Divider ─────────────────────────────────────────── */}
       <div className="mx-3 my-2 border-t border-neutral-200" />
 
-      {/* ── Setup steps ─────────────────────────────────────── */}
+      {/* ── Station status (passive — setup lives on the Radio tab) ── */}
       <div className="px-3 pb-3 flex-1">
-        <button
-          onClick={() => setSetupOpen(!setupOpen)}
-          className="w-full flex items-start justify-between gap-2 px-1 pt-1 pb-2 group text-left"
-          aria-expanded={setupOpen}
-        >
-          <span className="min-w-0">
-            <p className="text-[10px] uppercase tracking-widest text-neutral-400 font-medium">
-              Music Profile
-            </p>
-            <p className="mt-1 text-xs text-neutral-500 leading-snug">
-              {allDone
-                ? isGuest
-                  ? "Ready for recommendations. Import another playlist to update your taste."
-                  : "Ready for radio and playlists. Refresh only when your Spotify taste changes."
-                : "One setup run teaches MusicLife what to recommend."}
-            </p>
-          </span>
-          <span className="flex items-center gap-1.5 pt-0.5">
-            <span className={[
-              "rounded-full border px-2 py-0.5 text-[10px] font-medium",
-              setupStatusClass,
-            ].join(" ")}>
-              {setupStatusLabel}
-            </span>
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+        {!allDone && (
+          <button
+            onClick={() => onChange("discover")}
+            className="w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg border border-neutral-200 bg-white text-left hover:bg-neutral-50 transition-colors"
+          >
+            <span className="text-xs text-neutral-600">Station setup</span>
+            <span
               className={[
-                "text-neutral-400 transition-transform duration-200",
-                setupOpen ? "rotate-180" : "",
+                "rounded-full border px-2 py-0.5 text-[10px] font-medium",
+                setupStatusClass,
               ].join(" ")}
             >
-              <path d="M6 9l6 6 6-6" />
-            </svg>
-          </span>
-        </button>
-
-        {setupOpen && <div className="space-y-3">
-
-        {catalogStats && (
-          <p
-            className="px-1 -mt-1 text-[10px] text-neutral-500 leading-snug"
-            title="Refresh your profile to add more discovery matches"
-          >
-            Songs: {catalogStats.library.toLocaleString()} saved,{" "}
-            {catalogStats.discovered.toLocaleString()} ready for discovery
-          </p>
+              {setupStatusLabel}
+            </span>
+          </button>
         )}
 
-        <SetupAllButton
-          isReady={allDone}
-          onProgress={checkLibraryStatus}
-          onComplete={onSetupComplete}
-        />
-
-        <SourcesButton
-          disabled={!completedSteps.has(1)}
-          onComplete={checkLibraryStatus}
-        />
-
-        <div className="space-y-2 pt-1">
-          {stepMeta.map((s) => (
-            <StepItem
-              key={s.step}
-              step={s.step}
-              title={s.title}
-              desc={s.desc}
-              done={completedSteps.has(s.step)}
+        {/* Maintenance: only relevant once the library is imported. */}
+        {allDone && (
+          <div className="space-y-1.5">
+            <p className="px-1 text-[10px] uppercase tracking-widest text-neutral-400 font-medium">
+              Keep it fresh
+            </p>
+            <SourcesButton
+              disabled={!completedSteps.has(1)}
+              onComplete={checkLibraryStatus}
             />
-          ))}
-        </div>
-        </div>}
+          </div>
+        )}
       </div>
 
       {/* ── Guest upgrade CTA ──────────────────────────────── */}
@@ -253,35 +168,3 @@ export default function Sidebar({
   );
 }
 
-// ── Step wrapper component ────────────────────────────────────────
-
-function StepItem({
-  step,
-  title,
-  desc,
-  done,
-}: {
-  step: number;
-  title: string;
-  desc: string;
-  done: boolean;
-}) {
-  return (
-    <div className="flex items-start gap-2">
-      <div
-        className={[
-          "flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold mt-0.5 transition-colors",
-          done
-            ? "bg-emerald-500 text-white"
-            : "bg-neutral-200 text-neutral-500",
-        ].join(" ")}
-      >
-        {done ? "✓" : step}
-      </div>
-      <div>
-        <div className="text-xs font-medium text-neutral-800 leading-tight">{title}</div>
-        <div className="text-[10px] text-neutral-400 leading-snug mt-0.5">{desc}</div>
-      </div>
-    </div>
-  );
-}

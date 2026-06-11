@@ -438,8 +438,9 @@ function EmptyPlaylists() {
       <div>
         <p className="text-sm font-medium text-neutral-700">No playlists yet</p>
         <p className="text-xs text-neutral-400 mt-1 max-w-xs mx-auto leading-relaxed">
-          Go to <strong>Discover</strong>, get some recommendations, and hit{" "}
-          <strong>Save as Playlist</strong> to create your first one.
+          When a station is playing on the <strong>Radio</strong> tab, hit{" "}
+          <strong>Save as Playlist</strong> to keep it in Spotify. Saved
+          stations will appear here.
         </p>
       </div>
     </div>

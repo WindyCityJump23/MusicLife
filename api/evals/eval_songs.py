@@ -1377,7 +1377,7 @@ def eval_onboarding_copy_hides_pipeline_language() -> EvalResult:
         dashboard_dir / "SetupAllButton.tsx",
         dashboard_dir / "SourcesButton.tsx",
         dashboard_dir / "sidebar.tsx",
-        dashboard_dir / "setup-banner.tsx",
+        dashboard_dir / "setup-hero.tsx",
         dashboard_dir / "radio-view.tsx",
         dashboard_dir / "library-view.tsx",
         dashboard_dir / "discover-view.tsx",

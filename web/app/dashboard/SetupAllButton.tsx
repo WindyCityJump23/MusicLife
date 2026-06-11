@@ -70,13 +70,22 @@ function userFacingSetupMessage(message: string): string {
   return message;
 }
 
+const AUTO_START_KEY = "musiclife.setupAll.autoStarted";
+
 export default function SetupAllButton({
   isReady = false,
+  autoStart = false,
   onProgress,
   onComplete,
   onStatusChange,
 }: {
   isReady?: boolean;
+  /**
+   * Kick off setup automatically on mount (once per browser, guarded in
+   * localStorage so a failing job can't loop). Used for brand-new accounts so
+   * connecting Spotify is the only action a user ever has to take.
+   */
+  autoStart?: boolean;
   onProgress?: () => void;
   onComplete?: () => void;
   onStatusChange?: (status: SetupStatusSnapshot) => void;
@@ -195,6 +204,23 @@ export default function SetupAllButton({
     setMessage("Reconnecting…");
     startPolling(stored);
   }, [startPolling]);
+
+  // Auto-start for brand-new accounts: no in-flight job, never auto-started
+  // on this browser before. Runs after the resume effect so an existing job
+  // always wins.
+  useEffect(() => {
+    if (!autoStart) return;
+    let storedJob: string | null = null;
+    let alreadyAttempted: string | null = null;
+    try {
+      storedJob = localStorage.getItem(STORAGE_KEY);
+      alreadyAttempted = localStorage.getItem(AUTO_START_KEY);
+    } catch {}
+    if (storedJob || alreadyAttempted) return;
+    try { localStorage.setItem(AUTO_START_KEY, "1"); } catch {}
+    void trigger();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart]);
 
   const trigger = useCallback(async () => {
     cleanup();
