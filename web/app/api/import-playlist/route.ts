@@ -39,24 +39,53 @@ function cookieOpts(secure: boolean) {
 }
 
 // ── Spotify playlist types ─────────────────────────────────────
-type SpotifyPlaylistTrackItem = {
-  added_at?: string;
-  track?: {
+type SpotifyTrackObject = {
+  id?: string;
+  name?: string;
+  duration_ms?: number;
+  explicit?: boolean;
+  popularity?: number | null;
+  type?: string;
+  album?: {
+    name?: string;
+    release_date?: string;
+  };
+  artists?: Array<{
     id?: string;
     name?: string;
-    duration_ms?: number;
-    explicit?: boolean;
-    popularity?: number;
-    album?: {
-      name?: string;
-      release_date?: string;
-    };
-    artists?: Array<{
-      id?: string;
-      name?: string;
-    }>;
-  };
+  }>;
 };
+
+type SpotifyPlaylistTrackItem = {
+  added_at?: string;
+  track?: SpotifyTrackObject;
+  // Spotify's newer playlist responses nest the track under `item` instead of
+  // `track` (and `track` becomes a boolean discriminator on the item itself).
+  item?: SpotifyTrackObject;
+};
+
+/**
+ * Normalize a playlist entry to the legacy `{added_at, track}` shape.
+ *
+ * Mid-2026 Spotify changed the playlist APIs out from under us: the classic
+ * `/playlists/{id}/tracks` endpoint now returns 403, the `tracks` object is
+ * gone from playlist metadata, and the `/items` endpoint nests the track
+ * under `item`. Normalizing here keeps every downstream mapper unchanged and
+ * tolerates both shapes in case Spotify serves different ones per app tier.
+ */
+function normalizeEntry(entry: SpotifyPlaylistTrackItem): SpotifyPlaylistTrackItem {
+  const track =
+    entry.track && typeof entry.track === "object"
+      ? entry.track
+      : entry.item && typeof entry.item === "object"
+      ? entry.item
+      : undefined;
+  // Podcast episodes can live in playlists; only music tracks are importable.
+  if (track?.type === "episode") {
+    return { added_at: entry.added_at, track: undefined };
+  }
+  return { added_at: entry.added_at, track };
+}
 
 // ── POST /api/import-playlist ──────────────────────────────────
 export async function POST(req: NextRequest) {
@@ -106,8 +135,11 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Fetch playlist metadata ───────────────────────────────────
+  // NOTE: do not request `tracks(total)` here — Spotify removed the `tracks`
+  // object from playlist metadata (mid-2026 API change). The track total now
+  // comes from the /items page below.
   const metaRes = await fetch(
-    `https://api.spotify.com/v1/playlists/${playlistId}?fields=id,name,description,owner(display_name),tracks(total)`,
+    `https://api.spotify.com/v1/playlists/${playlistId}?fields=id,name,description,owner(display_name)`,
     {
       headers: { Authorization: `Bearer ${ccToken}` },
       cache: "no-store",
@@ -116,7 +148,14 @@ export async function POST(req: NextRequest) {
 
   if (metaRes.status === 404) {
     return NextResponse.json(
-      { error: "not_found", message: "Playlist not found. Check the URL and try again." },
+      {
+        error: "not_found",
+        message:
+          "Spotify couldn't find that playlist. Note: playlists made by Spotify itself " +
+          "(like Today's Top Hits, Discover Weekly, or anything by the 'Spotify' account) " +
+          "can't be imported — Spotify blocks app access to them. Try a playlist made by " +
+          "a person, or one of your own.",
+      },
       { status: 404 }
     );
   }
@@ -151,9 +190,40 @@ export async function POST(req: NextRequest) {
 
   const playlistMeta = await metaRes.json();
   const playlistName: string = playlistMeta.name ?? "Imported Playlist";
-  const totalTracks: number = playlistMeta.tracks?.total ?? 0;
 
-  if (totalTracks === 0) {
+  // ── Paginate tracks via /items ───────────────────────────────
+  // The classic /playlists/{id}/tracks endpoint now returns 403, and `fields`
+  // projections on /items come back empty — so fetch full pages from /items
+  // and read the authoritative track total from the first page.
+  const allItems: SpotifyPlaylistTrackItem[] = [];
+  let offset = 0;
+  let totalTracks = 0;
+
+  while (offset < MAX_TRACKS) {
+    const batchSize = Math.min(PAGE_SIZE, MAX_TRACKS - offset);
+    const tracksRes = await fetch(
+      `https://api.spotify.com/v1/playlists/${playlistId}/items?offset=${offset}&limit=${batchSize}`,
+      {
+        headers: { Authorization: `Bearer ${ccToken}` },
+        cache: "no-store",
+      }
+    );
+    if (!tracksRes.ok) {
+      console.error(
+        `[import-playlist] items page fetch failed at offset=${offset}: ${tracksRes.status}`
+      );
+      break; // Keep what we have so far
+    }
+    const page = await tracksRes.json();
+    if (typeof page.total === "number") totalTracks = page.total;
+    const items: SpotifyPlaylistTrackItem[] = (page.items ?? []).map(normalizeEntry);
+    if (items.length === 0) break;
+    allItems.push(...items);
+    offset += items.length;
+    if (offset >= totalTracks) break;
+  }
+
+  if (totalTracks === 0 && allItems.length === 0) {
     return NextResponse.json(
       {
         error: "empty_playlist",
@@ -162,33 +232,6 @@ export async function POST(req: NextRequest) {
       },
       { status: 400 }
     );
-  }
-
-  // ── Paginate tracks ───────────────────────────────────────────
-  const allItems: SpotifyPlaylistTrackItem[] = [];
-  let offset = 0;
-  const limit = Math.min(totalTracks, MAX_TRACKS);
-
-  while (offset < limit) {
-    const batchSize = Math.min(PAGE_SIZE, limit - offset);
-    const tracksRes = await fetch(
-      `https://api.spotify.com/v1/playlists/${playlistId}/tracks?offset=${offset}&limit=${batchSize}&fields=items(added_at,track(id,name,duration_ms,explicit,popularity,album(name,release_date),artists(id,name)))`,
-      {
-        headers: { Authorization: `Bearer ${ccToken}` },
-        cache: "no-store",
-      }
-    );
-    if (!tracksRes.ok) {
-      console.error(
-        `[import-playlist] tracks page fetch failed at offset=${offset}: ${tracksRes.status}`
-      );
-      break; // Keep what we have so far
-    }
-    const page = await tracksRes.json();
-    const items: SpotifyPlaylistTrackItem[] = page.items ?? [];
-    if (items.length === 0) break;
-    allItems.push(...items);
-    offset += items.length;
   }
 
   // Filter out null/local tracks

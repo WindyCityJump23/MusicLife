@@ -68,11 +68,15 @@ export async function GET(request: NextRequest) {
   }
 
   // ── Fetch tracks for each playlist ─────────────────────────
+  // No `fields=` projection: Spotify's mid-2026 playlist API change returns
+  // empty objects for the old `items(track(...))` paths. Fetch full pages and
+  // normalize — newer responses nest the track under `item` instead of
+  // `track` (where `track` is now a boolean discriminator on the item).
   const playlistsWithTracks = await Promise.all(
     musicLifePlaylists.map(async (pl) => {
       try {
         const tracksRes = await fetch(
-          `https://api.spotify.com/v1/playlists/${pl.id}/items?limit=100&fields=items(track(name,uri,duration_ms,artists(name),album(name,images),external_urls))`,
+          `https://api.spotify.com/v1/playlists/${pl.id}/items?limit=100`,
           { headers }
         );
 
@@ -81,23 +85,32 @@ export async function GET(request: NextRequest) {
         }
 
         const tracksData = await tracksRes.json();
+        const total: number | undefined =
+          typeof tracksData.total === "number" ? tracksData.total : undefined;
         const tracks = (tracksData.items ?? [])
-          .filter((item: { track: unknown }) => item.track)
-          .map((item: { track: SpotifyTrack }) => ({
-            name: item.track.name,
-            artist: item.track.artists
+          .map((entry: { track?: unknown; item?: unknown }) =>
+            entry.track && typeof entry.track === "object"
+              ? (entry.track as SpotifyTrack)
+              : entry.item && typeof entry.item === "object"
+              ? (entry.item as SpotifyTrack)
+              : null
+          )
+          .filter((track: SpotifyTrack | null): track is SpotifyTrack => Boolean(track))
+          .map((track: SpotifyTrack) => ({
+            name: track.name,
+            artist: track.artists
               ?.map((a: { name: string }) => a.name)
               .join(", ") ?? "",
-            album: item.track.album?.name ?? "",
+            album: track.album?.name ?? "",
             album_art:
-              item.track.album?.images?.[item.track.album.images.length > 1 ? 1 : 0]
+              track.album?.images?.[track.album.images.length > 1 ? 1 : 0]
                 ?.url ?? null,
-            duration_ms: item.track.duration_ms ?? 0,
-            spotify_url: item.track.external_urls?.spotify ?? "",
-            uri: item.track.uri,
+            duration_ms: track.duration_ms ?? 0,
+            spotify_url: track.external_urls?.spotify ?? "",
+            uri: track.uri,
           }));
 
-        return { ...formatPlaylist(pl), tracks };
+        return { ...formatPlaylist(pl, total ?? tracks.length), tracks };
       } catch {
         return { ...formatPlaylist(pl), tracks: [] };
       }
@@ -131,13 +144,14 @@ type SpotifyTrack = {
   external_urls: { spotify: string };
 };
 
-function formatPlaylist(pl: SpotifyPlaylist) {
+function formatPlaylist(pl: SpotifyPlaylist, totalOverride?: number) {
   return {
     id: pl.id,
     name: pl.name,
     description: pl.description ?? "",
     spotify_url: pl.external_urls?.spotify ?? "",
     image: pl.images?.[0]?.url ?? null,
-    track_count: pl.tracks?.total ?? 0,
+    // pl.tracks is gone from newer playlist payloads; prefer the items page total.
+    track_count: totalOverride ?? pl.tracks?.total ?? 0,
   };
 }
