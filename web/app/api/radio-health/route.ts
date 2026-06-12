@@ -11,7 +11,11 @@ type StationRun = {
   latency_ms: number | null;
   error_class: string | null;
   created_at: string | null;
-  source_mix: { catalogCount?: number; liveCount?: number } | null;
+  source_mix: {
+    catalogCount?: number;
+    liveCount?: number;
+    laneCounts?: Record<string, number>;
+  } | null;
 };
 
 function average(values: number[]): number | null {
@@ -63,13 +67,31 @@ export async function GET(req: NextRequest) {
   // on it (see docs/PRODUCTION_AUDIT.md, "lane-balance gap").
   let catalogTotal = 0;
   let liveTotal = 0;
+  // Lane health: aggregate per-lane track totals and the share of runs that
+  // produced ZERO radio hits — the lane that silently emptied when Spotify
+  // stopped returning popularity scores.
+  const laneTotals: Record<string, number> = {};
+  let runsWithLaneCounts = 0;
+  let runsWithZeroRadioHits = 0;
   for (const run of runs) {
     const mix = run.source_mix ?? {};
     catalogTotal += Number(mix.catalogCount ?? 0) || 0;
     liveTotal += Number(mix.liveCount ?? 0) || 0;
+    const laneCounts = mix.laneCounts;
+    if (laneCounts && typeof laneCounts === "object") {
+      runsWithLaneCounts += 1;
+      for (const [lane, count] of Object.entries(laneCounts)) {
+        laneTotals[lane] = (laneTotals[lane] ?? 0) + (Number(count) || 0);
+      }
+      if (!Number(laneCounts.radio_hits)) {
+        runsWithZeroRadioHits += 1;
+      }
+    }
   }
   const mixTotal = catalogTotal + liveTotal;
   const liveSourceRatio = mixTotal > 0 ? liveTotal / mixTotal : null;
+  const zeroRadioHitsRate =
+    runsWithLaneCounts > 0 ? runsWithZeroRadioHits / runsWithLaneCounts : null;
 
   return NextResponse.json({
     window: "24h",
@@ -86,6 +108,11 @@ export async function GET(req: NextRequest) {
     live_source_ratio: liveSourceRatio,
     catalog_track_total: catalogTotal,
     live_track_total: liveTotal,
+    // Lane distribution across recent runs + share of runs with zero radio
+    // hits. Alert when zero_radio_hits_rate stays near 1.0 — it means the
+    // recognizability signal has gone dark again.
+    lane_totals: laneTotals,
+    zero_radio_hits_rate: zeroRadioHitsRate,
     recent_error_classes: runs
       .map((run) => run.error_class)
       .filter((errorClass): errorClass is string => Boolean(errorClass))

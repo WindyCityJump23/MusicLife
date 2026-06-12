@@ -209,9 +209,17 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
             or "live spotify" in " ".join(row.get("reasons") or []).lower()
             or "outside catalog" in " ".join(row.get("reasons") or []).lower()
         )
+        # Lane distribution per station, persisted with the run telemetry so
+        # radio-health can detect a silently empty lane (the radio_hits lane
+        # sat at zero for weeks before anything surfaced it).
+        lane_counts: dict[str, int] = {}
+        for row in results:
+            lane = str(row.get("lane") or "unknown")
+            lane_counts[lane] = lane_counts.get(lane, 0) + 1
         return {
             "catalogCount": max(0, len(results) - live_count),
             "liveCount": live_count,
+            "laneCounts": lane_counts,
         }
 
     def _numeric_artist_ids(results: list[dict]) -> list[int]:

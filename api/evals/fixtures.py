@@ -179,6 +179,8 @@ class MockRpcCall:
                     "genres": list(a.get("genres") or []),
                     "spotify_artist_id": a.get("spotify_artist_id"),
                     "similarity": sim,
+                    # Mirrors migration 028's extended RPC return table.
+                    "lastfm_listeners": a.get("lastfm_listeners"),
                 }
             )
 
@@ -296,6 +298,7 @@ def _make_artist(
     vec_seed: int,
     popularity: int = 70,
     embedding: list[float] | None = None,
+    lastfm_listeners: int | None = None,
 ) -> dict:
     return {
         "id": artist_id,
@@ -304,6 +307,7 @@ def _make_artist(
         "embedding": embedding if embedding is not None else _rand_vec(8, seed=vec_seed),
         "popularity": popularity,
         "spotify_artist_id": f"sp_{artist_id}",
+        "lastfm_listeners": lastfm_listeners,
     }
 
 

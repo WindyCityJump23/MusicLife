@@ -372,6 +372,94 @@ def _run_genre_backfill(job_id: str):
         print(f"genre_backfill: FAILED: {exc}")
 
 
+class StatsBackfillRequest(BaseModel):
+    limit: int | None = None
+
+
+@router.post("/backfill-lastfm-stats")
+def backfill_lastfm_stats(
+    bg: BackgroundTasks,
+    req: StatsBackfillRequest = Body(default_factory=StatsBackfillRequest),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Fetch Last.fm listener/playcount stats for artists missing them.
+
+    Recognizability proxy after Spotify removed popularity scores
+    (see migration 028). Resumable: only NULL rows are selected.
+    """
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+    job_id = str(uuid.uuid4())
+    create_job(job_id, "backfill-lastfm-stats")
+    bg.add_task(_run_lastfm_stats_backfill, job_id, req.limit)
+    return {"status": "queued", "job_id": job_id}
+
+
+def _run_lastfm_stats_backfill(job_id: str, limit: int | None = None):
+    from app.services.lastfm_stats_backfill import run_lastfm_stats_backfill
+
+    update_job(job_id, JobStatus.RUNNING, "Fetching listener stats from Last.fm...")
+    try:
+        summary = run_lastfm_stats_backfill(
+            limit=limit,
+            progress=lambda msg: update_job(job_id, JobStatus.RUNNING, msg[:500]),
+        )
+        msg = (
+            f"Listener stats: {summary.get('updated', 0)}/{summary.get('total', 0)} updated"
+        )
+        if summary.get("not_found"):
+            msg += f", {summary['not_found']} not on Last.fm"
+        if summary.get("errors"):
+            msg += f" ({summary['errors']} errors)"
+        update_job(job_id, JobStatus.SUCCESS, msg[:500])
+        print(f"lastfm_stats_backfill: completed \u2014 {msg}")
+    except Exception as exc:
+        update_job(job_id, JobStatus.FAILED, str(exc)[:500])
+        print(f"lastfm_stats_backfill: FAILED: {exc}")
+
+
+@router.post("/backfill-release-dates")
+def backfill_release_dates(
+    bg: BackgroundTasks,
+    req: StatsBackfillRequest = Body(default_factory=StatsBackfillRequest),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Fill missing track release dates from the Deezer public API.
+
+    Strict-match only; ambiguous candidates are skipped. Resumable: only
+    NULL release_date rows are selected.
+    """
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+    job_id = str(uuid.uuid4())
+    create_job(job_id, "backfill-release-dates")
+    bg.add_task(_run_deezer_release_backfill, job_id, req.limit)
+    return {"status": "queued", "job_id": job_id}
+
+
+def _run_deezer_release_backfill(job_id: str, limit: int | None = None):
+    from app.services.deezer_release_backfill import run_deezer_release_backfill
+
+    update_job(job_id, JobStatus.RUNNING, "Backfilling release dates from Deezer...")
+    try:
+        summary = run_deezer_release_backfill(
+            limit=limit,
+            progress=lambda msg: update_job(job_id, JobStatus.RUNNING, msg[:500]),
+        )
+        msg = (
+            f"Release dates: {summary.get('updated', 0)}/{summary.get('total', 0)} filled"
+        )
+        if summary.get("skipped_ambiguous"):
+            msg += f", {summary['skipped_ambiguous']} ambiguous skipped"
+        if summary.get("errors"):
+            msg += f" ({summary['errors']} errors)"
+        update_job(job_id, JobStatus.SUCCESS, msg[:500])
+        print(f"deezer_release_backfill: completed \u2014 {msg}")
+    except Exception as exc:
+        update_job(job_id, JobStatus.FAILED, str(exc)[:500])
+        print(f"deezer_release_backfill: FAILED: {exc}")
+
+
 @router.post("/expand-catalog")
 def expand_catalog(
     bg: BackgroundTasks,

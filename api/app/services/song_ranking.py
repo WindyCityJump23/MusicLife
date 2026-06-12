@@ -58,6 +58,7 @@ from app.services.song_scoring import (
     FAVORITES_REASON_THRESHOLD,
     _AUDIO_DIM_WEIGHT_TOTAL,
     _AUDIO_DIMENSION_WEIGHTS,
+    _artist_recognizability,
     _assign_lane,
     _candidate_key,
     _clean_strategy,
@@ -270,6 +271,26 @@ def recommend_songs(
             f"{len(all_artists)} candidate artists"
         )
     _record_stage("artist_match_rpc_ms", artist_match_started)
+
+    # ── Recognizability (popularity replacement) ──────────────────
+    # Spotify stopped returning popularity scores; Last.fm listener counts
+    # (via migration 028 + the lastfm-stats backfill) become a pool-relative
+    # percentile. Tracks with an explicit popularity value keep using it;
+    # everything else inherits the artist's recognizability percentile.
+    artist_recognizability = _artist_recognizability(all_artists)
+    if artist_recognizability:
+        print(
+            f"song_ranking: recognizability percentiles for "
+            f"{len(artist_recognizability)}/{len(all_artists)} pool artists"
+        )
+
+    def _effective_track_pop(track: dict, artist_id: int | None) -> float:
+        raw = track.get("popularity")
+        if raw is not None:
+            return float(raw) / 100.0
+        if artist_id is not None:
+            return artist_recognizability.get(artist_id, 0.5)
+        return 0.5
 
     # ── Fetch user's track data for familiarity detection ─────
     # Paginate to handle users with very large libraries (>9999 tracks).
@@ -993,7 +1014,11 @@ def recommend_songs(
         Per-track similarity comes from the SQL RPC; no embedding crosses
         the wire.
         """
-        pop = float(t.get("popularity") or 0) / 100.0
+        try:
+            _shortlist_aid = int(t["artist_id"]) if t.get("artist_id") is not None else None
+        except (TypeError, ValueError):
+            _shortlist_aid = None
+        pop = _effective_track_pop(t, _shortlist_aid)
         if should_exclude_utility_track(
             t,
             allow_instrumental_utility=allow_instrumental_utility_tracks,
@@ -1057,7 +1082,7 @@ def recommend_songs(
                 seen_songs.add(spotify_tid)
 
             track_id = track.get("id")
-            track_pop = float(track.get("popularity") or 50) / 100.0
+            track_pop = _effective_track_pop(track, aid)
 
             # ── Per-track context score ──────────────────────────
             # Prefer cosine(prompt, track.embedding) when the track has an
@@ -1471,7 +1496,7 @@ def recommend_songs(
                     if name_key in existing_name_keys:
                         continue
                     existing_name_keys.add(name_key)
-                    track_pop = float(track.get("popularity") or 50) / 100.0
+                    track_pop = _effective_track_pop(track, aid)
                     song_results.append({
                         "track_id": str(track["id"]) if track.get("id") else None,
                         "track_name": tname,

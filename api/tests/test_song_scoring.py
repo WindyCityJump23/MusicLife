@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from app.services.song_scoring import (
     DEFAULT_DISCOVERY_MIX,
     DISCOVERY_LANES,
+    _artist_recognizability,
     _assign_lane,
     _candidate_key,
     _clean_strategy,
@@ -178,3 +179,46 @@ class TestCandidateKey:
 
     def test_handles_missing_fields(self):
         assert _candidate_key({}) == "|"
+
+
+class TestArtistRecognizability:
+    @staticmethod
+    def _pool(listener_counts):
+        return [
+            {"id": i + 1, "lastfm_listeners": count}
+            for i, count in enumerate(listener_counts)
+        ]
+
+    def test_empty_input(self):
+        assert _artist_recognizability([]) == {}
+
+    def test_below_min_pool_returns_empty(self):
+        # 9 artists with listeners < min_pool of 10 -> neutral fallback.
+        pool = self._pool([1000 * (i + 1) for i in range(9)])
+        assert _artist_recognizability(pool) == {}
+
+    def test_null_and_zero_listeners_excluded(self):
+        pool = self._pool([10_000] * 10) + [
+            {"id": 100, "lastfm_listeners": None},
+            {"id": 101, "lastfm_listeners": 0},
+        ]
+        result = _artist_recognizability(pool)
+        assert 100 not in result
+        assert 101 not in result
+
+    def test_monotonic_in_listeners(self):
+        pool = self._pool([1_000 * (3 ** i) for i in range(12)])
+        result = _artist_recognizability(pool)
+        assert len(result) == 12
+        ordered = [result[i + 1] for i in range(12)]
+        assert ordered == sorted(ordered)
+        assert ordered[-1] == 1.0
+        assert all(0.0 <= v <= 1.0 for v in ordered)
+
+    def test_top_percentiles_reach_radio_hits_threshold(self):
+        # The whole point: with a listener-diverse pool, the top of the pool
+        # must clear the 0.78 radio_hits bar in _lane_for_track.
+        pool = self._pool([1_000 * (2 ** i) for i in range(20)])
+        result = _artist_recognizability(pool)
+        assert max(result.values()) >= 0.78
+        assert min(result.values()) < 0.46  # and the bottom reaches deep_cuts

@@ -1890,6 +1890,114 @@ def eval_audio_match_meaningful() -> EvalResult:
 # ── Suite runner ─────────────────────────────────────────────────
 
 
+def eval_null_popularity_lanes_never_empty() -> EvalResult:
+    """With Spotify popularity NULL (production reality since mid-2026), the
+    Last.fm recognizability percentile must repopulate the lanes: a station
+    over a listener-diverse pool should contain radio_hits AND deep_cuts, and
+    track_popularity signals should vary instead of pinning at the 0.5 default.
+    """
+    artists = []
+    tracks = []
+    for i in range(12):
+        aid = 900 + i
+        # Log-spaced listeners from 1e3 to ~5e6; plain genres (no deep signals).
+        listeners = int(1_000 * (2.04 ** i))
+        artists.append(
+            _make_artist(aid, f"Recog Artist {i}", ["pop", "rock"], vec_seed=900 + i,
+                         popularity=None, lastfm_listeners=listeners)  # type: ignore[arg-type]
+        )
+        tracks.append(_make_track(9000 + i * 2, f"Recog Song {i}a", aid, popularity=None, vec_seed=950 + i))  # type: ignore[arg-type]
+        tracks.append(_make_track(9001 + i * 2, f"Recog Song {i}b", aid, popularity=None, vec_seed=970 + i))  # type: ignore[arg-type]
+
+    scenario = UserScenario(
+        user_id="recognizability_test",
+        library_artist_ids=[],
+        played_track_ids=[],
+        top_artist_ids=[],
+        taste_vector=JAZZ_TASTE_VECTOR,
+    )
+    client = build_mock_client(scenario, artists=artists, tracks=tracks, mentions=[])
+    results = recommend_songs(
+        client=client,
+        user_id=scenario.user_id,
+        taste_vector=JAZZ_TASTE_VECTOR,
+        prompt_vector=None,
+        weights=_weights(),
+        exclude_library=False,
+        limit=12,
+    )
+
+    lanes = {r.get("lane") for r in results}
+    pops = {round(float(r["signals"].get("track_popularity") or 0.0), 3) for r in results}
+    has_radio_hits = "radio_hits" in lanes
+    has_deep_cuts = "deep_cuts" in lanes
+    varied = len(pops) > 1
+    passed = bool(results) and has_radio_hits and has_deep_cuts and varied
+    return EvalResult(
+        name="null_popularity_lanes_never_empty",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=(
+            f"{len(results)} results; lanes={sorted(str(l) for l in lanes)}; "
+            f"distinct track_popularity values={len(pops)}"
+        ),
+    )
+
+
+def eval_explicit_popularity_beats_recognizability() -> EvalResult:
+    """Back-compat lock: when a track carries an explicit popularity value it
+    must win over the artist's recognizability percentile (eval fixtures and
+    any future popularity data keep behaving exactly as before).
+    """
+    artists = [
+        _make_artist(940 + i, f"Equal Artist {i}", ["pop"], vec_seed=940 + i,
+                     popularity=None, lastfm_listeners=5_000_000)  # type: ignore[arg-type]
+        for i in range(10)
+    ]
+    tracks = []
+    for i in range(10):
+        explicit_pop = 20 if i % 2 == 0 else 90
+        tracks.append(
+            _make_track(9400 + i, f"Probe Song {i}", 940 + i, popularity=explicit_pop, vec_seed=990 + i)
+        )
+
+    scenario = UserScenario(
+        user_id="explicit_pop_test",
+        library_artist_ids=[],
+        played_track_ids=[],
+        top_artist_ids=[],
+        taste_vector=JAZZ_TASTE_VECTOR,
+    )
+    client = build_mock_client(scenario, artists=artists, tracks=tracks, mentions=[])
+    results = recommend_songs(
+        client=client,
+        user_id=scenario.user_id,
+        taste_vector=JAZZ_TASTE_VECTOR,
+        prompt_vector=None,
+        weights=_weights(),
+        exclude_library=False,
+        limit=10,
+    )
+
+    expected = {f"Probe Song {i}": (0.2 if i % 2 == 0 else 0.9) for i in range(10)}
+    mismatches = [
+        (r["track_name"], r["signals"].get("track_popularity"))
+        for r in results
+        if abs(float(r["signals"].get("track_popularity") or 0.0) - expected.get(r["track_name"], -1)) > 1e-6
+    ]
+    passed = bool(results) and not mismatches
+    return EvalResult(
+        name="explicit_popularity_beats_recognizability",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        details=(
+            f"{len(results)} results; explicit popularity preserved"
+            if passed
+            else f"mismatches={mismatches[:5]}"
+        ),
+    )
+
+
 def run_suite() -> list[EvalResult]:
     return [
         eval_heard_song_penalized(),
@@ -1939,4 +2047,6 @@ def run_suite() -> list[EvalResult]:
         eval_single_instrumental_save_does_not_flip_radio(),
         eval_spoken_word_penalized(),
         eval_audio_match_meaningful(),
+        eval_null_popularity_lanes_never_empty(),
+        eval_explicit_popularity_beats_recognizability(),
     ]

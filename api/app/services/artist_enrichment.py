@@ -107,6 +107,10 @@ def _enrich_one(client: httpx.Client, artist: dict) -> None:
         if lastfm:
             if lastfm.get("url"):
                 update["lastfm_url"] = lastfm["url"]
+            if lastfm.get("listeners") is not None:
+                update["lastfm_listeners"] = lastfm["listeners"]
+            if lastfm.get("playcount") is not None:
+                update["lastfm_playcount"] = lastfm["playcount"]
             # Store Last.fm tags as genres (critical for diversity re-ranking)
             tags = lastfm.get("tags", [])
             if tags:
@@ -162,6 +166,7 @@ def _fetch_lastfm(client: httpx.Client, name: str) -> dict | None:
             "artist": name,
             "api_key": settings.lastfm_api_key,
             "format": "json",
+            "autocorrect": 1,
         },
     )
     resp.raise_for_status()
@@ -174,8 +179,27 @@ def _fetch_lastfm(client: httpx.Client, name: str) -> dict | None:
     tags = [t["name"] for t in (artist.get("tags", {}).get("tag") or [])]
     similar = [s["name"] for s in (artist.get("similar", {}).get("artist") or [])]
     url = artist.get("url", "")
+    # Recognizability proxy (Spotify stopped returning popularity scores).
+    # The stats ride along in the same getInfo response — no extra API call.
+    stats = artist.get("stats", {}) or {}
+    listeners = _int_or_none(stats.get("listeners"))
+    playcount = _int_or_none(stats.get("playcount"))
 
-    return {"bio": bio, "tags": tags, "similar": similar, "url": url}
+    return {
+        "bio": bio,
+        "tags": tags,
+        "similar": similar,
+        "url": url,
+        "listeners": listeners,
+        "playcount": playcount,
+    }
+
+
+def _int_or_none(value: object) -> int | None:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------

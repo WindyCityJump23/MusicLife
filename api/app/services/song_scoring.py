@@ -9,6 +9,7 @@ functions are deterministic given their arguments.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 
 DISCOVERY_LANES = ("deep_cuts", "popular", "radio_hits")
@@ -375,6 +376,41 @@ _FAVORITES_SIM_FLOOR = 0.45
 _FAVORITES_BOOST_MAX = 0.25
 # Threshold for surfacing "close to your favorites" as a user-facing reason.
 FAVORITES_REASON_THRESHOLD = 0.62
+
+
+def _artist_recognizability(artists: list[dict], min_pool: int = 10) -> dict[int, float]:
+    """Pool-relative recognizability percentile per artist id.
+
+    Spotify stopped returning popularity scores (mid-2026), so recognizability
+    comes from Last.fm listener counts: percentile rank of log1p(listeners)
+    across the candidate pool. Percentiles (rather than absolute thresholds)
+    guarantee the radio_hits lane can never silently empty again — the top of
+    any pool always exists.
+
+    Returns {} when fewer than ``min_pool`` artists carry positive listener
+    counts (eval fixtures, fresh databases, pre-backfill) so callers fall back
+    to the neutral 0.5 default — identical to the old behavior.
+    """
+    from app.services.ranking import _percentile_rank
+
+    ids: list[int] = []
+    log_listeners: list[float] = []
+    for artist in artists:
+        raw = artist.get("lastfm_listeners")
+        try:
+            listeners = int(raw) if raw is not None else 0
+        except (TypeError, ValueError):
+            listeners = 0
+        if listeners <= 0 or artist.get("id") is None:
+            continue
+        ids.append(int(artist["id"]))
+        log_listeners.append(math.log1p(listeners))
+
+    if len(ids) < min_pool:
+        return {}
+
+    percentiles = _percentile_rank(log_listeners)
+    return dict(zip(ids, percentiles))
 
 
 def _favorites_boost(similarity: float | None) -> float:
