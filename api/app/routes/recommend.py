@@ -373,6 +373,37 @@ def recommend_songs(req: RecommendSongsRequest, credentials: HTTPAuthorizationCr
     )
 
 
+class PersonalPresetsRequest(BaseModel):
+    user_id: str
+
+
+@router.post("/personal-presets")
+def personal_presets(
+    req: PersonalPresetsRequest,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Mood presets derived from the user's own taste clusters.
+
+    Each of the listener's distinct taste modes (multi-centroid model)
+    becomes a one-tap themed station: top cluster genres steer the prompt,
+    Claude names the preset when configured, deterministic labels otherwise.
+    """
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+    _enforce_rate_limit(req.user_id)
+    user_client = get_user_scoped_supabase(token)
+    from app.services.taste_presets import build_personal_presets
+
+    try:
+        presets = build_personal_presets(user_client, req.user_id)
+    except Exception as exc:
+        # Presets are sugar on top of the station flow — never let them 500
+        # the dashboard; an empty list simply hides the personal chips.
+        print(f"personal_presets: failed (non-fatal): {exc}")
+        presets = []
+    return {"presets": presets}
+
+
 @router.post("/songs/live-intents")
 def live_candidate_intents(
     req: LiveCandidateIntentsRequest,

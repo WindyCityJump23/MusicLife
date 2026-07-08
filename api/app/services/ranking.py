@@ -458,13 +458,13 @@ def _get_previously_recommended_artist_ids(client: Client, user_id: str) -> set[
         return set()
 
 
-def _weighted_library_embeddings(
+def weighted_library_embedding_rows(
     client: Client, user_id: str
-) -> tuple[list[list[float]], list[float]]:
-    """Fetch (embedding, weight) pairs for the user's weighted library artists."""
+) -> list[tuple[int, list[float], float]]:
+    """Fetch (artist_id, embedding, weight) rows for the user's library."""
     artist_weights = _get_user_artist_weights(client, user_id)
     if not artist_weights:
-        return [], []
+        return []
 
     artist_ids = list(artist_weights.keys())
     artists_resp = (
@@ -473,8 +473,7 @@ def _weighted_library_embeddings(
         .in_("id", artist_ids)
         .execute()
     )
-    vectors: list[list[float]] = []
-    weights: list[float] = []
+    rows: list[tuple[int, list[float], float]] = []
     for artist in artists_resp.data or []:
         artist_id = artist.get("id")
         if artist_id is None:
@@ -485,9 +484,16 @@ def _weighted_library_embeddings(
         weight = artist_weights.get(int(artist_id), 0.0)
         if weight <= 0:
             continue
-        vectors.append(vector)
-        weights.append(weight)
-    return vectors, weights
+        rows.append((int(artist_id), vector, weight))
+    return rows
+
+
+def _weighted_library_embeddings(
+    client: Client, user_id: str
+) -> tuple[list[list[float]], list[float]]:
+    """Fetch (embedding, weight) pairs for the user's weighted library artists."""
+    rows = weighted_library_embedding_rows(client, user_id)
+    return [vec for _, vec, _ in rows], [w for _, _, w in rows]
 
 
 def build_taste_vector(client: Client, user_id: str) -> list[float]:

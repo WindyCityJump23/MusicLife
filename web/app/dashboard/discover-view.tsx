@@ -16,6 +16,12 @@ import {
   laneForSong,
   targetLaneCounts,
 } from "@/lib/station/lanes";
+import {
+  MAX_PRESET_CHIPS,
+  THEME_WEIGHTS,
+  presetsForToday,
+  type MoodPreset,
+} from "@/lib/station/presets";
 import type {
   DiscoveryLane,
   DiscoveryLaneId,
@@ -1131,6 +1137,54 @@ export default function DiscoverView({
   const [laneFilter, setLaneFilter] = useState<LaneFilterId>("all");
   const [genreFilter, setGenreFilter] = useState<string>("");
   const [showQueueFilters, setShowQueueFilters] = useState(false);
+  // ── Mood presets ─────────────────────────────────────────────
+  // Curated day-aware chips + personal chips derived from the user's taste
+  // clusters. Tapping one generates an in-app themed station; Spotify
+  // playlist creation stays behind the explicit Save button (pre-named
+  // after the preset).
+  const [personalPresets, setPersonalPresets] = useState<MoodPreset[]>([]);
+  const [activeMoodLabel, setActiveMoodLabel] = useState<string | null>(null);
+  const [pendingPresetSubmit, setPendingPresetSubmit] = useState(false);
+
+  useEffect(() => {
+    if (isGuest) return;
+    const CACHE_KEY = "musiclife.personalPresets.v1";
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    try {
+      const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+      if (cached && Date.now() - cached.ts < DAY_MS && Array.isArray(cached.presets)) {
+        setPersonalPresets(cached.presets);
+        return;
+      }
+    } catch {}
+    fetch("/api/personal-presets", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        const presets = Array.isArray(data.presets) ? data.presets : [];
+        setPersonalPresets(presets);
+        try {
+          localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), presets }));
+        } catch {}
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isGuest]);
+
+  function applyPreset(preset: MoodPreset) {
+    setPrompt(preset.prompt);
+    setWeights(preset.weights ?? THEME_WEIGHTS);
+    setActiveMoodLabel(preset.label);
+    // State commits before the effect below fires, so handleSubmit reads
+    // the fresh prompt/weights instead of stale closures.
+    setPendingPresetSubmit(true);
+  }
+
+  useEffect(() => {
+    if (!pendingPresetSubmit) return;
+    setPendingPresetSubmit(false);
+    void handleSubmit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingPresetSubmit]);
   // Heart nudge dismissal lives in localStorage; read after mount so the
   // server-rendered HTML stays deterministic.
   const [heartNudgeDismissed, setHeartNudgeDismissed] = useState(true);
@@ -1792,10 +1846,16 @@ export default function DiscoverView({
         day: "numeric",
         year: "numeric",
       });
-      const name = prompt
+      // Preset-driven stations save under the preset's name ("MusicLife:
+      // Sunday Slowdown \u2014 Jun 15") rather than the raw steering prompt.
+      const name = activeMoodLabel
+        ? `MusicLife: ${activeMoodLabel} \u2014 ${dateStr}`
+        : prompt
         ? `MusicLife: ${prompt.slice(0, 40)}${prompt.length > 40 ? "\u2026" : ""}`
         : `MusicLife Discover \u2014 ${dateStr}`;
-      const description = prompt
+      const description = activeMoodLabel
+        ? `${activeMoodLabel} \u2014 a themed station personalized by MusicLife on ${dateStr}`
+        : prompt
         ? `"${prompt}" \u2014 Personalized by MusicLife on ${dateStr}`
         : `Personalized discovery playlist by MusicLife \u2014 ${dateStr}`;
 
@@ -1979,12 +2039,50 @@ export default function DiscoverView({
             </button>
           )}
 
+          {/* ── Mood presets: one-tap themed stations ─────────────── */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] text-neutral-400 mr-0.5">Start from a mood:</span>
+            {[...personalPresets, ...presetsForToday()]
+              .slice(0, MAX_PRESET_CHIPS)
+              .map((preset) => {
+                const active = activeMoodLabel === preset.label;
+                return (
+                  <button
+                    key={preset.id}
+                    onClick={() => applyPreset(preset)}
+                    disabled={loading}
+                    title={
+                      preset.personal
+                        ? "Built from your own listening — tap for a themed station"
+                        : "Tap for a themed station tuned to your taste"
+                    }
+                    className={[
+                      "rounded-full border px-3 py-1.5 text-[12px] font-medium transition-colors disabled:opacity-50",
+                      active
+                        ? "border-emerald-600 bg-emerald-600 text-white"
+                        : preset.personal
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                        : "border-neutral-200 bg-white text-neutral-600 hover:border-emerald-300 hover:text-emerald-700",
+                    ].join(" ")}
+                  >
+                    {preset.personal ? "✨ " : preset.emoji ? `${preset.emoji} ` : ""}
+                    {preset.label}
+                  </button>
+                );
+              })}
+          </div>
+
           {/* ── Search + retune (secondary) ───────────────────────── */}
           <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto]">
             <input
               type="text"
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              onChange={(e) => {
+                setPrompt(e.target.value);
+                // Manual edits break the preset association so the saved
+                // playlist name follows what the user actually asked for.
+                if (activeMoodLabel) setActiveMoodLabel(null);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") void handleSubmit();
               }}
