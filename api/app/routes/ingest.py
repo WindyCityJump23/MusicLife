@@ -45,6 +45,7 @@ def ingest_spotify_library(
 
 
 def _run_spotify_ingest(job_id: str, user_id: str, token: str):
+    from app.services.error_copy import friendly_error_message
     from app.services.spotify_ingest import run_spotify_library_ingest
 
     update_job(job_id, JobStatus.RUNNING, "Fetching Spotify library...")
@@ -53,7 +54,7 @@ def _run_spotify_ingest(job_id: str, user_id: str, token: str):
         update_job(job_id, JobStatus.SUCCESS, "Library synced successfully")
         print(f"spotify_ingest: completed for user {user_id}")
     except Exception as exc:
-        update_job(job_id, JobStatus.FAILED, str(exc)[:500])
+        update_job(job_id, JobStatus.FAILED, friendly_error_message(exc)[:500])
         print(f"spotify_ingest: FAILED for user {user_id}: {exc}")
 
 
@@ -963,7 +964,12 @@ def _run_setup_all(
 
         print(f"setup_all: completed for user {user_id}")
     except Exception as exc:
-        msg = f"{current_stage} failed: {exc}"[:500]
+        from app.services.error_copy import friendly_error_message
+
+        # Raw OS/network errors ("[Errno -2] Name or service not known") are
+        # meaningless to listeners; translate transient infrastructure
+        # failures into retry-in-a-minute copy. Full detail still goes to logs.
+        msg = f"{current_stage} failed: {friendly_error_message(exc)}"[:500]
         update_job(job_id, JobStatus.FAILED, msg)
         print(f"setup_all: FAILED for user {user_id} at stage {current_stage!r}: {exc}")
 

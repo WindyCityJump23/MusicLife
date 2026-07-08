@@ -77,25 +77,43 @@ def create_admin_client() -> Client:
 
 
 def retry_on_disconnect(fn: Callable[[], T], *, attempts: int = 2) -> T:
-    """Run fn(), retrying once if the shared admin client's TCP connection
-    has gone stale (httpx.RemoteProtocolError). Other exceptions propagate
-    immediately so genuine errors aren't swallowed.
+    """Run fn(), retrying transient connection failures with a short backoff.
 
-    Used on the hot recommendation path so a single dropped keep-alive
-    doesn't surface as a 25-second Vercel 504 to the user.
+    Covers the stale keep-alive case (httpx.RemoteProtocolError — Supabase
+    silently closed the pooled TCP connection) AND outright connect/DNS
+    failures (httpx.ConnectError / timeouts). The latter is what a paused
+    Supabase free-tier project produces: its hostname drops off DNS entirely
+    and every call dies with "[Errno -2] Name or service not known" — a June
+    2026 pause killed library sync with exactly that error. A short bounded
+    retry rides out DNS blips and instance wake-ups; a genuinely paused
+    project still fails after the last attempt (callers surface a friendly
+    message via app.services.error_copy).
+
+    Other exceptions propagate immediately so genuine errors aren't swallowed.
     """
     import httpx
+
+    transient = (
+        httpx.RemoteProtocolError,
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.ReadTimeout,
+        httpx.ReadError,
+    )
 
     last_exc: Exception | None = None
     for attempt in range(attempts):
         try:
             return fn()
-        except httpx.RemoteProtocolError as exc:
+        except transient as exc:
             last_exc = exc
             if isinstance(admin_supabase, _LazyAdminClient):
                 admin_supabase.invalidate()
             if attempt + 1 >= attempts:
                 raise
+            # Backoff before the next try: enough for a DNS blip or a
+            # connection-pool refresh, short enough for request-scoped paths.
+            time.sleep(min(0.8 * (attempt + 1), 2.0))
         except Exception:
             raise
     # Unreachable, but keeps type checkers honest.

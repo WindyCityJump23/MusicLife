@@ -22,7 +22,7 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping API health
+      - name: Ping API health and readiness
         env:
           API_URL: ${{ vars.API_URL || 'https://musiclife-api.onrender.com' }}
         run: |
@@ -32,4 +32,14 @@ jobs:
           # warmer, not a monitor.
           if [ "$code" = "000" ]; then
             echo "::warning::health ping timed out (likely a cold start); next tick will retry"
+          fi
+
+          # /ready runs a real Supabase query, which doubles as database
+          # keep-alive: Supabase free-tier projects auto-pause without
+          # activity, and a paused project drops off DNS entirely (June 2026:
+          # this broke library sync with 'Name or service not known').
+          ready=$(curl -s --max-time 60 "$API_URL/ready" || echo '{}')
+          echo "GET $API_URL/ready -> $ready"
+          if echo "$ready" | grep -q '"db":false'; then
+            echo "::warning::API is up but Supabase is unreachable (db:false) — the project may be paused; restore it in the Supabase dashboard"
           fi

@@ -16,6 +16,7 @@ that must bypass RLS to write catalog rows (artists, tracks) on behalf of the us
 
 from __future__ import annotations
 
+import time
 from collections import defaultdict
 
 import httpx
@@ -340,11 +341,60 @@ def _spotify_raise(resp: httpx.Response, context: str) -> None:
     resp.raise_for_status()
 
 
+# Bounded retry for the Spotify fetches: a single DNS blip, dropped
+# connection, 429, or 5xx should not abort the entire library sync (which is
+# step 1 of setup — its failure previously told the user to start over).
+_FETCH_ATTEMPTS = 3
+_MAX_RETRY_AFTER_SECONDS = 30
+
+
+def _get_with_retry(
+    client: httpx.Client,
+    url: str,
+    *,
+    headers: dict[str, str],
+    params: dict | None = None,
+) -> httpx.Response:
+    transient = (
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.ReadTimeout,
+        httpx.ReadError,
+        httpx.RemoteProtocolError,
+    )
+    last_exc: Exception | None = None
+    for attempt in range(_FETCH_ATTEMPTS):
+        try:
+            resp = client.get(url, headers=headers, params=params)
+        except transient as exc:
+            last_exc = exc
+            if attempt + 1 >= _FETCH_ATTEMPTS:
+                raise
+            time.sleep(min(1.0 * (attempt + 1), 3.0))
+            continue
+
+        if resp.status_code == 429 and attempt + 1 < _FETCH_ATTEMPTS:
+            retry_after = min(
+                int(resp.headers.get("Retry-After") or 5), _MAX_RETRY_AFTER_SECONDS
+            )
+            print(f"spotify_ingest: 429 on {url.rsplit('/', 1)[-1]}, waiting {retry_after}s")
+            time.sleep(retry_after)
+            continue
+        if resp.status_code >= 500 and attempt + 1 < _FETCH_ATTEMPTS:
+            time.sleep(min(1.0 * (attempt + 1), 3.0))
+            continue
+        return resp
+    if last_exc:
+        raise last_exc
+    return resp
+
+
 def _fetch_saved_tracks(client: httpx.Client, headers: dict[str, str]) -> list[dict]:
     items: list[dict] = []
     offset = 0
     while True:
-        resp = client.get(
+        resp = _get_with_retry(
+            client,
             "https://api.spotify.com/v1/me/tracks",
             headers=headers,
             params={"limit": 50, "offset": offset},
@@ -361,7 +411,8 @@ def _fetch_saved_tracks(client: httpx.Client, headers: dict[str, str]) -> list[d
 def _fetch_top_artists(
     client: httpx.Client, headers: dict[str, str], term: str
 ) -> list[dict]:
-    resp = client.get(
+    resp = _get_with_retry(
+        client,
         "https://api.spotify.com/v1/me/top/artists",
         headers=headers,
         params={"time_range": term, "limit": 50},
@@ -373,7 +424,8 @@ def _fetch_top_artists(
 def _fetch_recently_played(
     client: httpx.Client, headers: dict[str, str]
 ) -> list[dict]:
-    resp = client.get(
+    resp = _get_with_retry(
+        client,
         "https://api.spotify.com/v1/me/player/recently-played",
         headers=headers,
         params={"limit": 50},
