@@ -128,6 +128,24 @@ def run_source_ingest(
         skip_reddit = False
 
         for i, source in enumerate(sources):
+            # Deezer chart sources have their own fetch/shape — the generic
+            # feed parser below would choke on the JSON endpoint.
+            if source.get("kind") == "deezer_chart":
+                try:
+                    if progress:
+                        progress(f"Fetching {source['name']} ({i + 1}/{total})")
+                    from app.services.deezer_charts import ingest_deezer_chart
+
+                    chart_mentions, chart_new_artists, chart_artist_ids = ingest_deezer_chart(
+                        client, source, artist_index
+                    )
+                    candidates.extend(chart_mentions)
+                    source_artists_added += chart_new_artists
+                    source_artist_ids.update(chart_artist_ids)
+                except Exception as exc:
+                    print(f"source_ingest: Deezer chart ingest failed (non-fatal): {exc}")
+                continue
+
             is_reddit = source.get("kind") == "reddit"
             if is_reddit and skip_reddit:
                 print(f"source_ingest: {source['name']!r} — skipped (Reddit IP ban active this run)")

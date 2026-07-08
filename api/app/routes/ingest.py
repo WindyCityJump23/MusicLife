@@ -320,6 +320,22 @@ def _run_source_ingest(
             followup_notes.append(f"catalog expansion skipped: {exc}")
             print(f"source_ingest: catalog expansion failed (non-fatal): {exc}")
 
+        # Bounded track-tag convergence: fold Last.fm track tags into
+        # embeddings a few hundred tracks per refresh, newest-missing first.
+        # Tagged tracks get re-embedded immediately below.
+        tagged_tracks = 0
+        try:
+            from app.services.track_tags_backfill import run_track_tags_backfill
+
+            progress("Deepening track context with tags...")
+            tags_summary = run_track_tags_backfill(limit=300, progress=progress)
+            tagged_tracks = tags_summary.get("tagged", 0) if isinstance(tags_summary, dict) else 0
+            if tagged_tracks:
+                run_track_embeddings(max_total=max(tagged_tracks, 64), progress=progress)
+        except Exception as exc:
+            followup_notes.append(f"track tags skipped: {exc}")
+            print(f"source_ingest: track tags pass failed (non-fatal): {exc}")
+
         msg = f"Scanned {sources} sources, found {mentions} mentions"
         if tracks:
             msg += f", added {tracks} tracks"
@@ -327,6 +343,8 @@ def _run_source_ingest(
             msg += f", discovered {artists} artists"
         if expanded_artists:
             msg += f", expanded {expanded_artists} similar artists"
+        if tagged_tracks:
+            msg += f", deepened {tagged_tracks} track descriptions"
         if embedded_artists:
             msg += f", modeled {embedded_artists} artists"
         if embedded_tracks:
@@ -417,6 +435,58 @@ def _run_lastfm_stats_backfill(job_id: str, limit: int | None = None):
     except Exception as exc:
         update_job(job_id, JobStatus.FAILED, str(exc)[:500])
         print(f"lastfm_stats_backfill: FAILED: {exc}")
+
+
+@router.post("/backfill-track-tags")
+def backfill_track_tags(
+    bg: BackgroundTasks,
+    req: StatsBackfillRequest = Body(default_factory=StatsBackfillRequest),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Fetch per-track Last.fm tags and re-embed affected tracks.
+
+    Deepens prompt matching with song-level mood/style semantics. Resumable:
+    only rows with lastfm_tags IS NULL are selected.
+    """
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+    job_id = str(uuid.uuid4())
+    create_job(job_id, "backfill-track-tags")
+    bg.add_task(_run_track_tags_backfill, job_id, req.limit)
+    return {"status": "queued", "job_id": job_id}
+
+
+def _run_track_tags_backfill(job_id: str, limit: int | None = None):
+    from app.services.track_embeddings import run_track_embeddings
+    from app.services.track_tags_backfill import run_track_tags_backfill
+
+    update_job(job_id, JobStatus.RUNNING, "Fetching track tags from Last.fm...")
+    try:
+        summary = run_track_tags_backfill(
+            limit=limit,
+            progress=lambda msg: update_job(job_id, JobStatus.RUNNING, msg[:500]),
+        )
+        # Tagged tracks had their embeddings cleared; re-embed them now so
+        # the deeper text takes effect without waiting for another job.
+        tagged = summary.get("tagged", 0)
+        if tagged:
+            update_job(job_id, JobStatus.RUNNING, f"Re-embedding {tagged} tagged tracks...")
+            run_track_embeddings(
+                max_total=max(tagged, 64),
+                progress=lambda msg: update_job(job_id, JobStatus.RUNNING, msg[:500]),
+            )
+        msg = f"Track tags: {tagged}/{summary.get('total', 0)} tagged and re-embedded"
+        if summary.get("untagged"):
+            msg += f", {summary['untagged']} without tags"
+        if summary.get("errors"):
+            msg += f" ({summary['errors']} errors)"
+        update_job(job_id, JobStatus.SUCCESS, msg[:500])
+        print(f"track_tags_backfill: completed — {msg}")
+    except Exception as exc:
+        from app.services.error_copy import friendly_error_message
+
+        update_job(job_id, JobStatus.FAILED, friendly_error_message(exc)[:500])
+        print(f"track_tags_backfill: FAILED: {exc}")
 
 
 @router.post("/backfill-release-dates")

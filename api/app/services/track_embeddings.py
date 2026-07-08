@@ -175,7 +175,7 @@ def backfill_embedding_source(
     while updated < max_rows:
         resp = (
             admin_supabase.table("tracks")
-            .select("id, name, album_name, artist_id")
+            .select("id, name, album_name, artist_id, lastfm_tags")
             .is_("embedding_source", "null")
             .range(offset, offset + page_size - 1)
             .execute()
@@ -201,6 +201,7 @@ def backfill_embedding_source(
                 artist_name=artist_names.get(int(r["artist_id"])) if r.get("artist_id") else None,
                 track_name=r.get("name"),
                 album_name=r.get("album_name"),
+                tags=r.get("lastfm_tags") or None,
             )
             if not source:
                 continue
@@ -224,17 +225,21 @@ def _build_embedding_source(
     artist_name: str | None,
     track_name: str | None,
     album_name: str | None,
+    tags: list[str] | None = None,
 ) -> str:
     """Compose the text we embed for a track.
 
-    Format: ``"{artist} – {title} – {album}"``. The artist name is the
-    biggest single signal for genre/mood without a lyric corpus; the
-    album name often carries era/style context.
+    Format: ``"{artist} – {title} – {album} – {tags}"``. The artist name is
+    the biggest single signal for genre/mood without a lyric corpus; the
+    album name often carries era/style context; Last.fm track tags (when the
+    tags backfill has run) add song-level mood/style semantics so prompt
+    matching doesn't lean entirely on artist context.
     """
     parts = [
         (artist_name or "").strip(),
         (track_name or "").strip(),
         (album_name or "").strip(),
+        ", ".join(t.strip() for t in (tags or []) if t and t.strip()),
     ]
     parts = [p for p in parts if p]
     return " – ".join(parts)
