@@ -170,6 +170,14 @@ type SubmitOptions = {
   preserveResults?: boolean;
   background?: boolean;
   fallbackResults?: SongRecommendation[];
+  /**
+   * Preset-driven stations: skip the search-first prompt path and let the
+   * taste-anchored ranker handle the theme. Mood search terms ("cozy",
+   * "chill") are playlist-farm bait on external search; the ranker path is
+   * utility-gated, novelty-tracked, and matches themes through track
+   * tags/embeddings. External search remains as thin-fill only.
+   */
+  preferCatalog?: boolean;
 };
 
 async function fetchWithTimeout(
@@ -1182,7 +1190,7 @@ export default function DiscoverView({
   useEffect(() => {
     if (!pendingPresetSubmit) return;
     setPendingPresetSubmit(false);
-    void handleSubmit();
+    void handleSubmit({ preferCatalog: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingPresetSubmit]);
   // Heart nudge dismissal lives in localStorage; read after mount so the
@@ -1328,6 +1336,7 @@ export default function DiscoverView({
   async function handleSubmit(options: SubmitOptions = {}) {
     const preserveResults = Boolean(options.preserveResults);
     const background = Boolean(options.background);
+    const preferCatalog = Boolean(options.preferCatalog);
     const fallbackResults = options.fallbackResults ?? results;
     setLoading(true);
     setError(null);
@@ -1379,8 +1388,9 @@ export default function DiscoverView({
         return accessToken;
       }
 
-      // Guests have no Spotify user token — skip all live Spotify expansion
-      const promptSongsPromise = promptForLiveSearch && !isGuest
+      // Guests have no Spotify user token — skip all live Spotify expansion.
+      // Preset stations also skip the search-first path (preferCatalog).
+      const promptSongsPromise = promptForLiveSearch && !isGuest && !preferCatalog
         ? ensureSpotifyAccessToken()
             .then((token) =>
               fetchPromptSpotifySongs(promptForLiveSearch, token, {
@@ -1396,7 +1406,7 @@ export default function DiscoverView({
             })
         : Promise.resolve([]);
 
-      if (promptForLiveSearch) {
+      if (promptForLiveSearch && !preferCatalog) {
         setLoadingStage("Searching Spotify for your prompt\u2026");
         const promptSongs = await filterSavedSpotifyTracks(await promptSongsPromise);
         if (promptSongs.length > 0) {

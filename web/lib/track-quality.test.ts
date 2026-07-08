@@ -6,6 +6,10 @@ describe("isUtilityArtistName", () => {
     expect(isUtilityArtistName("Clean Pop Music")).toBe(true);
     expect(isUtilityArtistName("Synthwave Nation")).toBe(true);
     expect(isUtilityArtistName("summer sax")).toBe(true);
+    // Mood-farm names that flooded mood-prompt searches.
+    expect(isUtilityArtistName("Soft Soundscapes")).toBe(true);
+    expect(isUtilityArtistName("Cozy Coffee Shop")).toBe(true);
+    expect(isUtilityArtistName("Restaurant Lounge Background Music")).toBe(true);
   });
 
   it("keeps real artists that contain generic words", () => {
@@ -13,6 +17,14 @@ describe("isUtilityArtistName", () => {
     expect(isUtilityArtistName("Nation of Language")).toBe(false);
     expect(isUtilityArtistName("Summer Walker")).toBe(false);
     expect(isUtilityArtistName("Pop Smoke")).toBe(false);
+    expect(isUtilityArtistName("Soft Cell")).toBe(false);
+    expect(isUtilityArtistName("Barry White")).toBe(false);
+  });
+
+  it("catches mood-farm album/title signatures", () => {
+    expect(isUtilityTrack({ name: "Cozy Evening - BGM Mix" })).toBe(true);
+    expect(isUtilityTrack({ name: "The Velvet Key", album: { name: "New York Jazz Piano Bar - Chill Jazz Music For Luxury Hotels and Fancy Restaurants, Vol. 3" } })).toBe(true);
+    expect(isUtilityTrack({ name: "Midnight Study Lights" })).toBe(true);
   });
 
   it("never matches single-word names", () => {

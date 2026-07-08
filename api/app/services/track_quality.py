@@ -20,6 +20,14 @@ _UTILITY_TITLE_PATTERNS = [
     re.compile(r"\bno\s+(?:lyric|vocal)", re.I),
     re.compile(r"\b(?:study|sleep|chill|focus|workout|relaxation)\s+(?:pop|hits|mix|radio|playlist)\b", re.I),
     re.compile(r"\b(?:synthwave|lo[- ]?fi|chill)\s+radio\b", re.I),
+    # Mood-farm titles/albums observed on live mood searches.
+    re.compile(r"\bbgm\b", re.I),
+    re.compile(r"\bbackground\s+music\b", re.I),
+    re.compile(r"\b(?:coffee|jazz)\s+(?:shop|caf[eé]|bar)\b", re.I),
+    re.compile(r"\bpiano\s+bar\b", re.I),
+    re.compile(r"\bfor\s+(?:luxury\s+)?(?:hotels?|restaurants?|spas?)\b", re.I),
+    re.compile(r"\brelaxing\s+(?:soft\s+)?jazz\s+music\b", re.I),
+    re.compile(r"\bstudy\s+(?:sessions?|lights?|sessinos)\b", re.I),
 ]
 
 # Artist names composed ENTIRELY of generic utility/descriptor words are
@@ -34,6 +42,15 @@ _GENERIC_ARTIST_TOKENS = frozenset({
     "instrumental", "pop", "music", "beats", "radio", "nation", "vibes",
     "hits", "mix", "playlist", "station", "sounds", "songs", "cover",
     "covers", "tribute", "karaoke", "the", "and", "for", "of", "no", "lyrics",
+    # Mood-farm vocabulary (observed flooding mood-prompt searches:
+    # "Soft Soundscapes", "Cozy Coffee Shop", "Restaurant Lounge Background
+    # Music"). Real artists keep at least one distinctive token, so the
+    # all-tokens-generic rule stays safe. Mirror of web/lib/track-quality.ts.
+    "cozy", "soft", "gentle", "soundscape", "soundscapes", "background",
+    "restaurant", "lounge", "cafe", "coffee", "shop", "nordic", "rain",
+    "rainy", "fireplace", "spa", "zen", "yoga", "lullaby", "lullabies",
+    "white", "noise", "nature", "acoustic", "jazz", "bar", "hotel", "hotels",
+    "sessions", "moods", "mood",
 })
 
 _ARTIST_TOKEN_RE = re.compile(r"[^a-z0-9\s-]")

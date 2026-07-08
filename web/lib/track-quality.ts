@@ -36,6 +36,14 @@ const UTILITY_TRACK_PATTERNS = [
   /\bno\s+(?:lyric|vocal)/i,
   /\b(?:study|sleep|chill|focus|workout|relaxation)\s+(?:pop|hits|mix|radio|playlist)\b/i,
   /\b(?:synthwave|lo[- ]?fi|chill)\s+radio\b/i,
+  // Mood-farm titles/albums observed on live mood searches.
+  /\bbgm\b/i,
+  /\bbackground\s+music\b/i,
+  /\b(?:coffee|jazz)\s+(?:shop|caf[eé]|bar)\b/i,
+  /\bpiano\s+bar\b/i,
+  /\bfor\s+(?:luxury\s+)?(?:hotels?|restaurants?|spas?)\b/i,
+  /\brelaxing\s+(?:soft\s+)?jazz\s+music\b/i,
+  /\bstudy\s+(?:sessions?|lights?|sessinos)\b/i,
 ];
 
 // Artist names composed ENTIRELY of generic utility/descriptor words are
@@ -50,6 +58,15 @@ const GENERIC_ARTIST_TOKENS = new Set([
   "instrumental", "pop", "music", "beats", "radio", "nation", "vibes",
   "hits", "mix", "playlist", "station", "sounds", "songs", "cover",
   "covers", "tribute", "karaoke", "the", "and", "for", "of", "no", "lyrics",
+  // Mood-farm vocabulary (observed flooding mood-prompt searches:
+  // "Soft Soundscapes", "Cozy Coffee Shop", "Restaurant Lounge Background
+  // Music", "Cozy Nordic"). Real artists keep at least one distinctive
+  // token, so the all-tokens-generic rule stays safe.
+  "cozy", "soft", "gentle", "soundscape", "soundscapes", "background",
+  "restaurant", "lounge", "cafe", "coffee", "shop", "nordic", "rain",
+  "rainy", "fireplace", "spa", "zen", "yoga", "lullaby", "lullabies",
+  "white", "noise", "nature", "acoustic", "jazz", "bar", "hotel", "hotels",
+  "sessions", "moods", "mood",
 ]);
 
 const UTILITY_REQUEST_PATTERNS = [

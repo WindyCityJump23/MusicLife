@@ -13,6 +13,11 @@ class TestUtilityArtistName:
         assert is_utility_artist_name("Clean Pop Music")
         assert is_utility_artist_name("Synthwave Nation")
         assert is_utility_artist_name("summer sax")
+        # Mood-farm names that flooded mood-prompt searches (June 2026).
+        assert is_utility_artist_name("Soft Soundscapes")
+        assert is_utility_artist_name("Cozy Coffee Shop")
+        assert is_utility_artist_name("Restaurant Lounge Background Music")
+        assert is_utility_artist_name("Cozy Nordic")
 
     def test_keeps_real_artists_with_generic_words(self):
         assert not is_utility_artist_name("Clean Bandit")
@@ -21,6 +26,11 @@ class TestUtilityArtistName:
         assert not is_utility_artist_name("Beach House")
         assert not is_utility_artist_name("Pop Smoke")
         assert not is_utility_artist_name("The Band")  # 'band' is not generic here
+        # Real artists containing the new mood-farm tokens stay safe.
+        assert not is_utility_artist_name("Soft Cell")
+        assert not is_utility_artist_name("Barry White")
+        assert not is_utility_artist_name("Moody Blues")
+        assert not is_utility_artist_name("bar italia")
 
     def test_single_word_names_never_match(self):
         assert not is_utility_artist_name("Music")
