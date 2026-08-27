@@ -333,6 +333,52 @@ def _fetch_album_tracks(
     return enriched
 
 
+def _hydrate_track_popularity(
+    client: httpx.Client,
+    headers: dict[str, str],
+    items: list[dict],
+) -> None:
+    """Fill in ``popularity`` for album-sourced tracks, in place.
+
+    ``/albums/{id}/tracks`` returns *simplified* track objects, which have no
+    ``popularity`` field at all — so every track ingested through the album
+    path landed with popularity NULL regardless of what Spotify's API does or
+    doesn't still return. That left the ranker with no way to tell a signature
+    song from an album cut. ``/tracks?ids=`` returns full track objects; one
+    call per 50 tracks recovers the field when it is available.
+
+    Best-effort: any failure leaves popularity as-is, and the Last.fm
+    track-stats backfill (migration 030) remains the durable fallback.
+    """
+    missing = [t for t in items if t.get("id") and t.get("popularity") is None]
+    if not missing:
+        return
+
+    for chunk_start in range(0, len(missing), 50):
+        chunk = missing[chunk_start : chunk_start + 50]
+        try:
+            resp = _retry_429(
+                client, "GET",
+                "https://api.spotify.com/v1/tracks",
+                headers=headers,
+                params={"ids": ",".join(t["id"] for t in chunk), "market": "US"},
+            )
+        except httpx.TransportError as exc:
+            print(f"track_populator: popularity hydrate failed (non-fatal): {exc}", flush=True)
+            return
+        if resp.status_code != 200:
+            return
+        by_id = {
+            full["id"]: full
+            for full in (resp.json().get("tracks") or [])
+            if isinstance(full, dict) and full.get("id")
+        }
+        for track in chunk:
+            full = by_id.get(track["id"])
+            if full and full.get("popularity") is not None:
+                track["popularity"] = full["popularity"]
+
+
 def _retry_429(
     client: httpx.Client,
     method: str,
@@ -458,6 +504,10 @@ def _search_and_upsert_tracks(
 
     if not items:
         return 0, None
+
+    # Album-sourced tracks arrive without popularity; recover it before the
+    # upsert so the ranker has a within-catalog quality signal.
+    _hydrate_track_popularity(client, headers, items)
 
     rows = []
     for track in items:

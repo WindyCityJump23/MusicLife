@@ -373,9 +373,26 @@ function chooseFallbackTracks(tracks: SpotifyTrack[], allowUtilityTracks = false
   });
 
   if (unique.length <= TRACKS_PER_INTENT) return unique;
-  const sorted = [...unique].sort((a, b) => (a.popularity ?? 50) - (b.popularity ?? 50));
-  const step = (sorted.length - 1) / (TRACKS_PER_INTENT - 1);
-  return Array.from({ length: TRACKS_PER_INTENT }, (_, index) => sorted[Math.round(index * step)]);
+
+  // Rank by reach, best first. This previously sorted ASCENDING and sampled
+  // evenly across the range, so the very first pick from every live search was
+  // the least popular result Spotify returned. Keep a slice of the tail for
+  // discovery, but lead with the tracks the listener has a chance of knowing.
+  const sorted = [...unique].sort((a, b) => (b.popularity ?? 50) - (a.popularity ?? 50));
+  const tailCount = Math.floor(TRACKS_PER_INTENT / 3);
+  const headCount = TRACKS_PER_INTENT - tailCount;
+  const head = sorted.slice(0, headCount);
+  const remainder = sorted.slice(headCount);
+  if (remainder.length === 0 || tailCount === 0) return head;
+
+  // Spread the discovery slots across what's left rather than taking the
+  // absolute bottom of the list.
+  const step = remainder.length / tailCount;
+  const tail = Array.from(
+    { length: tailCount },
+    (_, index) => remainder[Math.min(remainder.length - 1, Math.floor(index * step))]
+  );
+  return [...head, ...tail];
 }
 
 function hitSpotifyRateLimit(failures: SpotifyFailure[]): boolean {
@@ -714,6 +731,45 @@ async function spotifySearch<T>(
   return withoutMarket ?? withMarket;
 }
 
+/**
+ * Fill in `popularity` for album-sourced tracks.
+ *
+ * `/albums/{id}/tracks` returns *simplified* track objects, which carry no
+ * `popularity` field. This path used to fabricate one from album and track
+ * position (`68 - albumIndex * 4 - trackIndex`), which is track ordering, not
+ * reach — and it then drove lane assignment and the novelty score downstream
+ * as if it were real. `/tracks?ids=` returns full objects; one call per 50
+ * tracks recovers the real value. Tracks it cannot resolve keep `undefined`,
+ * which downstream code already treats as the neutral 50.
+ */
+async function hydrateTrackPopularity(
+  tracks: SpotifyTrack[],
+  accessToken: string,
+  failures: SpotifyFailure[]
+): Promise<void> {
+  const pending = tracks.filter((track) => track.id && track.popularity === undefined);
+  if (pending.length === 0) return;
+
+  for (let start = 0; start < pending.length; start += 50) {
+    const chunk = pending.slice(start, start + 50);
+    const data = await spotifyJson<{ tracks?: Array<SpotifyTrack | null> }>(
+      `https://api.spotify.com/v1/tracks?ids=${chunk.map((t) => t.id).join(",")}&market=US`,
+      accessToken,
+      "tracks:popularity",
+      failures
+    );
+    if (!data) return;
+    const byId = new Map<string, SpotifyTrack>();
+    for (const full of data.tracks ?? []) {
+      if (full?.id) byId.set(full.id, full);
+    }
+    for (const track of chunk) {
+      const full = track.id ? byId.get(track.id) : undefined;
+      if (full?.popularity !== undefined) track.popularity = full.popularity;
+    }
+  }
+}
+
 async function fetchSpotifyArtistCatalogTracks(
   artist: SpotifyArtist,
   artistIndex: number,
@@ -754,16 +810,19 @@ async function fetchSpotifyArtistCatalogTracks(
         `album-tracks:${album.name ?? album.id}`,
         failures
       );
-      return (data?.items ?? [])
+      const albumTracks = (data?.items ?? [])
         .slice(0, ALBUM_TRACK_LIMIT)
-        .map((track, trackIndex) => ({
+        .map((track) => ({
           ...track,
-          popularity: track.popularity ?? Math.max(35, 68 - albumIndex * 4 - trackIndex),
           album: {
             name: album.name,
             release_date: album.release_date,
           },
-        }))
+        }));
+
+      await hydrateTrackPopularity(albumTracks, accessToken, failures);
+
+      return albumTracks
         .map((track, trackIndex) =>
           trackToRecommendation(
             track,

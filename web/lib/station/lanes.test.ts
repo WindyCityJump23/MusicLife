@@ -104,4 +104,35 @@ describe("interleaveForPlayback", () => {
   it("returns an empty array for no songs", () => {
     expect(interleaveForPlayback([])).toEqual([]);
   });
+
+  it("opens on a recognizable track rather than the most obscure one", () => {
+    // The round-robin used to start at deep_cuts, so however well the backend
+    // ranked a station the first song a listener actually heard was always its
+    // most obscure pick.
+    const songs = [
+      makeSong({ spotify_track_id: "deep", lane: "deep_cuts", signals: { affinity: 0.5, context: 0, editorial: 0, track_popularity: 0.05 } }),
+      makeSong({ spotify_track_id: "mid", lane: "popular", signals: { affinity: 0.5, context: 0, editorial: 0, track_popularity: 0.6 } }),
+      makeSong({ spotify_track_id: "hit", lane: "radio_hits", signals: { affinity: 0.5, context: 0, editorial: 0, track_popularity: 0.95 } }),
+    ];
+    const mixed = interleaveForPlayback(songs);
+    expect(mixed[0].spotify_track_id).toBe("hit");
+    expect(mixed.map((s) => s.spotify_track_id)).toEqual(["hit", "mid", "deep"]);
+  });
+
+  it("still alternates lanes rather than front-loading every hit", () => {
+    const songs = [
+      ...Array.from({ length: 3 }, (_, i) =>
+        makeSong({ spotify_track_id: `hit_${i}`, lane: "radio_hits", signals: { affinity: 0.5, context: 0, editorial: 0, track_popularity: 0.95 } })
+      ),
+      ...Array.from({ length: 3 }, (_, i) =>
+        makeSong({ spotify_track_id: `deep_${i}`, lane: "deep_cuts", signals: { affinity: 0.5, context: 0, editorial: 0, track_popularity: 0.05 } })
+      ),
+    ];
+    const lanes = interleaveForPlayback(songs).map((s) =>
+      s.spotify_track_id?.startsWith("hit") ? "hit" : "deep"
+    );
+    expect(lanes[0]).toBe("hit");
+    expect(lanes[1]).toBe("deep");
+    expect(new Set(lanes).size).toBe(2);
+  });
 });
