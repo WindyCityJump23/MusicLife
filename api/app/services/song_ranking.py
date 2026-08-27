@@ -59,7 +59,8 @@ from app.services.song_scoring import (
     _AUDIO_DIM_WEIGHT_TOTAL,
     _AUDIO_DIMENSION_WEIGHTS,
     _artist_recognizability,
-    _assign_lane,
+    _track_recognizability,
+    _within_artist_recognizability,
     _candidate_key,
     _clean_strategy,
     _deep_cut_quality,
@@ -98,7 +99,7 @@ def _fetch_tracks_for_artist_ids(client: Client, artist_ids: list[int]) -> list[
     for chunk in _chunked(artist_ids, 150):
         resp = (
             client.table("tracks")
-            .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness")
+            .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,lastfm_listeners,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness")
             .in_("artist_id", chunk)
             .range(0, 9999)
             .execute()
@@ -284,10 +285,25 @@ def recommend_songs(
             f"{len(artist_recognizability)}/{len(all_artists)} pool artists"
         )
 
+    # Track-level recognizability percentiles, populated once the candidate
+    # tracks are fetched in Phase 2. Both are read through closures below, so
+    # they are mutated in place rather than rebound.
+    #   track_recognizability        — reach percentile across the whole pool
+    #   within_artist_recognizability — reach percentile inside one catalog
+    track_recognizability: dict[int, float] = {}
+    within_artist_recognizability: dict[int, float] = {}
+
     def _effective_track_pop(track: dict, artist_id: int | None) -> float:
         raw = track.get("popularity")
         if raw is not None:
             return float(raw) / 100.0
+        track_id = track.get("id")
+        if track_id is not None:
+            ranked = track_recognizability.get(track_id)
+            if ranked is not None:
+                return ranked
+        # No per-track signal yet (backfill still converging): fall back to the
+        # artist percentile, which is what every track used to get.
         if artist_id is not None:
             return artist_recognizability.get(artist_id, 0.5)
         return 0.5
@@ -524,7 +540,10 @@ def recommend_songs(
         lib_artists_resp = (
             client.table("artists")
             .select("id,genres")
-            .in_("id", list(library_artist_ids)[:500])
+            # sorted() because slicing a set takes an arbitrary 500 artists,
+            # so the user's genre weights (and every downstream boost) shifted
+            # between otherwise identical requests.
+            .in_("id", sorted(library_artist_ids)[:500])
             .not_.is_("genres", "null")
             .range(0, 9999)
             .execute()
@@ -588,21 +607,16 @@ def recommend_songs(
     raw_vals = [r for _, r in raw_affinities]
     pct_ranks = _percentile_rank(raw_vals)
 
-    # ── Detect "universal attractors" ──────────────────────────
-    # Some artists have embeddings near the centroid of the entire
-    # vector space, so they score high affinity for EVERY user. These
-    # aren't truly personalized matches. Penalize artists whose raw
-    # cosine similarity is in the top percentile across ALL users by
-    # checking if they're above the 90th percentile. This is a proxy:
-    # truly personalized matches should have some users where they
-    # rank low and some where they rank high. Artists that rank high
-    # for everyone are probably just centrally-located in embedding
-    # space. We apply a moderate penalty to push them down.
-    if raw_vals:
-        raw_sorted = sorted(raw_vals)
-        p90_threshold = raw_sorted[int(len(raw_sorted) * 0.92)] if len(raw_sorted) > 10 else 1.0
-    else:
-        p90_threshold = 1.0
+    # NOTE: a "universal attractor" penalty used to sit here, multiplying the
+    # top ~8% of this pool by 0.75 on the theory that they were artists
+    # centrally located in embedding space that score high for *every* user.
+    # It never had cross-user data to work from: it took the 92nd percentile
+    # of this one user's own cosine similarities within this one request's
+    # pool. Since the pool is ordered by similarity to the user's taste
+    # vector, the artists it demoted were by construction that user's
+    # strongest matches. Removed rather than reimplemented — detecting a
+    # genuine attractor needs a corpus-wide statistic (e.g. an artist's mean
+    # similarity across all taste vectors), not a within-request percentile.
 
     # Use stronger exploration for non-prompted queries so browsing feels
     # fresh and different between users.  With a prompt the user has a
@@ -952,6 +966,29 @@ def recommend_songs(
             continue
         tracks_by_artist[int(aid)].append(t)
 
+    # ── Track-level recognizability ───────────────────────────────
+    # Computed over the surviving candidate pool so percentiles reflect what
+    # is actually rankable this request. Until migration 030's backfill has
+    # covered enough of the catalog these come back empty and every track
+    # falls back to its artist's percentile, exactly as before.
+    candidate_tracks = [t for rows in tracks_by_artist.values() for t in rows]
+    track_recognizability.update(_track_recognizability(candidate_tracks))
+    within_artist_recognizability.update(
+        _within_artist_recognizability(candidate_tracks)
+    )
+    if track_recognizability:
+        print(
+            f"song_ranking: track recognizability for "
+            f"{len(track_recognizability)}/{len(candidate_tracks)} candidate tracks; "
+            f"{len(within_artist_recognizability)} ranked within their catalog"
+        )
+    else:
+        print(
+            f"song_ranking: no track-level recognizability across "
+            f"{len(candidate_tracks)} candidates — falling back to artist "
+            "percentiles (run the track-stats backfill to enable it)"
+        )
+
     # ── Per-track cosine similarity via RPC (no embedding pulled) ─
     # SQL calls (prompt context, taste affinity, favorites proximity) replace
     # what used to be a streaming pull of every tracks.embedding row.
@@ -1009,8 +1046,18 @@ def recommend_songs(
     def _track_shortlist_score(t: dict) -> float:
         """Score a track for shortlist selection within an artist's catalog.
 
-        Blends prompt/taste similarity, popularity, recency, and randomness.
-        Randomness ensures variety across the novelty retry attempts (seed 0–4).
+        This decides *which* of an artist's songs represents them, so the
+        dominant signal is how well known the track is inside that artist's
+        own catalog — a signature song should beat an interlude, a live
+        version, or a bonus-disc remix regardless of how big the artist is.
+
+        Signals are averaged over whatever is actually available rather than
+        defaulted to a constant. Audio features are NULL catalog-wide since
+        Spotify retired /audio-features, and folding in a constant 0.5 for
+        them only diluted the signals that do exist. A small jitter is added
+        on top for rotation across the novelty retry attempts (seed 0–4) —
+        deliberately too small to promote filler over a known song.
+
         Per-track similarity comes from the SQL RPC; no embedding crosses
         the wire.
         """
@@ -1018,12 +1065,20 @@ def recommend_songs(
             _shortlist_aid = int(t["artist_id"]) if t.get("artist_id") is not None else None
         except (TypeError, ValueError):
             _shortlist_aid = None
-        pop = _effective_track_pop(t, _shortlist_aid)
         if should_exclude_utility_track(
             t,
             allow_instrumental_utility=allow_instrumental_utility_tracks,
         ):
             return -1.0
+
+        tid = t.get("id")
+        # Prefer the within-catalog percentile; it is scale-free, so a mid-tier
+        # artist's best song scores as highly as a superstar's best song and
+        # the shortlist stops being decided by how famous the artist is.
+        reach = within_artist_recognizability.get(tid) if tid is not None else None
+        if reach is None:
+            reach = _effective_track_pop(t, _shortlist_aid)
+
         audio_match = _track_audio_match(t)
         recency = 0.0
         _rd = t.get("release_date")
@@ -1035,23 +1090,39 @@ def recommend_songs(
                     recency = 1.0 - _days_old / 365
             except (ValueError, AttributeError):
                 pass
-        tid = t.get("id")
+
         local_ctx = _local_track_similarity(t, effective_prompt_vector)
-        if effective_prompt_vector and tid is not None and (tid in track_context_sim or local_ctx is not None):
-            ctx = _normalize_01(track_context_sim[tid] if tid in track_context_sim else local_ctx or 0.0)
-            return (
-                0.55 * ctx
-                + 0.12 * pop
-                + 0.10 * recency
-                + 0.13 * rng.random()
-                + 0.10 * (audio_match if audio_match is not None else 0.5)
+        ctx: float | None = None
+        if effective_prompt_vector and tid is not None and (
+            tid in track_context_sim or local_ctx is not None
+        ):
+            ctx = _normalize_01(
+                track_context_sim[tid] if tid in track_context_sim else local_ctx or 0.0
             )
-        return (
-            0.24 * pop
-            + 0.10 * recency
-            + 0.48 * rng.random()
-            + 0.18 * (audio_match if audio_match is not None else 0.5)
-        )
+
+        components: list[tuple[float, float]] = []
+        if ctx is not None and has_explicit_prompt:
+            # The user asked for something specific, so prompt fit leads and
+            # reach breaks ties among the tracks that fit.
+            components.append((0.44, ctx))
+            components.append((0.34, reach))
+        else:
+            # Unprompted, `ctx` is similarity to the *taste* vector, which is
+            # essentially an artist-level signal: within one catalog it varies
+            # mostly with how the title and album happen to be worded, not
+            # with whether the song is any good. Let it nudge, not decide.
+            components.append((0.62, reach))
+            if ctx is not None:
+                components.append((0.14, ctx))
+        components.append((0.10, recency))
+        if audio_match is not None:
+            components.append((0.14, audio_match))
+
+        total_weight = sum(weight for weight, _ in components)
+        blended = sum(weight * value for weight, value in components) / total_weight
+
+        jitter = 0.04 if has_explicit_prompt else 0.08
+        return blended + jitter * rng.random()
 
     for aid in top_artist_ids:
         a_info = artist_scores.get(aid)
@@ -1125,31 +1196,32 @@ def recommend_songs(
                 + weights["editorial"] * a_info["editorial"]
             )
 
-            # Universal attractor penalty: if this artist has high raw
-            # cosine with ALL taste vectors (above p90), it's probably
-            # central in embedding space, not a genuine personal match.
-            if a_info["affinity_raw"] > p90_threshold and not has_explicit_prompt:
-                track_base *= 0.75  # 25% penalty for universally-popular embeddings
-
             if aid in previously_recommended:
                 track_base *= 0.92 if has_explicit_prompt else 0.80
 
             raw_release = track.get("release_date")
             release_age = _release_age_days(raw_release, now)
 
-            # Track-level boost: popularity is only a confidence hint. Old,
-            # very popular songs are deliberately cooled down so the station
-            # does not drift into greatest-hits mode.
-            track_boost = 0.86 + (0.10 * track_pop)  # 0.86–0.96 range
+            # Track-level boost: mildly favors songs people actually know.
+            #
+            # Keeping the station off greatest-hits autopilot is the lane
+            # quotas' job (_lane_targets caps radio_hits at ~18–24% of the
+            # result), not the score's. This used to *also* cool popular
+            # tracks by up to 18% and *also* pay an obscurity bonus of up to
+            # 20% below — so obscurity was bought three times over and a
+            # well-known song lost to an album cut by ~35% at equal affinity.
+            # One mild popularity shape here; the quota does the rest.
+            track_boost = 0.92 + (0.08 * track_pop)  # 0.92–1.00 range
 
             # New-release bonus: up to +15% for tracks released in the last
             # calendar year, decaying linearly to 0 at 365 days old.
             if release_age is not None and release_age < 365:
                 track_boost *= 1.0 + 0.15 * (1.0 - release_age / 365)
-            elif track_pop >= 0.78:
-                track_boost *= 0.82
-            elif track_pop >= 0.68:
-                track_boost *= 0.92
+            elif track_pop >= 0.92:
+                # Only the very top of the pool is trimmed, so a station can
+                # still open on a song the listener recognizes without the
+                # chart's single biggest track winning every slot.
+                track_boost *= 0.96
 
             # Familiarity: penalize songs the user has already heard,
             # but welcome NEW songs from familiar artists (deep cuts are
@@ -1187,12 +1259,14 @@ def recommend_songs(
             elif station_distance == "further":
                 track_boost *= 0.96 if is_library_artist else 1.04
 
-            # Obscurity bonus: reward genuinely unknown tracks that aren't
-            # already in the user's library — defined after in_library is set.
-            if track_pop < 0.40 and not in_library:
-                track_boost *= 1.20
-            elif track_pop < 0.55 and not in_library:
-                track_boost *= 1.10
+            # NOTE: a flat obscurity bonus (×1.20 below 0.40 reach, ×1.10
+            # below 0.55) used to sit here. It rewarded tracks for being
+            # unknown rather than for being good, on top of the lane quota
+            # that already reserves 38–45% of every station for deep cuts.
+            # Deep cuts are now selected on _deep_cut_quality — editorial
+            # coverage, taste affinity, prompt fit — inside their own lane,
+            # so a great deep cut still wins its slots while a forgettable
+            # one no longer outranks a song the listener would recognize.
 
             # Audio feature alignment: prefer tracks that sound like the user's library.
             audio_match_value = _track_audio_match(track) if user_audio_pref else None
@@ -1352,9 +1426,16 @@ def recommend_songs(
                     track_pop, a_info["editorial"], track_context,
                     track_affinity, is_library_artist, used_track_embedding,
                 )
+                # Within the deep-cut lane, quality is the whole ranking — a
+                # wide spread here is what separates a worthwhile discovery
+                # from a random album track.
                 track_boost *= 0.88 + 0.24 * dcq
             else:
-                track_boost *= 0.92 + 0.18 * novelty
+                # _novelty_score is 45% raw (1 - track_pop), so a wide
+                # multiplier here was a fourth obscurity payment inside the
+                # lanes that are supposed to hold recognizable songs. Keep it
+                # as a light tiebreak between otherwise comparable tracks.
+                track_boost *= 0.96 + 0.08 * novelty
 
             # Exploration
             exploration = rng.uniform(-EXPLORATION_STRENGTH, EXPLORATION_STRENGTH)
@@ -1540,15 +1621,6 @@ def recommend_songs(
     return diverse
 
 
-# Lane quotas as fractions of the total result set.
-# deep_cut gets the largest share — the whole point is discovery.
-_LANE_QUOTAS = {
-    "deep_cuts": 0.45,
-    "popular": 0.35,
-    "radio_hits": 0.20,
-}
-
-
 def _select_artist_frontier(
     ranked_artist_ids: list[int],
     artist_scores: dict[int, dict],
@@ -1566,7 +1638,13 @@ def _select_artist_frontier(
     if not ranked_artist_ids:
         return []
 
-    frontier_size = min(len(ranked_artist_ids), max(limit * 28, 700))
+    # The frontier used to run ~700 artists deep for a 30-song station. With a
+    # one-song-per-artist cap downstream, that meant the result was drawn from
+    # a pool where the user's genuinely strong matches were outnumbered ~6:1 by
+    # the tail — so most picks came from artists that barely matched at all.
+    # Keep the tail (it is what makes repeat sessions feel different) but size
+    # it so strong matches remain the bulk of the pool.
+    frontier_size = min(len(ranked_artist_ids), max(limit * 10, 250))
     head_size = min(len(ranked_artist_ids), max(limit * 4, 100))
     head = ranked_artist_ids[:head_size]
 
@@ -1581,13 +1659,22 @@ def _select_artist_frontier(
     if not frontier_pool:
         return head
 
+    # Ticket weighting is relative to the best score in the pool. The old
+    # formula used `int(score * 6)`, which collapsed to 0 tickets for every
+    # artist scoring under ~0.17 and made the lottery close to uniform across
+    # the tail regardless of taste.
+    pool_scores = {
+        aid: max(float(artist_scores.get(aid, {}).get("base_score") or 0.0), 0.0)
+        for aid in frontier_pool
+    }
+    best_score = max(pool_scores.values(), default=0.0)
+
     weighted_pool: list[int] = []
     for idx, aid in enumerate(frontier_pool):
-        score = max(float(artist_scores.get(aid, {}).get("base_score") or 0.0), 0.0)
-        # Higher ranked artists get more tickets, but everyone in the pool has
-        # a chance. This creates meaningful session-to-session movement without
-        # ignoring taste.
-        tickets = max(1, int(score * 6) + max(0, 4 - idx // max(limit, 1)))
+        share = (pool_scores[aid] / best_score) if best_score > 0 else 0.0
+        # 1–12 tickets by relative score, plus a small bonus for the artists
+        # just below the head so the near-misses rotate in most often.
+        tickets = max(1, round(12 * share)) + max(0, 3 - idx // max(limit, 1))
         weighted_pool.extend([aid] * tickets)
 
     sampled: list[int] = []
@@ -1614,138 +1701,6 @@ def _select_artist_frontier(
         reverse=True,
     )
     return head + sampled
-
-
-def _lane_diversity_rerank(scored: list[dict], limit: int) -> list[dict]:
-    """Re-rank songs for genre + artist + lane diversity.
-
-    Enforces lane quotas so the result always has a healthy mix of
-    deep cuts, popular picks, and familiar comfort picks.
-    """
-    if not scored or limit <= 0:
-        return []
-
-    rerank_pool_size = max(limit * 15, 500)
-    pool = scored if len(scored) <= rerank_pool_size else scored[:rerank_pool_size]
-
-    # Pre-sort each lane's candidates by score
-    lane_pools: dict[str, list[dict]] = defaultdict(list)
-    for s in pool:
-        lane_pools[s.get("lane", "deep_cuts")].append(s)
-
-    lane_targets = {
-        lane: max(1, int(limit * frac))
-        for lane, frac in _LANE_QUOTAS.items()
-    }
-    # Distribute any rounding remainder to deep_cuts
-    assigned = sum(lane_targets.values())
-    if assigned < limit:
-        lane_targets["deep_cuts"] += limit - assigned
-
-    selected: list[dict] = []
-    lane_counts: Counter[str] = Counter()
-    genre_counts: Counter[str] = Counter()
-    artist_counts: Counter[str] = Counter()
-    used: set[str] = set()
-
-    MAX_GENRE_FRACTION = 0.3
-    MAX_ARTIST_SONGS = 1
-
-    # Round-robin across lanes in priority order
-    lane_order = ["deep_cuts", "popular", "radio_hits"]
-    lane_cursors: dict[str, int] = {l: 0 for l in lane_order}
-
-    rounds_without_progress = 0
-    while len(selected) < limit and rounds_without_progress < 3:
-        progress_this_round = False
-        for lane in lane_order:
-            if len(selected) >= limit:
-                break
-            if lane_counts[lane] >= lane_targets.get(lane, 0):
-                continue
-
-            candidates = lane_pools.get(lane, [])
-            cursor = lane_cursors[lane]
-            picked = False
-
-            while cursor < len(candidates):
-                candidate = candidates[cursor]
-                cursor += 1
-
-                key = f"{candidate['track_name']}|{candidate['artist_name']}".lower()
-                if key in used:
-                    continue
-
-                artist = candidate["artist_name"].lower()
-                if artist_counts.get(artist, 0) >= MAX_ARTIST_SONGS:
-                    continue
-
-                genres = [g.lower() for g in (candidate.get("genres") or [])] or ["__none__"]
-                max_genre_share = max(
-                    genre_counts.get(g, 0.0) / max(len(selected), 1) for g in genres
-                )
-                if max_genre_share >= MAX_GENRE_FRACTION and len(selected) > 5:
-                    continue
-
-                selected.append(candidate)
-                used.add(key)
-                lane_counts[lane] += 1
-                artist_counts[artist] += 1
-                for g in genres:
-                    genre_counts[g] += 1.0 / len(genres)
-                picked = True
-                progress_this_round = True
-                break
-
-            lane_cursors[lane] = cursor
-
-            if not picked:
-                # This lane is exhausted — allow overflow into other lanes
-                lane_targets[lane] = lane_counts[lane]
-
-        if not progress_this_round:
-            rounds_without_progress += 1
-        else:
-            rounds_without_progress = 0
-
-    distinct_artist_count = len({
-        (str(candidate.get("artist_id") or "") or candidate["artist_name"]).lower()
-        for candidate in pool
-    })
-    unique_artist_target = min(limit, distinct_artist_count)
-
-    def top_up(max_artist_songs: int) -> None:
-        """Fill open slots while preserving artist spread as long as possible."""
-        nonlocal selected
-        for candidate in pool:
-            if len(selected) >= limit:
-                break
-            key = f"{candidate['track_name']}|{candidate['artist_name']}".lower()
-            if key in used:
-                continue
-            artist = (str(candidate.get("artist_id") or "") or candidate["artist_name"]).lower()
-            # Do not add a second song by any artist until every possible slot
-            # that can be filled by a unique artist has been filled. This keeps
-            # artists from appearing across multiple UI lanes when the catalog
-            # has enough breadth.
-            if len(selected) < unique_artist_target and artist_counts.get(artist, 0) >= 1:
-                continue
-            if artist_counts.get(artist, 0) >= max_artist_songs:
-                continue
-            selected.append(candidate)
-            used.add(key)
-            lane_counts[candidate.get("lane", "deep_cuts")] += 1
-            artist_counts[artist] += 1
-
-    # Top-up pass: first preserve one artist per result; only then relax for
-    # genuinely sparse catalogs where duplicates are better than empty slots.
-    if len(selected) < limit:
-        top_up(1)
-    if len(selected) < limit:
-        top_up(2)
-
-    print(f"song_ranking: lane distribution — {dict(lane_counts)}")
-    return selected
 
 
 def _pick_lane_candidates(
@@ -1825,7 +1780,17 @@ def _lane_aware_rerank(scored: list[dict], limit: int, strategy: dict | None = N
     artist_counts: Counter[str] = Counter()
     genre_counts: Counter[str] = Counter()
 
-    for lane in ("deep_cuts", "popular", "radio_hits"):
+    # Lane order matters because of the one-song-per-artist cap: whichever
+    # lane picks first claims its artists outright, and every other song by
+    # those artists is then locked out. Running deep_cuts first meant an
+    # artist whose signature song was a radio hit got represented by their
+    # album filler instead, and the hit could never appear — the deep-cut
+    # quota was effectively being paid for twice, once in slots and once in
+    # which song each artist contributed. Filling the recognizable lanes
+    # first gives every artist its best song, and the deep-cut lane then
+    # draws from artists whose best song is genuinely a deep cut. The mix
+    # itself is unchanged; only the artist-to-lane assignment moves.
+    for lane in ("radio_hits", "popular", "deep_cuts"):
         selected.extend(
             _pick_lane_candidates(
                 pools[lane],
@@ -1879,6 +1844,13 @@ def _lane_aware_rerank(scored: list[dict], limit: int, strategy: dict | None = N
                 strict_artist_cap=3,
             )
         )
+
+    # Selection ran lane by lane, so `selected` came out grouped deep_cuts →
+    # popular → radio_hits: every station's first track was its most obscure
+    # one, and the frontend's playback interleave inherited that ordering.
+    # The lane quotas above already fixed the *mix*; ordering by score keeps
+    # that mix while letting the strongest picks lead.
+    selected.sort(key=lambda row: float(row.get("score") or 0.0), reverse=True)
 
     return selected[:limit]
 

@@ -351,7 +351,7 @@ def _make_track(
     track_id: int,
     name: str,
     artist_id: int,
-    popularity: int = 70,
+    popularity: int | None = 70,
     vec_seed: int | None = None,
     instrumentalness: float | None = None,
     speechiness: float | None = None,
@@ -359,7 +359,15 @@ def _make_track(
     danceability: float | None = None,
     valence: float | None = None,
     acousticness: float | None = None,
+    lastfm_listeners: int | None = None,
 ) -> dict:
+    """Build a synthetic track row.
+
+    ``popularity=None`` with ``lastfm_listeners`` set reproduces the shape
+    production actually has: Spotify popularity is NULL catalog-wide, and
+    per-track reach comes from Last.fm (migration 030). Evals that only ever
+    set ``popularity`` test a data shape the deployed catalog does not carry.
+    """
     return {
         "id": track_id,
         "name": name,
@@ -367,6 +375,7 @@ def _make_track(
         "album_name": f"Album {track_id}",
         "duration_ms": 240000,
         "popularity": popularity,
+        "lastfm_listeners": lastfm_listeners,
         "spotify_track_id": f"sp_track_{track_id}",
         "explicit": False,
         "energy": energy,

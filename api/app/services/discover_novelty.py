@@ -67,14 +67,36 @@ def build_excluded_track_ids(history_rows: list[dict], older_than_days: int | No
     return excluded
 
 
-def build_excluded_artist_ids(history_rows: list[dict], older_than_days: int | None = None) -> set[int]:
-    """Build set of artist IDs shown in recent discover runs."""
+# How many of the most recent runs contribute to the artist exclusion set.
+#
+# Track-level novelty can safely look back over the full history window —
+# hearing the same song again is the thing users notice. Artist-level novelty
+# cannot: banning every artist from 15 runs of 30 songs blacklists up to ~450
+# artists, which for most libraries is more strong matches than exist. Once
+# they are used up the ranker has nothing left but the tail, and the station
+# fills with artists the listener has no affinity for. Four runs is enough to
+# stop back-to-back repetition without exhausting the pool.
+ARTIST_NOVELTY_RUNS = 4
+
+
+def build_excluded_artist_ids(
+    history_rows: list[dict],
+    older_than_days: int | None = None,
+    max_runs: int | None = ARTIST_NOVELTY_RUNS,
+) -> set[int]:
+    """Build set of artist IDs shown in recent discover runs.
+
+    ``history_rows`` arrives ordered newest-first, so ``max_runs`` keeps the
+    most recent runs. Pass ``max_runs=None`` to consider every row.
+    """
     threshold = None
     if older_than_days is not None:
         threshold = datetime.now(timezone.utc) - timedelta(days=older_than_days)
 
+    rows = history_rows if max_runs is None else history_rows[: max(0, max_runs)]
+
     excluded: set[int] = set()
-    for row in history_rows:
+    for row in rows:
         if threshold is not None:
             created_at = row.get("created_at")
             if created_at:

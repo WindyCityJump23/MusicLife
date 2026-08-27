@@ -1998,6 +1998,292 @@ def eval_explicit_popularity_beats_recognizability() -> EvalResult:
     )
 
 
+# ── Production-shaped catalog (Spotify popularity NULL) ─────────
+#
+# Every other song eval sets an explicit `popularity` on each track. The
+# deployed catalog has NULL there for every row, so those evals exercise a
+# data shape that does not exist in production and were green while the
+# shortlist was choosing songs at random. These build the real shape: NULL
+# popularity, per-track Last.fm listener counts (migration 030).
+
+
+def _production_shaped_catalog(artist_count: int = 12, tail_per_artist: int = 6):
+    """Artists with two well-known songs and a descending tail of album cuts.
+
+    Deliberately deeper than the per-artist shortlist cap (4). A real Spotify
+    catalog is ~50 tracks per artist, so the shortlist has to *choose* — which
+    is the step that used to be decided by `0.48 * rng.random()`. A fixture
+    with fewer tracks than the cap keeps every track and tests nothing.
+
+    Track names encode their position in the catalog so failures are readable;
+    assertions use the within-artist reach percentile, not the name.
+    """
+    artists = []
+    tracks = []
+    for i in range(artist_count):
+        aid = 700 + i
+        artists.append(
+            _make_artist(
+                aid, f"Shape Artist {i}", ["pop", "rock"], vec_seed=700 + i,
+                popularity=None, lastfm_listeners=int(50_000 * (1.6 ** i)),  # type: ignore[arg-type]
+            )
+        )
+        base = 400_000 + i * 5_000
+        track_id = 7000 + i * (2 + tail_per_artist)
+        tracks.append(_make_track(
+            track_id, f"Signature {i}", aid,
+            popularity=None, vec_seed=740 + i, lastfm_listeners=base,  # type: ignore[arg-type]
+        ))
+        tracks.append(_make_track(
+            track_id + 1, f"Midtier {i}", aid,
+            popularity=None, vec_seed=760 + i, lastfm_listeners=base // 20,  # type: ignore[arg-type]
+        ))
+        for f in range(tail_per_artist):
+            tracks.append(_make_track(
+                track_id + 2 + f, f"Tail {i}-{f}", aid,
+                popularity=None, vec_seed=780 + i * 10 + f,
+                lastfm_listeners=max(50, base // (400 + f * 90)),  # type: ignore[arg-type]
+            ))
+    return artists, tracks
+
+
+def _within_artist_ranks(tracks: list[dict]) -> dict[str, float]:
+    """Map track name -> its reach percentile inside its own artist's catalog."""
+    from app.services.song_scoring import _within_artist_recognizability
+
+    ranked = _within_artist_recognizability(tracks)
+    return {
+        t["name"]: ranked[t["id"]]
+        for t in tracks
+        if t["id"] in ranked
+    }
+
+def _production_shaped_scenario():
+    return UserScenario(
+        user_id="production_shape",
+        library_artist_ids=[],
+        played_track_ids=[],
+        top_artist_ids=[],
+        taste_vector=JAZZ_TASTE_VECTOR,
+    )
+
+
+def eval_station_picks_from_top_of_each_catalog() -> EvalResult:
+    """With production's NULL-popularity catalog, the song chosen to represent
+    each artist must come from the upper half of that artist's own catalog.
+
+    This is the failure users reported: with no track-level signal every song
+    in a catalog scored identically, so the shortlist tiebreak was 48%
+    rng.random() and the station surfaced interludes and bonus cuts. The
+    assertion is on the within-artist reach percentile rather than on lane
+    labels, because the deep-cut lane is *supposed* to reach below the hits —
+    just not to the bottom of the barrel.
+    """
+    artists, tracks = _production_shaped_catalog()
+    ranks = _within_artist_ranks(tracks)
+    scenario = _production_shaped_scenario()
+    client = build_mock_client(scenario, artists=artists, tracks=tracks, mentions=[])
+    results = recommend_songs(
+        client=client,
+        user_id=scenario.user_id,
+        taste_vector=JAZZ_TASTE_VECTOR,
+        prompt_vector=None,
+        weights=_weights(),
+        exclude_library=False,
+        limit=12,
+    )
+
+    picked = [ranks[r["track_name"]] for r in results if r["track_name"] in ranks]
+    if not picked:
+        return EvalResult(
+            name="station_picks_from_top_of_each_catalog",
+            passed=False,
+            score=0.0,
+            details=f"no rankable results ({len(results)} returned)",
+        )
+
+    # A uniform draw over an 8-track catalog averages 0.5 and puts ~half the
+    # picks below it. Requiring the mean above 0.6 with nothing from the
+    # bottom quartile separates a reach-driven shortlist from a random one.
+    mean_rank = sum(picked) / len(picked)
+    bottom_quartile = [r for r in picked if r < 0.25]
+    passed = mean_rank >= 0.6 and not bottom_quartile
+    return EvalResult(
+        name="station_picks_from_top_of_each_catalog",
+        passed=passed,
+        score=round(mean_rank, 2),
+        details=(
+            f"{len(picked)} picks; mean within-artist rank={mean_rank:.2f} "
+            f"(need >= 0.60), lowest={min(picked):.2f}, "
+            f"{len(bottom_quartile)} from the bottom quartile (need 0)"
+        ),
+    )
+
+def eval_shortlist_is_not_random_across_seeds() -> EvalResult:
+    """The song chosen to represent an artist must be driven by the track's
+    reach, not by the exploration seed.
+
+    Rotation across sessions is intentional and near-ties are *expected* to
+    swap — so this does not demand a byte-identical pick. What it demands is
+    that whichever track a seed lands on stays near the top of that artist's
+    catalog. Under the old `0.48 * rng.random()` shortlist the pick was a
+    roughly uniform draw over the whole catalog, so some seed would always
+    reach the bottom.
+    """
+    artists, tracks = _production_shaped_catalog()
+    ranks = _within_artist_ranks(tracks)
+    scenario = _production_shaped_scenario()
+
+    per_seed: list[dict[str, float]] = []
+    for seed in (1, 2, 3, 4, 5):
+        client = build_mock_client(scenario, artists=artists, tracks=tracks, mentions=[])
+        results = recommend_songs(
+            client=client,
+            user_id=scenario.user_id,
+            taste_vector=JAZZ_TASTE_VECTOR,
+            prompt_vector=None,
+            weights=_weights(),
+            exclude_library=False,
+            limit=12,
+            exploration_seed=seed,
+        )
+        per_seed.append({
+            r["artist_name"]: ranks[r["track_name"]]
+            for r in results
+            if r["track_name"] in ranks
+        })
+
+    if not per_seed or not per_seed[0]:
+        return EvalResult(
+            name="shortlist_is_not_random_across_seeds",
+            passed=False,
+            score=0.0,
+            details="no results produced",
+        )
+
+    # Only artists present in every run are comparable — which artists appear
+    # is seed-dependent by design (frontier rotation); how deep into their
+    # catalog the pick reaches must not be.
+    shared = set(per_seed[0])
+    for mapping in per_seed[1:]:
+        shared &= set(mapping)
+
+    worst = {
+        artist: min(mapping[artist] for mapping in per_seed)
+        for artist in shared
+    }
+    # In an 8-track catalog the percentiles are 0, .14, .29, .43, .57, .71,
+    # .86, 1.0 — a 0.40 floor means the pick never reaches the bottom three
+    # tracks, while still leaving room for a genuine deep cut.
+    sank = sorted(a for a, rank in worst.items() if rank < 0.40)
+    passed = bool(shared) and not sank
+    floor = min(worst.values()) if worst else 0.0
+    return EvalResult(
+        name="shortlist_is_not_random_across_seeds",
+        passed=passed,
+        score=round(floor, 2),
+        details=(
+            f"{len(shared)} artists common to all 5 seeds; worst-case "
+            f"within-artist rank across seeds={floor:.2f} (need >= 0.40); "
+            f"{len(sank)} artists dropped into their lower catalog"
+            + (f" — {sank[:4]}" if sank else "")
+        ),
+    )
+
+def eval_recognizable_track_not_outranked_by_obscurity() -> EvalResult:
+    """At equal affinity, a well-known track must not be systematically
+    outscored by an obscure one from the same artist.
+
+    The multiplier stack used to pay for obscurity three times over (popularity
+    cool-down, flat obscurity bonus, novelty multiplier) on top of lane quotas
+    that already reserve 38-45% of every station for deep cuts, leaving a
+    recognizable song ~35% behind an album cut before ranking even started.
+
+    Every track of an artist shares one embedding here, so track-level affinity
+    is constant within a catalog and reach is the only thing that varies —
+    which isolates the multiplier stack from embedding noise.
+    """
+    artists = []
+    tracks = []
+    for i in range(12):
+        aid = 660 + i
+        artists.append(
+            _make_artist(
+                aid, f"Flat Artist {i}", ["pop", "rock"], vec_seed=660 + i,
+                popularity=None, lastfm_listeners=int(80_000 * (1.5 ** i)),  # type: ignore[arg-type]
+            )
+        )
+        shared_seed = 6600 + i  # identical track embedding across the catalog
+        base = 500_000 + i * 9_000
+        tracks.append(_make_track(
+            6600 + i * 3, f"Known {i}", aid,
+            popularity=None, vec_seed=shared_seed, lastfm_listeners=base,  # type: ignore[arg-type]
+        ))
+        tracks.append(_make_track(
+            6601 + i * 3, f"Middle {i}", aid,
+            popularity=None, vec_seed=shared_seed, lastfm_listeners=base // 25,  # type: ignore[arg-type]
+        ))
+        tracks.append(_make_track(
+            6602 + i * 3, f"Obscure {i}", aid,
+            popularity=None, vec_seed=shared_seed, lastfm_listeners=base // 600,  # type: ignore[arg-type]
+        ))
+
+    scenario = UserScenario(
+        user_id="equal_affinity",
+        library_artist_ids=[],
+        played_track_ids=[],
+        top_artist_ids=[],
+        taste_vector=JAZZ_TASTE_VECTOR,
+    )
+    client = build_mock_client(scenario, artists=artists, tracks=tracks, mentions=[])
+    # A limit wide enough that the artist cap relaxes and each catalog can
+    # return more than one track, so the pair is directly comparable.
+    results = recommend_songs(
+        client=client,
+        user_id=scenario.user_id,
+        taste_vector=JAZZ_TASTE_VECTOR,
+        prompt_vector=None,
+        weights=_weights(),
+        exclude_library=False,
+        limit=36,
+    )
+
+    scores: dict[str, dict[str, float]] = {}
+    for row in results:
+        tier, _, index = row["track_name"].partition(" ")
+        scores.setdefault(index, {})[tier] = float(row["score"])
+
+    comparable = [v for v in scores.values() if "Known" in v and "Obscure" in v]
+    if not comparable:
+        return EvalResult(
+            name="recognizable_track_not_outranked_by_obscurity",
+            passed=False,
+            score=0.0,
+            details=f"no artist returned both a Known and an Obscure track ({len(results)} results)",
+        )
+
+    # "Not *systematically* outscored" is the claim, so this is an aggregate
+    # bar rather than a per-catalog one: an intentional exploration term
+    # (+/-0.012) still flips individual near-ties, which is rotation working.
+    # Before the fix the obscure cut won essentially every catalog — a ~35%
+    # boost gap that no jitter could account for.
+    inverted = [v for v in comparable if v["Obscure"] > v["Known"]]
+    win_rate = 1.0 - len(inverted) / len(comparable)
+    mean_known = sum(v["Known"] for v in comparable) / len(comparable)
+    mean_obscure = sum(v["Obscure"] for v in comparable) / len(comparable)
+    passed = win_rate >= 0.75 and mean_known > mean_obscure
+    return EvalResult(
+        name="recognizable_track_not_outranked_by_obscurity",
+        passed=passed,
+        score=round(win_rate, 2),
+        details=(
+            f"{len(comparable)} catalogs compared; known song ranked higher in "
+            f"{win_rate:.0%} (need >= 75%); mean score known={mean_known:.4f} "
+            f"vs obscure={mean_obscure:.4f}"
+        ),
+    )
+
+
 def run_suite() -> list[EvalResult]:
     return [
         eval_heard_song_penalized(),
@@ -2049,4 +2335,7 @@ def run_suite() -> list[EvalResult]:
         eval_audio_match_meaningful(),
         eval_null_popularity_lanes_never_empty(),
         eval_explicit_popularity_beats_recognizability(),
+        eval_station_picks_from_top_of_each_catalog(),
+        eval_shortlist_is_not_random_across_seeds(),
+        eval_recognizable_track_not_outranked_by_obscurity(),
     ]

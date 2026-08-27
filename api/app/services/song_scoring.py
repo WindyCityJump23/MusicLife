@@ -159,11 +159,15 @@ def _lane_for_track(
 ) -> str:
     reason_text = " ".join(reasons).lower()
     genre_text = " ".join(genres).lower()
+    # Genre and editorial signals only mark a track as a deep cut when its own
+    # reach agrees. Keying off the genre alone filed every indie artist's
+    # best-known song under deep_cuts, which both mislabeled it and made it
+    # compete for the wrong lane's slots.
+    scene_genre = "indie" in genre_text or "underground" in genre_text
     has_deep_signal = (
         "deep cut" in reason_text
         or "obscure" in reason_text
-        or "indie" in genre_text
-        or "underground" in genre_text
+        or (scene_genre and track_pop < 0.62)
         or (editorial >= 0.45 and track_pop < 0.62)
     )
     is_newish = release_age_days is not None and release_age_days <= 540
@@ -314,25 +318,6 @@ def _freshness_strategy_multiplier(release_age_days: int | None, track_pop: floa
     return 1.0
 
 
-def _assign_lane(
-    track_pop: float,
-    in_library: bool,
-    is_library_artist: bool,
-    editorial: float,
-) -> str:
-    if track_pop >= 0.72 and not in_library:
-        return "radio_hits"
-    if track_pop >= 0.48:
-        return "popular"
-    if track_pop <= 0.35 and not is_library_artist:
-        return "deep_cuts"
-    if is_library_artist and track_pop > 0.42:
-        return "popular"
-    if editorial > 0.3:
-        return "popular"
-    return "deep_cuts"
-
-
 def _lane_targets(limit: int, strategy: dict | None = None) -> dict[str, int]:
     if limit <= 0:
         return {lane: 0 for lane in DISCOVERY_LANES}
@@ -411,6 +396,106 @@ def _artist_recognizability(artists: list[dict], min_pool: int = 10) -> dict[int
 
     percentiles = _percentile_rank(log_listeners)
     return dict(zip(ids, percentiles))
+
+
+# Spotify popularity (0–100) is roughly logarithmic in plays, so mapping it
+# onto the same log1p(listeners) scale used for Last.fm keeps a catalog that
+# mixes both sources (album-sourced rows vs search-sourced rows) rankable as
+# one list. 16.0 ≈ log1p(9M listeners) — the reach of a genuine mega-hit.
+_POP_REACH_SCALE = 16.0
+
+
+def _track_reach(track: dict) -> float | None:
+    """A single comparable 'how many people know this song' scalar.
+
+    Prefers Last.fm per-track listeners (migration 030), falls back to
+    Spotify popularity where it survives. Returns None when a track carries
+    neither signal, so callers can treat it as unknown rather than as zero —
+    an unranked track must not be pushed to the bottom of its own catalog.
+    """
+    raw_listeners = track.get("lastfm_listeners")
+    if raw_listeners is not None:
+        try:
+            listeners = int(raw_listeners)
+        except (TypeError, ValueError):
+            listeners = 0
+        # 0 means "looked up on Last.fm, not found" — no information, not
+        # evidence of obscurity. Fall through to popularity.
+        if listeners > 0:
+            return math.log1p(listeners)
+
+    popularity = track.get("popularity")
+    if popularity is not None:
+        try:
+            return float(popularity) / 100.0 * _POP_REACH_SCALE
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _track_recognizability(tracks: list[dict], min_pool: int = 25) -> dict[int, float]:
+    """Pool-relative recognizability percentile per track id.
+
+    The artist-level equivalent (``_artist_recognizability``) gives every song
+    in a catalog the same value, which leaves lane assignment and the novelty
+    axis blind to the difference between a signature song and album filler.
+    This resolves that at track granularity wherever the reach signal exists.
+
+    Returns {} below ``min_pool`` ranked tracks (eval fixtures, catalogs
+    before the track-stats backfill has run) so callers fall back to the
+    artist percentile — identical to the old behavior.
+    """
+    from app.services.ranking import _percentile_rank
+
+    ids: list[int] = []
+    reaches: list[float] = []
+    for track in tracks:
+        track_id = track.get("id")
+        reach = _track_reach(track)
+        if track_id is None or reach is None:
+            continue
+        ids.append(int(track_id))
+        reaches.append(reach)
+
+    if len(ids) < min_pool:
+        return {}
+
+    return dict(zip(ids, _percentile_rank(reaches)))
+
+
+def _within_artist_recognizability(
+    tracks: list[dict], min_catalog: int = 3
+) -> dict[int, float]:
+    """Per-track reach percentile *within its own artist's catalog*.
+
+    Pool-relative percentiles answer "is this a well-known song"; this answers
+    "is this one of *this artist's* known songs", which is the question the
+    per-artist shortlist actually needs. Without it a mid-tier artist's entire
+    catalog sits at the same pool percentile and the shortlist has nothing to
+    choose on but noise.
+
+    Artists with fewer than ``min_catalog`` ranked tracks are omitted — a
+    percentile over one or two rows is meaningless.
+    """
+    from app.services.ranking import _percentile_rank
+
+    by_artist: dict[int, list[tuple[int, float]]] = {}
+    for track in tracks:
+        track_id = track.get("id")
+        artist_id = track.get("artist_id")
+        reach = _track_reach(track)
+        if track_id is None or artist_id is None or reach is None:
+            continue
+        by_artist.setdefault(int(artist_id), []).append((int(track_id), reach))
+
+    ranked: dict[int, float] = {}
+    for rows in by_artist.values():
+        if len(rows) < min_catalog:
+            continue
+        percentiles = _percentile_rank([reach for _, reach in rows])
+        for (track_id, _), percentile in zip(rows, percentiles):
+            ranked[track_id] = percentile
+    return ranked
 
 
 def _favorites_boost(similarity: float | None) -> float:

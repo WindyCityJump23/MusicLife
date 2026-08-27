@@ -138,10 +138,16 @@ export function groupSongsByLane(
     );
 }
 
-/** Round-robin the lanes so playback alternates deep cuts, popular, hits. */
+/** Round-robin the lanes so playback alternates hits, popular, deep cuts.
+ *
+ * Leads with the recognizable lane. The round-robin used to start at
+ * deep_cuts, so however well the backend ranked a station, the first song a
+ * listener actually heard was always its most obscure pick — which reads as
+ * "these recommendations are bad" well before the mix pays off.
+ */
 export function interleaveForPlayback(songs: SongRecommendation[]): SongRecommendation[] {
   const groups = groupSongsByLane(songs);
-  const order: DiscoveryLaneId[] = ["deep_cuts", "popular", "radio_hits"];
+  const order: DiscoveryLaneId[] = ["radio_hits", "popular", "deep_cuts"];
   const mixed: SongRecommendation[] = [];
   let index = 0;
 

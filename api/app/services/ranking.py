@@ -466,15 +466,24 @@ def weighted_library_embedding_rows(
     if not artist_weights:
         return []
 
-    artist_ids = list(artist_weights.keys())
-    artists_resp = (
-        client.table("artists")
-        .select("id,embedding")
-        .in_("id", artist_ids)
-        .execute()
-    )
+    artist_ids = sorted(artist_weights.keys())
+    # Chunked with an explicit range: PostgREST caps an unbounded select at
+    # 1000 rows, so a library above that silently built the taste vector from
+    # an arbitrary subset of the user's artists. Chunking also keeps the
+    # `in_` filter from overflowing the request URL on large libraries.
+    artist_rows: list[dict] = []
+    for chunk in _chunk_ids(artist_ids, 200):
+        chunk_resp = (
+            client.table("artists")
+            .select("id,embedding")
+            .in_("id", chunk)
+            .range(0, 9999)
+            .execute()
+        )
+        artist_rows.extend(chunk_resp.data or [])
+
     rows: list[tuple[int, list[float], float]] = []
-    for artist in artists_resp.data or []:
+    for artist in artist_rows:
         artist_id = artist.get("id")
         if artist_id is None:
             continue

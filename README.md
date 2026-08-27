@@ -159,7 +159,8 @@ song_score = base_score * track_boost * novelty_adjustment
 - **Affinity** — cosine similarity between candidate artist embedding and your taste centroid
 - **Context** — cosine similarity between your prompt embedding and editorial mention embeddings
 - **Editorial** — recency × trust weight × sentiment from crawled sources
-- **Novelty** — rewards lower-popularity, newer, editorially surfaced, and non-library tracks
+- **Recognizability** — how widely known a *track* is, from Last.fm per-track listener counts (Spotify popularity is NULL catalog-wide), as a percentile both across the candidate pool and within the artist's own catalog
+- **Novelty** — rewards newer, editorially surfaced, and non-library tracks; the deep-cut share of a station is set by the lane quota rather than by paying a score bonus for obscurity
 - **Familiarity** — penalizes songs you already played while still allowing deep cuts from artists you like
 
 The backend returns lane-aware recommendations, reserving room for:
@@ -173,10 +174,11 @@ Weights are controlled by the mode buttons and sliders in the Radio view.
 Discovery pipeline:
 
 1. **Prompt classifier** distinguishes genre queries ("alternative rock") from mood queries ("sad night drive") from semantic queries ("new Chicago indie") — genre queries filter the artist pool, mood/semantic queries rely on embedding similarity
-2. **Lane assignment** happens in the backend: each track is assigned to `deep_cut`, `popular`, or `familiar` based on popularity, library overlap, and editorial signal
-3. **Lane quotas** enforce a mix (45% deep cuts, 35% popular, 20% familiar) during diversity reranking
-4. **Novelty tracking** persists both track IDs and artist IDs per discover run; subsequent requests exclude recently shown artists (not just tracks)
-5. **Editorial ingest** creates new artist records from blog-sourced tracks, expanding the catalog beyond the user's existing library
+2. **Per-artist shortlist** picks which songs represent each artist, led by the track's recognizability *within that artist's own catalog* so signature songs beat album filler
+3. **Lane assignment** happens in the backend: each track is assigned to `deep_cuts`, `popular`, or `radio_hits` based on recognizability, library overlap, and editorial signal
+4. **Lane quotas** enforce a mix (38% deep cuts, 38% popular, 24% radio hits by default, adjustable in the Radio view) during diversity reranking. Recognizable lanes are filled first, so each artist contributes its strongest song and the deep-cut lane draws from artists whose best song genuinely is a deep cut
+5. **Novelty tracking** persists both track IDs and artist IDs per discover run. Tracks stay excluded across the full history window; artists only across the most recent few runs, so the exclusion set cannot outgrow the pool of artists that actually match your taste
+6. **Editorial ingest** creates new artist records from blog-sourced tracks, expanding the catalog beyond the user's existing library
 
 ### Key endpoints
 
@@ -190,6 +192,7 @@ Discovery pipeline:
 | `POST /ingest/enrich-artists` | MusicBrainz + Last.fm enrichment |
 | `POST /ingest/embed-artists` | Generate artist embeddings |
 | `POST /ingest/sources` | Crawl RSS + Reddit feeds, create new artists/tracks, and model fresh source finds |
+| `POST /ingest/backfill-track-stats` | Fetch per-track Last.fm listener counts (song-level recognizability) |
 | `POST /ingest/setup-all` | Run the full Music Profile setup pipeline |
 | `POST /playlist-from-tracks` | Export discover session to Spotify playlist |
 | `POST /synthesize/for-artist` | Generate "Why this?" explanation via Claude |

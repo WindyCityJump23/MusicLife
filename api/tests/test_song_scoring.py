@@ -9,7 +9,6 @@ from app.services.song_scoring import (
     DEFAULT_DISCOVERY_MIX,
     DISCOVERY_LANES,
     _artist_recognizability,
-    _assign_lane,
     _candidate_key,
     _clean_strategy,
     _deep_cut_quality,
@@ -20,6 +19,9 @@ from app.services.song_scoring import (
     _lane_targets,
     _novelty_score,
     _release_age_days,
+    _track_reach,
+    _track_recognizability,
+    _within_artist_recognizability,
     classify_prompt,
 )
 
@@ -75,22 +77,93 @@ class TestLaneForTrack:
         # is_newish (<=540 days) blocks the radio_hits classification
         assert _lane_for_track(0.85, [], [], 0.0, 100) == "popular"
 
-    def test_indie_genre_forces_deep_cut(self):
-        assert _lane_for_track(0.9, ["indie"], [], 0.0, 3000) == "deep_cuts"
+    def test_low_reach_indie_track_is_a_deep_cut(self):
+        assert _lane_for_track(0.3, ["indie"], [], 0.0, 3000) == "deep_cuts"
+
+    def test_indie_genre_alone_does_not_bury_a_well_known_song(self):
+        # An indie artist's signature song belongs in radio_hits. Keying the
+        # deep-cut signal off the genre alone mislabeled it and made it
+        # compete for the wrong lane's slots.
+        assert _lane_for_track(0.9, ["indie"], [], 0.0, 3000) == "radio_hits"
+
+    def test_editorial_only_deepens_low_reach_tracks(self):
+        assert _lane_for_track(0.3, [], [], 0.5, 3000) == "deep_cuts"
+        assert _lane_for_track(0.9, [], [], 0.5, 3000) == "radio_hits"
 
 
-class TestAssignLane:
-    def test_popular_high_non_library(self):
-        assert _assign_lane(0.8, in_library=False, is_library_artist=False, editorial=0) == "radio_hits"
+class TestTrackReach:
+    def test_prefers_lastfm_listeners(self):
+        import math
 
-    def test_mid_popularity_is_popular(self):
-        assert _assign_lane(0.5, in_library=False, is_library_artist=False, editorial=0) == "popular"
+        reach = _track_reach({"lastfm_listeners": 1000, "popularity": 10})
+        assert reach == math.log1p(1000)
 
-    def test_obscure_non_library_is_deep_cut(self):
-        assert _assign_lane(0.2, in_library=False, is_library_artist=False, editorial=0) == "deep_cuts"
+    def test_zero_listeners_is_not_evidence_of_obscurity(self):
+        # 0 means "looked up on Last.fm, not found" — fall through to
+        # popularity rather than ranking the track at the bottom.
+        assert _track_reach({"lastfm_listeners": 0, "popularity": 80}) is not None
+        assert _track_reach({"lastfm_listeners": 0, "popularity": 80}) > 0
 
-    def test_editorial_rescues_to_popular(self):
-        assert _assign_lane(0.4, in_library=False, is_library_artist=False, editorial=0.5) == "popular"
+    def test_unranked_track_is_unknown_not_zero(self):
+        assert _track_reach({"name": "Untouched"}) is None
+
+    def test_popularity_and_listeners_are_comparable(self):
+        # A mixed catalog (album-sourced rows carry listeners, search-sourced
+        # rows carry popularity) must still rank as one list.
+        big_by_listeners = _track_reach({"lastfm_listeners": 4_000_000})
+        small_by_popularity = _track_reach({"popularity": 20})
+        assert big_by_listeners > small_by_popularity
+
+
+class TestTrackRecognizability:
+    def test_empty_below_min_pool(self):
+        tracks = [{"id": i, "lastfm_listeners": i * 100} for i in range(1, 5)]
+        assert _track_recognizability(tracks, min_pool=25) == {}
+
+    def test_ranks_pool_by_reach(self):
+        tracks = [{"id": i, "lastfm_listeners": i * 1000} for i in range(1, 31)]
+        ranked = _track_recognizability(tracks, min_pool=25)
+        assert ranked[30] == 1.0
+        assert ranked[1] == 0.0
+        assert ranked[30] > ranked[15] > ranked[1]
+
+
+class TestWithinArtistRecognizability:
+    def test_ranks_each_catalog_independently(self):
+        tracks = [
+            # A small artist and a huge artist. Within-catalog percentiles
+            # must be scale-free so the small artist's best song still wins
+            # its own shortlist.
+            {"id": 1, "artist_id": 10, "lastfm_listeners": 100},
+            {"id": 2, "artist_id": 10, "lastfm_listeners": 5_000},
+            {"id": 3, "artist_id": 10, "lastfm_listeners": 500},
+            {"id": 4, "artist_id": 20, "lastfm_listeners": 1_000_000},
+            {"id": 5, "artist_id": 20, "lastfm_listeners": 9_000_000},
+            {"id": 6, "artist_id": 20, "lastfm_listeners": 3_000_000},
+        ]
+        ranked = _within_artist_recognizability(tracks)
+        assert ranked[2] == 1.0  # small artist's best
+        assert ranked[5] == 1.0  # huge artist's best
+        assert ranked[1] == 0.0
+        assert ranked[4] == 0.0
+
+    def test_skips_catalogs_too_small_to_rank(self):
+        tracks = [
+            {"id": 1, "artist_id": 10, "lastfm_listeners": 100},
+            {"id": 2, "artist_id": 10, "lastfm_listeners": 500},
+        ]
+        assert _within_artist_recognizability(tracks, min_catalog=3) == {}
+
+    def test_ignores_tracks_with_no_reach_signal(self):
+        tracks = [
+            {"id": 1, "artist_id": 10, "lastfm_listeners": 100},
+            {"id": 2, "artist_id": 10, "lastfm_listeners": 500},
+            {"id": 3, "artist_id": 10, "lastfm_listeners": 900},
+            {"id": 4, "artist_id": 10},
+        ]
+        ranked = _within_artist_recognizability(tracks)
+        assert 4 not in ranked
+        assert ranked[3] == 1.0
 
 
 class TestNoveltyScore:

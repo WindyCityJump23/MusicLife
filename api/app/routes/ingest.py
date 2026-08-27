@@ -336,6 +336,21 @@ def _run_source_ingest(
             followup_notes.append(f"track tags skipped: {exc}")
             print(f"source_ingest: track tags pass failed (non-fatal): {exc}")
 
+        # Bounded track-recognizability convergence. Without per-track
+        # listener counts every song by an artist scores identically and the
+        # shortlist picks between them at random, so this is what makes the
+        # station surface an artist's real songs rather than album filler.
+        ranked_tracks = 0
+        try:
+            from app.services.track_stats_backfill import run_track_stats_backfill
+
+            progress("Learning which songs people actually know...")
+            stats_summary = run_track_stats_backfill(limit=600, progress=progress)
+            ranked_tracks = stats_summary.get("updated", 0) if isinstance(stats_summary, dict) else 0
+        except Exception as exc:
+            followup_notes.append(f"track popularity skipped: {exc}")
+            print(f"source_ingest: track stats pass failed (non-fatal): {exc}")
+
         msg = f"Scanned {sources} sources, found {mentions} mentions"
         if tracks:
             msg += f", added {tracks} tracks"
@@ -345,6 +360,8 @@ def _run_source_ingest(
             msg += f", expanded {expanded_artists} similar artists"
         if tagged_tracks:
             msg += f", deepened {tagged_tracks} track descriptions"
+        if ranked_tracks:
+            msg += f", ranked {ranked_tracks} songs by reach"
         if embedded_artists:
             msg += f", modeled {embedded_artists} artists"
         if embedded_tracks:
@@ -487,6 +504,51 @@ def _run_track_tags_backfill(job_id: str, limit: int | None = None):
 
         update_job(job_id, JobStatus.FAILED, friendly_error_message(exc)[:500])
         print(f"track_tags_backfill: FAILED: {exc}")
+
+
+@router.post("/backfill-track-stats")
+def backfill_track_stats(
+    bg: BackgroundTasks,
+    req: StatsBackfillRequest = Body(default_factory=StatsBackfillRequest),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Fetch per-track Last.fm listener counts (see migration 030).
+
+    Within-artist recognizability: without it every track in an artist's
+    catalog scores identically and the song shortlist falls back to random.
+    Resumable: only rows with lastfm_listeners IS NULL are selected.
+    """
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+    job_id = str(uuid.uuid4())
+    create_job(job_id, "backfill-track-stats")
+    bg.add_task(_run_track_stats_backfill, job_id, req.limit)
+    return {"status": "queued", "job_id": job_id}
+
+
+def _run_track_stats_backfill(job_id: str, limit: int | None = None):
+    from app.services.track_stats_backfill import run_track_stats_backfill
+
+    update_job(job_id, JobStatus.RUNNING, "Fetching song popularity from Last.fm...")
+    try:
+        summary = run_track_stats_backfill(
+            limit=limit,
+            progress=lambda msg: update_job(job_id, JobStatus.RUNNING, msg[:500]),
+        )
+        msg = (
+            f"Song popularity: {summary.get('updated', 0)}/{summary.get('total', 0)} updated"
+        )
+        if summary.get("not_found"):
+            msg += f", {summary['not_found']} not on Last.fm"
+        if summary.get("errors"):
+            msg += f" ({summary['errors']} errors)"
+        update_job(job_id, JobStatus.SUCCESS, msg[:500])
+        print(f"track_stats_backfill: completed — {msg}")
+    except Exception as exc:
+        from app.services.error_copy import friendly_error_message
+
+        update_job(job_id, JobStatus.FAILED, friendly_error_message(exc)[:500])
+        print(f"track_stats_backfill: FAILED: {exc}")
 
 
 @router.post("/backfill-release-dates")
