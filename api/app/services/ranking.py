@@ -83,6 +83,18 @@ def _percentile_rank(values: list[float]) -> list[float]:
     This spreads clustered scores across the full range so the UI
     shows meaningful differences even when raw cosine similarities
     are all bunched around 0.85.
+
+    Equal values receive the *same* percentile — the midpoint of the positions
+    they span. Ranking strictly by sorted position instead would hand tied
+    values different percentiles based purely on their order in the input:
+    five identical scores in a list of ten used to spread across 0.00–0.44.
+    That was harmless for cosine similarities, which effectively never tie,
+    but track recognizability is built from integer Last.fm listener counts
+    where ties are routine (a song released as both a single and an album cut
+    carries one listener count, since Last.fm keys on artist + title). Tied
+    runs could straddle the 0.46 deep-cuts and 0.78 radio-hits thresholds, so
+    equally recognizable songs landed in different lanes and won or lost the
+    per-artist shortlist arbitrarily.
     """
     if not values:
         return []
@@ -91,8 +103,15 @@ def _percentile_rank(values: list[float]) -> list[float]:
         return [1.0]
     indexed = sorted(enumerate(values), key=lambda t: t[1])
     ranks = [0.0] * n
-    for rank_pos, (orig_idx, _) in enumerate(indexed):
-        ranks[orig_idx] = rank_pos / (n - 1)
+    start = 0
+    while start < n:
+        end = start
+        while end + 1 < n and indexed[end + 1][1] == indexed[start][1]:
+            end += 1
+        shared = ((start + end) / 2.0) / (n - 1)
+        for pos in range(start, end + 1):
+            ranks[indexed[pos][0]] = shared
+        start = end + 1
     return ranks
 
 
