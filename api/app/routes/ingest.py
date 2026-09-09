@@ -551,6 +551,79 @@ def _run_track_stats_backfill(job_id: str, limit: int | None = None):
         print(f"track_stats_backfill: FAILED: {exc}")
 
 
+class AttributionAuditRequest(BaseModel):
+    spotify_access_token: str
+    limit: int | None = None
+    # Report-only by default. Deleting catalog rows is not something to do as
+    # a side effect of asking how bad the problem is.
+    apply: bool = False
+
+
+@router.post("/audit-track-attribution")
+def audit_track_attribution(
+    bg: BackgroundTasks,
+    req: AttributionAuditRequest,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Find tracks filed under an artist who did not perform them.
+
+    Re-reads each stored track from Spotify and compares its real ``artists``
+    credits against the artist row it is filed under. Reports by default; pass
+    ``apply: true`` to delete the misattributed rows. Tracks referenced by
+    user_tracks are never deleted (that foreign key cascades).
+    """
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+    job_id = str(uuid.uuid4())
+    create_job(job_id, "audit-track-attribution")
+    bg.add_task(
+        _run_track_attribution_audit,
+        job_id,
+        req.spotify_access_token,
+        req.limit,
+        req.apply,
+    )
+    return {"status": "queued", "job_id": job_id}
+
+
+def _run_track_attribution_audit(
+    job_id: str,
+    spotify_access_token: str,
+    limit: int | None,
+    apply: bool,
+):
+    from app.services.track_attribution_audit import run_track_attribution_audit
+
+    update_job(job_id, JobStatus.RUNNING, "Verifying track credits against Spotify...")
+    try:
+        summary = run_track_attribution_audit(
+            access_token=spotify_access_token,
+            limit=limit,
+            apply=apply,
+            progress=lambda msg: update_job(job_id, JobStatus.RUNNING, msg[:500]),
+        )
+        if summary.get("error"):
+            update_job(job_id, JobStatus.FAILED, str(summary["error"])[:500])
+            return
+        msg = (
+            f"Checked {summary.get('examined', 0)} tracks — "
+            f"{summary.get('misattributed', 0)} misattributed"
+        )
+        if apply:
+            msg += f", {summary.get('deleted', 0)} removed"
+        else:
+            msg += f" ({summary.get('deletable', 0)} removable; re-run with apply to delete)"
+        if summary.get("protected"):
+            msg += f", {summary['protected']} kept because they are in a user's library"
+        update_job(job_id, JobStatus.SUCCESS, msg[:500])
+        print(f"track_attribution_audit: completed — {msg}")
+    except Exception as exc:
+        from app.services.error_copy import friendly_error_message
+
+        update_job(job_id, JobStatus.FAILED, friendly_error_message(exc)[:500])
+        print(f"track_attribution_audit: FAILED: {exc}")
+
+
 @router.post("/backfill-release-dates")
 def backfill_release_dates(
     bg: BackgroundTasks,
