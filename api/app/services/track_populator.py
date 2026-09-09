@@ -13,6 +13,7 @@ This service:
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Callable
 
@@ -416,6 +417,48 @@ def _retry_429(
     raise last_transport_error or httpx.TransportError("Spotify request failed")
 
 
+def _normalize_artist_name(name: object) -> str:
+    """Casefold and strip punctuation so name comparison is not brittle."""
+    return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+
+
+def track_credits_artist(
+    track: dict,
+    spotify_artist_id: str,
+    artist_name: str,
+) -> bool:
+    """Is this track actually credited to the artist we are populating?
+
+    Every Spotify track object — full (search) and simplified (album tracks)
+    alike — carries an ``artists`` array. Nothing used to read it: whatever a
+    query returned was written with ``artist_id`` set to the artist we happened
+    to be looking up, so an artist's row accumulated other people's music.
+
+    Prefers the Spotify artist ID, which is exact. Falls back to a normalized
+    name match only when the row has no ID to compare against, since that is
+    the best available signal for artists that were created from editorial
+    text rather than resolved against Spotify.
+    """
+    credited = track.get("artists")
+    if not isinstance(credited, list) or not credited:
+        # No credits to check. Without evidence, do not claim the track.
+        return False
+
+    if spotify_artist_id:
+        return any(
+            isinstance(entry, dict) and entry.get("id") == spotify_artist_id
+            for entry in credited
+        )
+
+    target = _normalize_artist_name(artist_name)
+    if not target:
+        return False
+    return any(
+        isinstance(entry, dict) and _normalize_artist_name(entry.get("name")) == target
+        for entry in credited
+    )
+
+
 def _search_and_upsert_tracks(
     client: httpx.Client,
     headers: dict[str, str],
@@ -440,8 +483,27 @@ def _search_and_upsert_tracks(
 
     items: list[dict] = []
     seen_ids: set[str] = set()
+    rejected = 0
+
+    def _accept(t: dict) -> bool:
+        """Take a track only if this artist is actually credited on it."""
+        nonlocal rejected
+        tid = t.get("id")
+        if not tid or tid in seen_ids:
+            return False
+        if not track_credits_artist(t, spotify_artist_id, artist_name):
+            rejected += 1
+            return False
+        seen_ids.add(tid)
+        items.append(t)
+        return True
 
     # Strategy 1: Albums → album tracks (reaches deep cuts)
+    #
+    # An album is pulled in when this artist is credited on it, but the album's
+    # *other* tracks can belong to anyone — compilations, various-artists
+    # records, and guest features all land here. Every track used to be kept,
+    # so one guest verse filed an entire album under this artist.
     if spotify_artist_id:
         album_items = _fetch_artist_albums(client, headers, spotify_artist_id)
         if album_items is not None:
@@ -453,16 +515,22 @@ def _search_and_upsert_tracks(
                 if album_tracks is None:
                     continue
                 for t in album_tracks:
-                    tid = t.get("id")
-                    if tid and tid not in seen_ids:
-                        seen_ids.add(tid)
-                        items.append(t)
+                    _accept(t)
                     if len(items) >= limit:
                         break
                 if len(items) >= limit:
                     break
 
-    # Strategy 2: Search API with pagination to go beyond top results
+    # Strategy 2: Search API to top up beyond what the albums endpoint gave.
+    #
+    # `artist:"Name"` is a fuzzy *text* filter, not an ID lookup, so it happily
+    # returns other artists with similar names. Because the loop below used to
+    # keep whatever came back, this was the main source of misattribution: a
+    # search for a small artist would pad their row up to `limit` with music by
+    # whoever else matched the string. Every candidate now has to be credited
+    # to this artist, which means the top-up simply yields fewer tracks for
+    # artists with small catalogs — the correct outcome.
+    #
     # Spotify reduced the search limit from 50 to 10 in February 2026.
     SEARCH_PAGE = 10
     if len(items) < limit:
@@ -493,14 +561,18 @@ def _search_and_upsert_tracks(
                 break
             search_items = (resp.json().get("tracks") or {}).get("items") or []
             for t in search_items:
-                tid = t.get("id")
-                if tid and tid not in seen_ids:
-                    seen_ids.add(tid)
-                    items.append(t)
+                _accept(t)
             if len(search_items) < batch:
                 break
             if len(items) >= limit:
                 break
+
+    if rejected:
+        print(
+            f"track_populator: '{artist_name}' — kept {len(items)}, dropped "
+            f"{rejected} track(s) not credited to this artist",
+            flush=True,
+        )
 
     if not items:
         return 0, None

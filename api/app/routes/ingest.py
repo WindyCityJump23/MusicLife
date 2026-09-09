@@ -9,9 +9,9 @@ TODO order (matches the week-by-week build plan):
 """
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.deps.auth import bearer_scheme, ensure_valid_bearer_token, require_bearer_token
 from app.services.job_tracker import (
@@ -549,6 +549,106 @@ def _run_track_stats_backfill(job_id: str, limit: int | None = None):
 
         update_job(job_id, JobStatus.FAILED, friendly_error_message(exc)[:500])
         print(f"track_stats_backfill: FAILED: {exc}")
+
+
+class AttributionAuditRequest(BaseModel):
+    spotify_access_token: str
+    # Report mode runs inline and is bounded so the caller gets the findings
+    # back in the response. Apply mode runs in the background over the whole
+    # catalog, so it ignores this.
+    limit: int | None = Field(default=500, ge=1, le=5000)
+    # Report-only by default. Deleting catalog rows is not something to do as
+    # a side effect of asking how bad the problem is.
+    apply: bool = False
+
+
+@router.post("/audit-track-attribution")
+def audit_track_attribution(
+    bg: BackgroundTasks,
+    req: AttributionAuditRequest,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Find tracks filed under an artist who did not perform them.
+
+    Re-reads each stored track from Spotify and compares its real ``artists``
+    credits against the artist row it is filed under.
+
+    Report mode (the default) runs **inline** and returns the findings — each
+    row's track, the artist it is filed under, who actually performed it, and
+    whether it sits in a user's library. Routing it through the background job
+    tracker would have reduced it to a one-line status message, leaving no way
+    to see which rows would be removed; a review step whose output you cannot
+    read is not a review step. It is bounded by ``limit`` so the request
+    returns promptly.
+
+    ``apply: true`` deletes, so it runs as a background job over the whole
+    catalog and re-verifies every row against Spotify immediately before
+    removing it. Tracks referenced by user_tracks are never deleted — that
+    foreign key cascades and would take the user's library row with it.
+    """
+    token = require_bearer_token(credentials)
+    ensure_valid_bearer_token(token)
+
+    from app.services.track_attribution_audit import run_track_attribution_audit
+
+    if not req.apply:
+        summary = run_track_attribution_audit(
+            access_token=req.spotify_access_token,
+            limit=req.limit,
+            apply=False,
+        )
+        if summary.get("error"):
+            raise HTTPException(status_code=502, detail=summary["error"])
+        return {"status": "complete", **summary}
+
+    job_id = str(uuid.uuid4())
+    create_job(job_id, "audit-track-attribution")
+    bg.add_task(
+        _run_track_attribution_audit,
+        job_id,
+        req.spotify_access_token,
+        None,  # apply sweeps the whole catalog
+        True,
+    )
+    return {"status": "queued", "job_id": job_id}
+
+
+def _run_track_attribution_audit(
+    job_id: str,
+    spotify_access_token: str,
+    limit: int | None,
+    apply: bool,
+):
+    from app.services.track_attribution_audit import run_track_attribution_audit
+
+    update_job(job_id, JobStatus.RUNNING, "Verifying track credits against Spotify...")
+    try:
+        summary = run_track_attribution_audit(
+            access_token=spotify_access_token,
+            limit=limit,
+            apply=apply,
+            progress=lambda msg: update_job(job_id, JobStatus.RUNNING, msg[:500]),
+        )
+        if summary.get("error"):
+            update_job(job_id, JobStatus.FAILED, str(summary["error"])[:500])
+            return
+        msg = (
+            f"Checked {summary.get('examined', 0)} tracks — "
+            f"{summary.get('misattributed', 0)} misattributed"
+        )
+        if apply:
+            msg += f", {summary.get('deleted', 0)} removed"
+        else:
+            msg += f" ({summary.get('deletable', 0)} removable; re-run with apply to delete)"
+        if summary.get("protected"):
+            msg += f", {summary['protected']} kept because they are in a user's library"
+        update_job(job_id, JobStatus.SUCCESS, msg[:500])
+        print(f"track_attribution_audit: completed — {msg}")
+    except Exception as exc:
+        from app.services.error_copy import friendly_error_message
+
+        update_job(job_id, JobStatus.FAILED, friendly_error_message(exc)[:500])
+        print(f"track_attribution_audit: FAILED: {exc}")
 
 
 @router.post("/backfill-release-dates")

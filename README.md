@@ -193,6 +193,7 @@ Discovery pipeline:
 | `POST /ingest/embed-artists` | Generate artist embeddings |
 | `POST /ingest/sources` | Crawl RSS + Reddit feeds, create new artists/tracks, and model fresh source finds |
 | `POST /ingest/backfill-track-stats` | Fetch per-track Last.fm listener counts (song-level recognizability) |
+| `POST /ingest/audit-track-attribution` | Verify stored tracks against Spotify's artist credits. Returns the findings inline by default; `apply: true` sweeps the catalog and deletes misattributed rows |
 | `POST /ingest/setup-all` | Run the full Music Profile setup pipeline |
 | `POST /playlist-from-tracks` | Export discover session to Spotify playlist |
 | `POST /synthesize/for-artist` | Generate "Why this?" explanation via Claude |
