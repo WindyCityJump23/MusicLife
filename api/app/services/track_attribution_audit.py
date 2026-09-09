@@ -62,8 +62,6 @@ def run_track_attribution_audit(
     if not total:
         return {"examined": 0, "misattributed": 0, "deleted": 0, "protected": 0, "errors": 0}
 
-    protected_ids = _library_track_ids()
-
     by_spotify_id = {
         row["spotify_track_id"]: row
         for row in candidates
@@ -141,8 +139,11 @@ def run_track_attribution_audit(
             # Stay well inside Spotify's rate limit on long runs.
             time.sleep(0.1)
 
+    protected_ids = _library_track_ids([m["track_id"] for m in misattributed])
     deletable = [m for m in misattributed if m["track_id"] not in protected_ids]
     protected = len(misattributed) - len(deletable)
+    for finding in misattributed:
+        finding["in_user_library"] = finding["track_id"] in protected_ids
 
     deleted = 0
     if apply and deletable:
@@ -157,7 +158,7 @@ def run_track_attribution_audit(
         "unresolved": unknown,
         "errors": errors,
         "applied": apply,
-        "sample": misattributed[:25],
+        "findings": misattributed,
     }
     print(
         f"track_attribution_audit: {summary['misattributed']}/{examined} misattributed, "
@@ -208,28 +209,32 @@ def _load_candidates(limit: int | None) -> list[dict]:
     return rows
 
 
-def _library_track_ids() -> set[int]:
-    """Track ids referenced by user_tracks — deleting these would cascade."""
+def _library_track_ids(track_ids: list[int]) -> set[int]:
+    """Which of ``track_ids`` are referenced by user_tracks.
+
+    Scoped to the candidates rather than scanning the whole table, so a small
+    report run stays fast. These are the rows that must never be deleted:
+    user_tracks.track_id is ON DELETE CASCADE, so removing one would delete
+    the user's own library row.
+    """
     ids: set[int] = set()
-    offset = 0
-    page = 1000
-    while True:
+    if not track_ids:
+        return ids
+    for start in range(0, len(track_ids), 200):
+        chunk = track_ids[start : start + 200]
         resp = retry_on_disconnect(
-            lambda o=offset: (
+            lambda c=chunk: (
                 admin_supabase.table("user_tracks")
                 .select("track_id")
-                .range(o, o + page - 1)
+                .in_("track_id", c)
+                .range(0, 9999)
                 .execute()
             ),
             attempts=3,
         )
-        batch = resp.data or []
-        for row in batch:
+        for row in resp.data or []:
             if row.get("track_id") is not None:
                 ids.add(int(row["track_id"]))
-        if len(batch) < page:
-            break
-        offset += page
     return ids
 
 
