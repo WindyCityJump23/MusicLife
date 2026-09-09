@@ -11,8 +11,16 @@
 -- genuine within-catalog quality signal. These columns hold it.
 --
 -- Columns are nullable: ranking treats NULL as "no track signal" and falls
--- back to the artist percentile exactly as before, so this migration is safe
--- to apply before or after the code deploy.
+-- back to the artist percentile exactly as before.
+--
+-- Deploy order: apply this BEFORE (or with) the code that reads the column.
+-- _fetch_tracks_for_artist_ids names lastfm_listeners in its select list, so
+-- against a database without this migration PostgREST rejects the request
+-- outright (SQLSTATE 42703) rather than omitting the column. That path now
+-- catches the undefined-column error and retries without it, so a code-first
+-- deploy degrades to artist-level recognizability instead of taking down
+-- /recommend/songs — but it costs a failed round trip per process and leaves
+-- the feature inert, so migration-first is still the intended order.
 
 alter table public.tracks
   add column if not exists lastfm_listeners bigint,

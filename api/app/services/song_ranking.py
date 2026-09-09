@@ -94,18 +94,79 @@ def _fetch_mentions_for_artist_ids(client: Client, artist_ids: list[int]) -> lis
     return mentions
 
 
+_TRACK_COLUMNS_BASE = (
+    "id,name,artist_id,album_name,release_date,duration_ms,popularity,"
+    "spotify_track_id,explicit,energy,danceability,valence,tempo,"
+    "acousticness,instrumentalness,speechiness"
+)
+# Added by migration 030. Named separately so the fetch can drop it when the
+# migration has not landed yet.
+_TRACK_COLUMNS = _TRACK_COLUMNS_BASE + ",lastfm_listeners"
+
+# Cached negative probe: once we learn the column is absent, skip the failing
+# request on every later chunk and every later request in this process. A
+# deploy that applies the migration also restarts the API, which re-probes.
+_track_reach_column_available = True
+
+
 def _fetch_tracks_for_artist_ids(client: Client, artist_ids: list[int]) -> list[dict]:
+    """Fetch candidate track rows, tolerating a pre-migration-030 schema.
+
+    ``lastfm_listeners`` is named explicitly in the select list, so on a
+    database where migration 030 has not been applied PostgREST rejects the
+    whole request (42703) rather than omitting the column. That would take
+    down /recommend/songs entirely instead of degrading to artist-level
+    recognizability, so a rejected request retries once without the column.
+    """
+    global _track_reach_column_available
+
     tracks: list[dict] = []
     for chunk in _chunked(artist_ids, 150):
-        resp = (
-            client.table("tracks")
-            .select("id,name,artist_id,album_name,release_date,duration_ms,popularity,lastfm_listeners,spotify_track_id,explicit,energy,danceability,valence,tempo,acousticness,instrumentalness,speechiness")
-            .in_("artist_id", chunk)
-            .range(0, 9999)
-            .execute()
-        )
-        tracks.extend(resp.data or [])
+        def _select(columns: str) -> list[dict]:
+            return (
+                client.table("tracks")
+                .select(columns)
+                .in_("artist_id", chunk)
+                .range(0, 9999)
+                .execute()
+                .data
+                or []
+            )
+
+        if not _track_reach_column_available:
+            tracks.extend(_select(_TRACK_COLUMNS_BASE))
+            continue
+
+        try:
+            tracks.extend(_select(_TRACK_COLUMNS))
+        except Exception as exc:
+            if not _missing_column_error(exc, "lastfm_listeners"):
+                raise
+            _track_reach_column_available = False
+            print(
+                "song_ranking: tracks.lastfm_listeners is missing — apply "
+                "migration 030 to enable track-level recognizability. Falling "
+                "back to artist-level percentiles for now."
+            )
+            tracks.extend(_select(_TRACK_COLUMNS_BASE))
     return tracks
+
+
+def _missing_column_error(exc: Exception, column: str) -> bool:
+    """True when a PostgREST error is 'undefined column', not a real failure.
+
+    Matches on Postgres' 42703 SQLSTATE where the client surfaces it, and
+    falls back to the message text, which carries the column name. Anything
+    else has to propagate — swallowing a connection or auth error here would
+    silently serve degraded results.
+    """
+    code = getattr(exc, "code", None)
+    if code is not None and str(code) == "42703":
+        return True
+    text = f"{getattr(exc, 'message', '')} {exc}".lower()
+    return column.lower() in text and (
+        "does not exist" in text or "42703" in text or "undefined column" in text
+    )
 
 
 def recommend_songs(
