@@ -33,7 +33,11 @@ from typing import Callable
 import httpx
 
 from app.services.supabase_client import admin_supabase, retry_on_disconnect
-from app.services.track_populator import fetch_full_tracks, track_credits_artist
+from app.services.track_populator import (
+    SpotifyAuthError,
+    fetch_full_tracks,
+    track_credits_artist,
+)
 
 # Spotify's /v1/tracks accepts up to 50 ids per request.
 _SPOTIFY_BATCH = 50
@@ -82,7 +86,23 @@ def run_track_attribution_audit(
             # for some app credentials even when single lookups on the same
             # token succeed, and a batch-only audit would silently examine
             # nothing and report a clean catalog.
-            fetched = fetch_full_tracks(client, headers, chunk)
+            try:
+                fetched = fetch_full_tracks(client, headers, chunk)
+            except SpotifyAuthError as exc:
+                # A dead token must not read as "nothing wrong with the
+                # catalog" -- that is the failure mode this whole job exists
+                # to rule out.
+                return {
+                    "examined": examined,
+                    "misattributed": len(misattributed),
+                    "deletable": 0,
+                    "protected": 0,
+                    "deleted": 0,
+                    "errors": errors + 1,
+                    "applied": apply,
+                    "findings": [],
+                    "error": f"{exc}. Sign out and back in, then re-run.",
+                }
             if not fetched:
                 errors += 1
                 if errors > 20:
@@ -141,6 +161,12 @@ def run_track_attribution_audit(
         "applied": apply,
         "findings": misattributed,
     }
+    if examined == 0 and (errors or total):
+        summary["error"] = (
+            f"Verified 0 of {total} tracks ({errors} fetch errors) — treating this "
+            "as inconclusive rather than a clean catalog."
+        )
+
     print(
         f"track_attribution_audit: {summary['misattributed']}/{examined} misattributed, "
         f"{protected} protected by user_tracks, {deleted} deleted",

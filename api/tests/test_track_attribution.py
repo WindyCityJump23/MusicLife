@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 from app.services.track_populator import (
+    SpotifyAuthError,
     _search_and_upsert_tracks,
     fetch_full_tracks,
     track_credits_artist,
@@ -205,6 +206,40 @@ class TestFetchFullTracks:
         c = self._Client(batch_status=403)
         fetch_full_tracks(c, {}, [f"t{i}" for i in range(120)])
         assert c.batch_calls == 1, "should not retry a shape the credential cannot use"
+
+    def test_expired_token_raises_instead_of_returning_empty(self):
+        # A caller that cannot tell "token is dead" from "nothing came back"
+        # reports an empty verification as a clean one.
+        class _Dead:
+            def request(self, _m, url, params=None, headers=None):
+                return _FakeResponse({}, status_code=401)
+
+        with pytest.raises(SpotifyAuthError):
+            fetch_full_tracks(_Dead(), {}, ["a", "b"])
+
+    def test_expired_token_on_single_fallback_also_raises(self):
+        class _BatchGoneThenDead:
+            def request(self, _m, url, params=None, headers=None):
+                if url.endswith("/v1/tracks"):
+                    return _FakeResponse({}, status_code=403)
+                return _FakeResponse({}, status_code=401)
+
+        with pytest.raises(SpotifyAuthError):
+            fetch_full_tracks(_BatchGoneThenDead(), {}, ["a"])
+
+    def test_single_track_403_is_skipped_not_fatal(self):
+        # A 403 on one track is a market/takedown case, not an auth problem.
+        class _OneRestricted:
+            def request(self, _m, url, params=None, headers=None):
+                if url.endswith("/v1/tracks"):
+                    return _FakeResponse({}, status_code=403)
+                tid = url.rsplit("/", 1)[1]
+                if tid == "blocked":
+                    return _FakeResponse({}, status_code=403)
+                return _FakeResponse({"id": tid, "popularity": 10})
+
+        out = fetch_full_tracks(_OneRestricted(), {}, ["ok1", "blocked", "ok2"])
+        assert set(out) == {"ok1", "ok2"}
 
     def test_empty_input_makes_no_calls(self):
         c = self._Client(batch_status=200)

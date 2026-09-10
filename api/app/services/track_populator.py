@@ -334,6 +334,15 @@ def _fetch_album_tracks(
     return enriched
 
 
+class SpotifyAuthError(Exception):
+    """Spotify rejected the credential (HTTP 401).
+
+    Distinct from an empty result: a caller that cannot tell "the token is
+    dead" from "nothing came back" will report an empty verification as a
+    clean one.
+    """
+
+
 def fetch_full_tracks(
     client: httpx.Client,
     headers: dict[str, str],
@@ -350,7 +359,8 @@ def fetch_full_tracks(
     in the first place.
 
     Returns {} only when neither shape works, so callers degrade rather than
-    fail.
+    fail. Raises SpotifyAuthError on 401 so a dead token cannot be mistaken
+    for an empty result.
     """
     if not track_ids:
         return {}
@@ -377,7 +387,9 @@ def fetch_full_tracks(
                     if isinstance(full, dict) and full.get("id"):
                         fetched[full["id"]] = full
                 continue
-            if resp.status_code in (401, 429):
+            if resp.status_code == 401:
+                raise SpotifyAuthError("Spotify rejected the token (HTTP 401)")
+            if resp.status_code == 429:
                 return fetched
             # 403/404 on the batch shape: this credential cannot use it.
             batch_supported = False
@@ -401,8 +413,12 @@ def fetch_full_tracks(
                 body = one.json()
                 if isinstance(body, dict) and body.get("id"):
                     fetched[body["id"]] = body
-            elif one.status_code in (401, 429):
+            elif one.status_code == 401:
+                raise SpotifyAuthError("Spotify rejected the token (HTTP 401)")
+            elif one.status_code == 429:
                 return fetched
+            # A 403/404 on a single track is a market or takedown case, not an
+            # auth problem: skip it and let the caller count it as unresolved.
 
     return fetched
 
@@ -428,7 +444,13 @@ def _hydrate_track_popularity(
     if not missing:
         return
 
-    fetched = fetch_full_tracks(client, headers, [t["id"] for t in missing])
+    try:
+        fetched = fetch_full_tracks(client, headers, [t["id"] for t in missing])
+    except SpotifyAuthError as exc:
+        # Best effort: keep the tracks we already have rather than losing the
+        # artist's whole batch. The main loop's 401 detection ends the job.
+        print(f"track_populator: popularity hydration skipped — {exc}", flush=True)
+        return
     for track in missing:
         full = fetched.get(track["id"])
         if full and full.get("popularity") is not None:
