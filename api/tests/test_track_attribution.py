@@ -17,6 +17,7 @@ import pytest
 
 from app.services.track_populator import (
     _search_and_upsert_tracks,
+    fetch_full_tracks,
     track_credits_artist,
 )
 
@@ -63,10 +64,29 @@ class TestTrackCreditsArtist:
         )
         assert track_credits_artist(track, "BRYN_C", "Bryn Christopher") is False
 
-    def test_id_match_wins_over_name_when_id_is_known(self):
-        # Same display name, different artist — the ID is the authority.
-        track = _track("t1", "Song", [{"id": "OTHER", "name": "Artist A"}])
-        assert track_credits_artist(track, "ARTIST_A", "Artist A") is False
+    def test_duplicate_spotify_artist_entity_still_matches_by_name(self):
+        # Spotify hosts duplicate artist entities. "Zashanell" is both
+        # 7HMbLjUSmZVAxkfe6B6M83 (what enrichment stored) and
+        # 3fPtlnrodxfDcyb4XaEdfa (what the artist's own tracks credit).
+        # An ID-only rule flagged this artist's real catalog for deletion.
+        track = _track(
+            "3DAGtRkpVYAFibDQDAkVKH", "Clear - REZZ Remix",
+            [
+                {"id": "20yuGdfbRkW0HH3OfG1Nkg", "name": "No Mana"},
+                {"id": "3fPtlnrodxfDcyb4XaEdfa", "name": "Zashanell"},
+                {"id": "4aKdmOXdUKX07HVd3sGgzw", "name": "Rezz"},
+            ],
+        )
+        assert track_credits_artist(track, "7HMbLjUSmZVAxkfe6B6M83", "Zashanell") is True
+
+    def test_name_match_is_exact_after_normalization_not_substring(self):
+        # The safety of accepting a name match rests on it being exact.
+        # Loose matching is what filed other people's music under an artist
+        # in the first place.
+        track = _track("t1", "Song", [{"id": "X", "name": "Boys Noize"}])
+        assert track_credits_artist(track, "DOLLA_BOY", "Dolla Boy") is False
+        track2 = _track("t2", "Song", [{"id": "Y", "name": "Bakermat"}])
+        assert track_credits_artist(track2, "BAKER_GRACE", "Baker Grace") is False
 
     def test_falls_back_to_name_when_no_spotify_id_stored(self):
         track = _track("t1", "Song", [{"id": "X", "name": "The Wombats"}])
@@ -141,6 +161,55 @@ def captured_rows(monkeypatch):
     monkeypatch.setattr("app.services.track_populator.admin_supabase", _Admin())
     monkeypatch.setattr("app.services.track_populator.retry_on_disconnect", _fake_retry)
     return rows
+
+
+class TestFetchFullTracks:
+    """The batch /v1/tracks endpoint 403s for some app credentials while
+    single lookups on the same token succeed. A batch-only implementation
+    yields nothing and the caller silently degrades."""
+
+    class _Client:
+        def __init__(self, batch_status: int) -> None:
+            self.batch_status = batch_status
+            self.batch_calls = 0
+            self.single_calls = 0
+
+        def request(self, _m, url, params=None, headers=None):
+            params = params or {}
+            if url.endswith("/v1/tracks"):
+                self.batch_calls += 1
+                if self.batch_status != 200:
+                    return _FakeResponse({}, status_code=self.batch_status)
+                ids = (params.get("ids") or "").split(",")
+                return _FakeResponse({"tracks": [{"id": i, "popularity": 70} for i in ids]})
+            if "/v1/tracks/" in url:
+                self.single_calls += 1
+                tid = url.rsplit("/", 1)[1]
+                return _FakeResponse({"id": tid, "popularity": 55})
+            return _FakeResponse({}, status_code=404)
+
+    def test_uses_batch_when_available(self):
+        c = self._Client(batch_status=200)
+        out = fetch_full_tracks(c, {}, ["a", "b", "c"])
+        assert set(out) == {"a", "b", "c"}
+        assert c.single_calls == 0
+
+    def test_falls_back_to_single_lookups_on_403(self):
+        c = self._Client(batch_status=403)
+        out = fetch_full_tracks(c, {}, ["a", "b", "c"])
+        assert set(out) == {"a", "b", "c"}
+        assert c.single_calls == 3
+        assert all(v["popularity"] == 55 for v in out.values())
+
+    def test_stops_probing_batch_after_first_refusal(self):
+        c = self._Client(batch_status=403)
+        fetch_full_tracks(c, {}, [f"t{i}" for i in range(120)])
+        assert c.batch_calls == 1, "should not retry a shape the credential cannot use"
+
+    def test_empty_input_makes_no_calls(self):
+        c = self._Client(batch_status=200)
+        assert fetch_full_tracks(c, {}, []) == {}
+        assert c.batch_calls == 0 and c.single_calls == 0
 
 
 class TestIngestAttribution:

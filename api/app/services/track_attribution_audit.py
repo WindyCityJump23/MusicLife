@@ -33,7 +33,7 @@ from typing import Callable
 import httpx
 
 from app.services.supabase_client import admin_supabase, retry_on_disconnect
-from app.services.track_populator import _retry_429, track_credits_artist
+from app.services.track_populator import fetch_full_tracks, track_credits_artist
 
 # Spotify's /v1/tracks accepts up to 50 ids per request.
 _SPOTIFY_BATCH = 50
@@ -78,47 +78,24 @@ def run_track_attribution_audit(
     with httpx.Client(timeout=20) as client:
         for start in range(0, len(ordered_ids), _SPOTIFY_BATCH):
             chunk = ordered_ids[start : start + _SPOTIFY_BATCH]
-            try:
-                resp = _retry_429(
-                    client, "GET",
-                    "https://api.spotify.com/v1/tracks",
-                    headers=headers,
-                    params={"ids": ",".join(chunk), "market": "US"},
-                )
-            except httpx.TransportError as exc:
-                errors += 1
-                print(f"track_attribution_audit: transport error: {exc}", flush=True)
-                if errors > 20:
-                    break
-                continue
-
-            if resp.status_code in (401, 403):
-                return {
-                    "examined": examined,
-                    "misattributed": len(misattributed),
-                    "deleted": 0,
-                    "protected": 0,
-                    "errors": errors,
-                    "error": f"Spotify token rejected (HTTP {resp.status_code}). Sign out and back in.",
-                }
-            if resp.status_code != 200:
+            # Batch-with-single-fallback: the batch /v1/tracks endpoint is 403
+            # for some app credentials even when single lookups on the same
+            # token succeed, and a batch-only audit would silently examine
+            # nothing and report a clean catalog.
+            fetched = fetch_full_tracks(client, headers, chunk)
+            if not fetched:
                 errors += 1
                 if errors > 20:
                     break
                 continue
 
-            for fetched in (resp.json().get("tracks") or []):
-                if not isinstance(fetched, dict) or not fetched.get("id"):
-                    # Spotify returns null for ids it cannot resolve (region
-                    # pulls, takedowns). No credits means no verdict.
-                    unknown += 1
-                    continue
-                row = by_spotify_id.get(fetched["id"])
+            for spotify_id, full in fetched.items():
+                row = by_spotify_id.get(spotify_id)
                 if not row:
                     continue
                 examined += 1
                 if not track_credits_artist(
-                    fetched,
+                    full,
                     row.get("artist_spotify_id") or "",
                     row.get("artist_name") or "",
                 ):
@@ -128,15 +105,19 @@ def run_track_attribution_audit(
                         "filed_under": row.get("artist_name"),
                         "actual_artists": [
                             a.get("name")
-                            for a in (fetched.get("artists") or [])
+                            for a in (full.get("artists") or [])
                             if isinstance(a, dict)
                         ],
-                        "album_name": (fetched.get("album") or {}).get("name"),
+                        "album_name": (full.get("album") or {}).get("name"),
                     })
+
+            # Spotify returns nothing for ids it cannot resolve (region pulls,
+            # takedowns). No credits means no verdict, so they are counted
+            # rather than treated as misattributed.
+            unknown += len(chunk) - len(fetched)
 
             if progress and (start // _SPOTIFY_BATCH) % 10 == 0:
                 progress(f"Checking track credits ({examined}/{total})")
-            # Stay well inside Spotify's rate limit on long runs.
             time.sleep(0.1)
 
     protected_ids = _library_track_ids([m["track_id"] for m in misattributed])

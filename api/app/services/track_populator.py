@@ -334,6 +334,79 @@ def _fetch_album_tracks(
     return enriched
 
 
+def fetch_full_tracks(
+    client: httpx.Client,
+    headers: dict[str, str],
+    track_ids: list[str],
+) -> dict[str, dict]:
+    """Fetch full track objects by id, keyed by id.
+
+    Uses the batch ``/v1/tracks?ids=`` endpoint, falling back to per-track
+    ``/v1/tracks/{id}`` when it is unavailable. The batch endpoint returns 403
+    for at least some app credentials while single lookups on the very same
+    token succeed, so a batch-only implementation silently yields nothing —
+    which for the popularity hydration below meant every track kept a NULL
+    popularity, exactly the gap that made the ranker fall back to randomness
+    in the first place.
+
+    Returns {} only when neither shape works, so callers degrade rather than
+    fail.
+    """
+    if not track_ids:
+        return {}
+
+    fetched: dict[str, dict] = {}
+    batch_supported = True
+
+    for start in range(0, len(track_ids), 50):
+        chunk = track_ids[start : start + 50]
+
+        if batch_supported:
+            try:
+                resp = _retry_429(
+                    client, "GET",
+                    "https://api.spotify.com/v1/tracks",
+                    headers=headers,
+                    params={"ids": ",".join(chunk), "market": "US"},
+                )
+            except httpx.TransportError as exc:
+                print(f"track_populator: track fetch transport error: {exc}", flush=True)
+                return fetched
+            if resp.status_code == 200:
+                for full in (resp.json().get("tracks") or []):
+                    if isinstance(full, dict) and full.get("id"):
+                        fetched[full["id"]] = full
+                continue
+            if resp.status_code in (401, 429):
+                return fetched
+            # 403/404 on the batch shape: this credential cannot use it.
+            batch_supported = False
+            print(
+                f"track_populator: /v1/tracks batch unavailable "
+                f"(HTTP {resp.status_code}); falling back to single lookups",
+                flush=True,
+            )
+
+        for track_id in chunk:
+            try:
+                one = _retry_429(
+                    client, "GET",
+                    f"https://api.spotify.com/v1/tracks/{track_id}",
+                    headers=headers,
+                    params={"market": "US"},
+                )
+            except httpx.TransportError:
+                return fetched
+            if one.status_code == 200:
+                body = one.json()
+                if isinstance(body, dict) and body.get("id"):
+                    fetched[body["id"]] = body
+            elif one.status_code in (401, 429):
+                return fetched
+
+    return fetched
+
+
 def _hydrate_track_popularity(
     client: httpx.Client,
     headers: dict[str, str],
@@ -355,29 +428,11 @@ def _hydrate_track_popularity(
     if not missing:
         return
 
-    for chunk_start in range(0, len(missing), 50):
-        chunk = missing[chunk_start : chunk_start + 50]
-        try:
-            resp = _retry_429(
-                client, "GET",
-                "https://api.spotify.com/v1/tracks",
-                headers=headers,
-                params={"ids": ",".join(t["id"] for t in chunk), "market": "US"},
-            )
-        except httpx.TransportError as exc:
-            print(f"track_populator: popularity hydrate failed (non-fatal): {exc}", flush=True)
-            return
-        if resp.status_code != 200:
-            return
-        by_id = {
-            full["id"]: full
-            for full in (resp.json().get("tracks") or [])
-            if isinstance(full, dict) and full.get("id")
-        }
-        for track in chunk:
-            full = by_id.get(track["id"])
-            if full and full.get("popularity") is not None:
-                track["popularity"] = full["popularity"]
+    fetched = fetch_full_tracks(client, headers, [t["id"] for t in missing])
+    for track in missing:
+        full = fetched.get(track["id"])
+        if full and full.get("popularity") is not None:
+            track["popularity"] = full["popularity"]
 
 
 def _retry_429(
@@ -434,21 +489,35 @@ def track_credits_artist(
     query returned was written with ``artist_id`` set to the artist we happened
     to be looking up, so an artist's row accumulated other people's music.
 
-    Prefers the Spotify artist ID, which is exact. Falls back to a normalized
-    name match only when the row has no ID to compare against, since that is
-    the best available signal for artists that were created from editorial
-    text rather than resolved against Spotify.
+    Accepts a match on the Spotify artist ID **or** the normalized name.
+
+    Requiring the ID whenever one is stored looks stricter, but Spotify hosts
+    duplicate artist entities: "Zashanell" exists as both
+    7HMbLjUSmZVAxkfe6B6M83 (what enrichment stored) and 3fPtlnrodxfDcyb4XaEdfa
+    (what the artist's own tracks credit). An ID-only rule called those tracks
+    misattributed and queued the artist's real catalog for deletion. Measured
+    over a 72-track sample of the worst-affected artists, ID-only produced 5
+    true positives and 2 false positives — all of the false positives being
+    this duplicate-entity case.
+
+    The name check costs a false *negative* when two genuinely different
+    artists share a normalized name: that track stays in the catalog instead
+    of being removed. For something that deletes rows, that is the right
+    direction to be wrong in — a stray row is recoverable on the next
+    re-ingest, a deleted one is not. The comparison is exact after
+    normalization, never a substring, so "Wombat" still will not match
+    "The Wombats"; loose matching is what caused the original bug.
     """
     credited = track.get("artists")
     if not isinstance(credited, list) or not credited:
         # No credits to check. Without evidence, do not claim the track.
         return False
 
-    if spotify_artist_id:
-        return any(
-            isinstance(entry, dict) and entry.get("id") == spotify_artist_id
-            for entry in credited
-        )
+    if spotify_artist_id and any(
+        isinstance(entry, dict) and entry.get("id") == spotify_artist_id
+        for entry in credited
+    ):
+        return True
 
     target = _normalize_artist_name(artist_name)
     if not target:

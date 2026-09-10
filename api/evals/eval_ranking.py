@@ -102,39 +102,68 @@ def eval_library_penalty() -> EvalResult:
 
     Validates the 20% score reduction applied to library artists so that
     Discover stays fresh rather than just re-surfacing the user's saved music.
+
+    Measured over repeated trials rather than a single run. rank_candidates
+    applies an *absolute* +/-0.08 exploration nudge, while the library penalty
+    is 20% of a score that is itself well under 1.0 — so on any individual run
+    the jitter can outweigh the penalty and flip the pair. A single-run
+    assertion made this eval fail roughly a third of the time regardless of
+    whether the penalty worked, which is worse than no signal: it trains
+    people to re-run a red suite. The penalty's real effect is a bias, so the
+    assertion is a win rate.
     """
-    # Both artists share vec_seed=1 → same embedding → same raw affinity
+    # Both artists share vec_seed=1 -> same embedding -> same raw affinity
     library_a = _make_artist(500, "Library Artist", ["jazz"], vec_seed=1, popularity=70)
     new_a = _make_artist(501, "New Artist", ["jazz"], vec_seed=1, popularity=70)
 
+    # _get_user_library_artist_ids resolves the library through user_tracks ->
+    # tracks -> artist_id, and build_mock_client builds user_tracks from
+    # played_track_ids. Passing tracks=[] and played_track_ids=[] meant the
+    # scenario's library_artist_ids never reached the ranker, the 0.80 penalty
+    # never fired, and this eval was scoring pure exploration noise.
+    library_track = _make_track(5000, "Saved Song", 500, popularity=70)
     scenario = UserScenario(
         user_id="lib_test",
         library_artist_ids=[500],
-        played_track_ids=[],
+        played_track_ids=[5000],
         top_artist_ids=[500],
         taste_vector=JAZZ_TASTE_VECTOR,
     )
-    client = build_mock_client(scenario, artists=[library_a, new_a], tracks=[], mentions=[])
-    results = rank_candidates(
-        client=client,
-        user_id=scenario.user_id,
-        taste_vector=JAZZ_TASTE_VECTOR,
-        prompt_vector=None,
-        weights=_weights(),
-        exclude_library=False,
-        limit=5,
-    )
-    ids = [int(r["artist_id"]) for r in results]
-    lib_rank = ids.index(500) if 500 in ids else 999
-    new_rank = ids.index(501) if 501 in ids else 999
-    passed = new_rank < lib_rank
+
+    TRIALS = 120
+    wins = 0
+    for _ in range(TRIALS):
+        client = build_mock_client(
+            scenario, artists=[library_a, new_a], tracks=[library_track], mentions=[]
+        )
+        results = rank_candidates(
+            client=client,
+            user_id=scenario.user_id,
+            taste_vector=JAZZ_TASTE_VECTOR,
+            prompt_vector=None,
+            weights=_weights(),
+            exclude_library=False,
+            limit=5,
+        )
+        ids = [int(r["artist_id"]) for r in results]
+        lib_rank = ids.index(500) if 500 in ids else 999
+        new_rank = ids.index(501) if 501 in ids else 999
+        if new_rank < lib_rank:
+            wins += 1
+
+    win_rate = wins / TRIALS
+    # No penalty at all would sit at ~50%. A working penalty biases well past
+    # that without ever being guaranteed on a single draw.
+    passed = win_rate >= 0.70
     return EvalResult(
         name="library_penalty",
         passed=passed,
-        score=1.0 if passed else 0.0,
-        details=f"New artist rank {new_rank} vs library artist rank {lib_rank} (lower = better)",
+        score=round(win_rate, 2),
+        details=(
+            f"Non-library artist outranked the library artist in {win_rate:.0%} "
+            f"of {TRIALS} trials (need >= 70%; no penalty would be ~50%)"
+        ),
     )
-
 
 def eval_previously_recommended_penalty() -> EvalResult:
     """An artist already in a saved playlist should rank below a library-only one.
