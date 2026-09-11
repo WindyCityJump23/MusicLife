@@ -241,6 +241,23 @@ class TestFetchFullTracks:
         out = fetch_full_tracks(_OneRestricted(), {}, ["ok1", "blocked", "ok2"])
         assert set(out) == {"ok1", "ok2"}
 
+    def test_fallback_can_be_disabled_to_protect_the_quota(self):
+        # Spotify quotas are per-request, not per-track-returned. On an app
+        # whose batch endpoint is forbidden, letting a catalog sweep fall back
+        # to single lookups costs one request per track and exhausts the daily
+        # quota -- for a signal that is only a bonus.
+        c = self._Client(batch_status=403)
+        out = fetch_full_tracks(c, {}, [f"t{i}" for i in range(120)],
+                                allow_single_fallback=False)
+        assert out == {}
+        assert c.single_calls == 0
+        assert c.batch_calls == 1
+
+    def test_disabling_fallback_does_not_affect_a_working_batch(self):
+        c = self._Client(batch_status=200)
+        out = fetch_full_tracks(c, {}, ["a", "b"], allow_single_fallback=False)
+        assert set(out) == {"a", "b"}
+
     def test_empty_input_makes_no_calls(self):
         c = self._Client(batch_status=200)
         assert fetch_full_tracks(c, {}, []) == {}

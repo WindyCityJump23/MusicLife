@@ -347,6 +347,8 @@ def fetch_full_tracks(
     client: httpx.Client,
     headers: dict[str, str],
     track_ids: list[str],
+    *,
+    allow_single_fallback: bool = True,
 ) -> dict[str, dict]:
     """Fetch full track objects by id, keyed by id.
 
@@ -361,6 +363,14 @@ def fetch_full_tracks(
     Returns {} only when neither shape works, so callers degrade rather than
     fail. Raises SpotifyAuthError on 401 so a dead token cannot be mistaken
     for an empty result.
+
+    ``allow_single_fallback=False`` disables the per-track fallback. The
+    fallback turns one request per 50 tracks into one request *per track*,
+    which is fine for a deliberate, bounded audit but ruinous for a catalog
+    sweep: on an app whose batch endpoint is forbidden, a full track
+    population would spend ~50 requests per artist on an optional signal and
+    exhaust the daily quota. Callers for whom the data is nice-to-have should
+    pass False and accept an empty result.
     """
     if not track_ids:
         return {}
@@ -393,6 +403,14 @@ def fetch_full_tracks(
                 return fetched
             # 403/404 on the batch shape: this credential cannot use it.
             batch_supported = False
+            if not allow_single_fallback:
+                print(
+                    f"track_populator: /v1/tracks batch unavailable "
+                    f"(HTTP {resp.status_code}) and per-track fallback is "
+                    "disabled for this caller; skipping",
+                    flush=True,
+                )
+                return fetched
             print(
                 f"track_populator: /v1/tracks batch unavailable "
                 f"(HTTP {resp.status_code}); falling back to single lookups",
@@ -445,7 +463,12 @@ def _hydrate_track_popularity(
         return
 
     try:
-        fetched = fetch_full_tracks(client, headers, [t["id"] for t in missing])
+        # Batch only. Spotify popularity is a bonus here -- migration 030's
+        # Last.fm per-track listener counts are the durable reach signal -- so
+        # it is never worth a request per track to chase it.
+        fetched = fetch_full_tracks(
+            client, headers, [t["id"] for t in missing], allow_single_fallback=False
+        )
     except SpotifyAuthError as exc:
         # Best effort: keep the tracks we already have rather than losing the
         # artist's whole batch. The main loop's 401 detection ends the job.
