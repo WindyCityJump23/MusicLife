@@ -347,6 +347,8 @@ def fetch_full_tracks(
     client: httpx.Client,
     headers: dict[str, str],
     track_ids: list[str],
+    *,
+    allow_single_fallback: bool = True,
 ) -> dict[str, dict]:
     """Fetch full track objects by id, keyed by id.
 
@@ -361,6 +363,14 @@ def fetch_full_tracks(
     Returns {} only when neither shape works, so callers degrade rather than
     fail. Raises SpotifyAuthError on 401 so a dead token cannot be mistaken
     for an empty result.
+
+    ``allow_single_fallback=False`` disables the per-track fallback. The
+    fallback turns one request per 50 tracks into one request *per track*,
+    which is fine for a deliberate, bounded audit but ruinous for a catalog
+    sweep: on an app whose batch endpoint is forbidden, a full track
+    population would spend ~50 requests per artist on an optional signal and
+    exhaust the daily quota. Callers for whom the data is nice-to-have should
+    pass False and accept an empty result.
     """
     if not track_ids:
         return {}
@@ -393,6 +403,14 @@ def fetch_full_tracks(
                 return fetched
             # 403/404 on the batch shape: this credential cannot use it.
             batch_supported = False
+            if not allow_single_fallback:
+                print(
+                    f"track_populator: /v1/tracks batch unavailable "
+                    f"(HTTP {resp.status_code}) and per-track fallback is "
+                    "disabled for this caller; skipping",
+                    flush=True,
+                )
+                return fetched
             print(
                 f"track_populator: /v1/tracks batch unavailable "
                 f"(HTTP {resp.status_code}); falling back to single lookups",
@@ -445,7 +463,12 @@ def _hydrate_track_popularity(
         return
 
     try:
-        fetched = fetch_full_tracks(client, headers, [t["id"] for t in missing])
+        # Batch only. Spotify popularity is a bonus here -- migration 030's
+        # Last.fm per-track listener counts are the durable reach signal -- so
+        # it is never worth a request per track to chase it.
+        fetched = fetch_full_tracks(
+            client, headers, [t["id"] for t in missing], allow_single_fallback=False
+        )
     except SpotifyAuthError as exc:
         # Best effort: keep the tracks we already have rather than losing the
         # artist's whole batch. The main loop's 401 detection ends the job.
@@ -550,27 +573,33 @@ def track_credits_artist(
     )
 
 
-def _search_and_upsert_tracks(
+def fetch_verified_tracks(
     client: httpx.Client,
     headers: dict[str, str],
     artist: dict,
     limit: int,
-) -> tuple[int, str | None]:
-    """Fetch tracks for an artist and upsert them.
+) -> tuple[list[dict], str | None]:
+    """Fetch the tracks Spotify actually credits to this artist.
 
     Strategy: Start with /artists/{id}/albums to get full discography,
     then fetch each album's tracks. This reaches deep cuts that never
     appear in top-tracks or search results. Falls back to Search API
-    pagination when the albums endpoint is unavailable.
+    pagination when the albums endpoint is unavailable. Every candidate is
+    checked against the track's own ``artists`` credits.
 
-    Returns (tracks_upserted, error_message_or_None).
+    Split out of _search_and_upsert_tracks so the catalog prune can compare
+    stored rows against the very same verified set the populator would
+    write — the two must never disagree about what belongs to an artist.
+
+    Returns (verified_items, error_message_or_None). A result whose length
+    reaches ``limit`` may be truncated, so callers that delete on the basis
+    of absence must treat a full result as inconclusive.
     """
     artist_name = (artist.get("name") or "").strip()
-    artist_db_id = artist["id"]
     spotify_artist_id = (artist.get("spotify_artist_id") or "").strip()
 
     if not artist_name:
-        return 0, None
+        return [], None
 
     items: list[dict] = []
     seen_ids: set[str] = set()
@@ -639,16 +668,16 @@ def _search_and_upsert_tracks(
             if resp.status_code == 429:
                 retry_after = int(resp.headers.get("Retry-After", "5"))
                 if not items:
-                    return 0, f"Spotify rate limit too severe ({retry_after}s)"
+                    return [], f"Spotify rate limit too severe ({retry_after}s)"
                 break
             if resp.status_code == 401:
                 if not items:
-                    return 0, f"spotify token expired or invalid for '{artist_name}' (HTTP 401)"
+                    return [], f"spotify token expired or invalid for '{artist_name}' (HTTP 401)"
                 break
             if resp.status_code != 200:
                 if not items:
                     body = (resp.text or "")[:120]
-                    return 0, f"spotify HTTP {resp.status_code} for '{artist_name}': {body}"
+                    return [], f"spotify HTTP {resp.status_code} for '{artist_name}': {body}"
                 break
             search_items = (resp.json().get("tracks") or {}).get("items") or []
             for t in search_items:
@@ -665,6 +694,25 @@ def _search_and_upsert_tracks(
             flush=True,
         )
 
+    return items, None
+
+
+def _search_and_upsert_tracks(
+    client: httpx.Client,
+    headers: dict[str, str],
+    artist: dict,
+    limit: int,
+) -> tuple[int, str | None]:
+    """Fetch this artist's verified tracks and upsert them.
+
+    Returns (tracks_upserted, error_message_or_None).
+    """
+    artist_name = (artist.get("name") or "").strip()
+    artist_db_id = artist["id"]
+
+    items, error = fetch_verified_tracks(client, headers, artist, limit)
+    if error:
+        return 0, error
     if not items:
         return 0, None
 
